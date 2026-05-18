@@ -87,7 +87,7 @@ Keep `mod.rs` declaration-only — no `pub use` re-exports.
 
 ### Constants (`svc.rs:15-21`)
 - `QUEUE_SNAPSHOT_LIMIT = 50`
-- `MAX_SUBMISSIONS_PER_WINDOW = 3` over `SUBMISSION_WINDOW = 5 minutes` — applies only to un-trusted `submit_url` (currently nothing reaches it).
+- `MAX_SUBMISSIONS_PER_WINDOW = 10` over `SUBMISSION_WINDOW = 30 minutes` — applies to un-trusted `submit_url`, which is the path reached by the Music Booth submit modal (`booth_submit_public_task`). Trusted/admin paths (`submit_trusted_url`) bypass.
 - `FALLBACK_DEBOUNCE = 10s`
 - `PLAYBACK_HEARTBEAT_INTERVAL = 10s` — periodic `LoadVideo` re-broadcast for the current item. Safety net: browsers already showing the right item no-op; stuck/disconnected/wrong-item browsers force-swap. Replaces the old `Seek`-based sync.
 - `STREAM_CAP = 1h` — hard cap on any single playing row's wall-clock lifetime.
