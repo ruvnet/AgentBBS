@@ -1854,6 +1854,7 @@ fn hot_room_suffix_index(byte: u8) -> Option<usize> {
         b'1' => Some(0),
         b'2' => Some(1),
         b'3' => Some(2),
+        b'4' => Some(3),
         _ => None,
     }
 }
@@ -1862,7 +1863,7 @@ fn enter_hot_room(app: &mut App, index: usize) -> bool {
     let Some(room) = crate::app::dashboard::ui::top_dashboard_rooms(
         &app.rooms_snapshot,
         &app.room_game_registry,
-        3,
+        4,
     )
     .into_iter()
     .nth(index)
@@ -2866,7 +2867,7 @@ mod tests {
         assert_eq!(hot_room_suffix_index(b'1'), Some(0));
         assert_eq!(hot_room_suffix_index(b'2'), Some(1));
         assert_eq!(hot_room_suffix_index(b'3'), Some(2));
-        assert_eq!(hot_room_suffix_index(b'4'), None);
+        assert_eq!(hot_room_suffix_index(b'4'), Some(3));
         assert_eq!(hot_room_suffix_index(b'b'), None);
     }
 

@@ -191,7 +191,7 @@ Room favorites:
 
 Home hot-room shortcuts:
 - The lounge multiplayer box renders up to four top multiplayer rooms from `dashboard::ui::top_dashboard_rooms(..., 4)`.
-- `b1`, `b2`, and `b3` enter those rooms through the same `rooms::input::enter_room` path used by the Rooms directory.
+- `b1`, `b2`, `b3`, and `b4` enter those rooms through the same `rooms::input::enter_room` path used by the Rooms directory.
 
 `App::sync_visible_chat_room()` is the read/tail-load bridge. It computes the visible chat room from Home/Dashboard or Rooms, stores it in `ChatState`, marks it read, and requests a tail on change. Call it after screen, selected room/synthetic entry, room favorite, or active-room changes.
 
