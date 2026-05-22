@@ -41,8 +41,6 @@ const SQ_CHECK: Color = Color::Rgb(146, 56, 44);
 // cramped panes. Ivory for White, onyx for Black.
 const PIECE_WHITE: Color = Color::Rgb(250, 246, 236);
 const PIECE_BLACK: Color = Color::Rgb(26, 24, 26);
-const PIECE_WHITE_BACK: Color = Color::Rgb(56, 45, 36);
-const PIECE_BLACK_BACK: Color = Color::Rgb(234, 214, 174);
 const MARKER: Color = Color::Rgb(244, 212, 122);
 
 const INFO_SIDEBAR_WIDTH: u16 = 28;
@@ -329,53 +327,13 @@ fn push_cell_spans(
         None => (" ".repeat(cw), MARKER),
     };
 
-    if let Some(piece) = piece {
-        push_piece_cell_spans(spans, &cell, piece.color, bg, fg);
-    } else if legal.contains(&index) {
+    if piece.is_none() && !legal.contains(&index) {
+        spans.push(Span::styled(cell, bg_style));
+    } else {
         spans.push(Span::styled(
             cell,
             Style::default().bg(bg).fg(fg).add_modifier(Modifier::BOLD),
         ));
-    } else {
-        spans.push(Span::styled(cell, bg_style));
-    }
-}
-
-fn push_piece_cell_spans(
-    spans: &mut Vec<Span<'static>>,
-    cell: &str,
-    color: ChessColor,
-    square_bg: Color,
-    piece_fg: Color,
-) {
-    let piece_style = Style::default()
-        .bg(piece_backdrop(color))
-        .fg(piece_fg)
-        .add_modifier(Modifier::BOLD);
-    let empty_style = Style::default().bg(square_bg);
-
-    let mut buf = String::new();
-    let mut current_style = None;
-    for ch in cell.chars() {
-        let style = if ch == ' ' { empty_style } else { piece_style };
-        if current_style.is_some_and(|current| current == style) {
-            buf.push(ch);
-            continue;
-        }
-        if let Some(style) = current_style.replace(style) {
-            spans.push(Span::styled(std::mem::take(&mut buf), style));
-        }
-        buf.push(ch);
-    }
-    if let Some(style) = current_style {
-        spans.push(Span::styled(buf, style));
-    }
-}
-
-fn piece_backdrop(color: ChessColor) -> Color {
-    match color {
-        ChessColor::White => PIECE_WHITE_BACK,
-        ChessColor::Black => PIECE_BLACK_BACK,
     }
 }
 
