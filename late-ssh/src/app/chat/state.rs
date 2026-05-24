@@ -279,6 +279,7 @@ pub struct ChatState {
     requested_settings_modal: bool,
     requested_mod_modal: bool,
     requested_icon_picker: bool,
+    requested_petname: Option<PetnameRequest>,
     requested_open_profile: Option<(Uuid, String)>,
     requested_quit: bool,
     requested_audio_url: Option<String>,
@@ -428,6 +429,7 @@ impl ChatState {
             requested_settings_modal: false,
             requested_mod_modal: false,
             requested_icon_picker: false,
+            requested_petname: None,
             requested_open_profile: None,
             requested_quit: false,
             requested_audio_url: None,
@@ -655,6 +657,10 @@ impl ChatState {
 
     pub fn take_requested_mod_modal(&mut self) -> bool {
         std::mem::take(&mut self.requested_mod_modal)
+    }
+
+    pub(crate) fn take_requested_petname(&mut self) -> Option<PetnameRequest> {
+        self.requested_petname.take()
     }
 
     pub fn take_requested_icon_picker(&mut self) -> bool {
@@ -1459,6 +1465,21 @@ impl ChatState {
             self.clear_composer_after_submit();
             self.requested_icon_picker = true;
             return None;
+        }
+
+        if let Some(parsed) = parse_petname_command(&body) {
+            self.clear_composer_after_submit();
+            match parsed {
+                PetnameParse::Invalid => {
+                    return Some(Banner::error(
+                        "Usage: /petname <name> (up to 24 chars), or /petname clear",
+                    ));
+                }
+                PetnameParse::Request(request) => {
+                    self.requested_petname = Some(request);
+                    return None;
+                }
+            }
         }
 
         if let Some(target) = parse_user_command(&body, "/profile") {
@@ -3349,6 +3370,49 @@ fn moderation_server_toast(event: &ModerationEvent) -> Option<String> {
     }
 }
 
+/// A parsed `/petname` command, drained by `handle_post_submit_requests`
+/// (which has the `App` access needed to update the cat).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PetnameRequest {
+    /// `/petname` with no argument — show the current name.
+    Show,
+    /// `/petname <name>` — set it. Holds the normalised name.
+    Set(String),
+    /// `/petname clear` — remove the name.
+    Clear,
+}
+
+/// Outcome of parsing a `/petname` line.
+pub(crate) enum PetnameParse {
+    Request(PetnameRequest),
+    /// `/petname` with an argument that normalised to nothing.
+    Invalid,
+}
+
+/// Parse a `/petname` command. Returns `None` if the input isn't a
+/// `/petname` command so `/petnames` (typo) still falls through to the
+/// unknown-command handler.
+pub(crate) fn parse_petname_command(input: &str) -> Option<PetnameParse> {
+    let rest = input.trim().strip_prefix("/petname")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let arg = rest.trim();
+    if arg.is_empty() {
+        return Some(PetnameParse::Request(PetnameRequest::Show));
+    }
+    if matches!(
+        arg.to_ascii_lowercase().as_str(),
+        "clear" | "remove" | "none" | "off"
+    ) {
+        return Some(PetnameParse::Request(PetnameRequest::Clear));
+    }
+    match late_core::models::cat::normalize_cat_name(arg) {
+        Some(name) => Some(PetnameParse::Request(PetnameRequest::Set(name))),
+        None => Some(PetnameParse::Invalid),
+    }
+}
+
 /// Parse `/dm @username` or `/dm username` from the composer text.
 /// Returns the target username if the input matches.
 fn parse_dm_command(input: &str) -> Option<&str> {
@@ -3538,6 +3602,7 @@ const CHAT_COMMANDS: &[(&str, &str)] = &[
     ("members", "room members"),
     ("music", "music help"),
     ("paste-image", "upload image from CLI clipboard"),
+    ("petname", "name your cat"),
     ("private", "new private room"),
     ("profile", "view user profile"),
     ("public", "open public room for everyone"),
@@ -3979,6 +4044,7 @@ mod tests {
         assert_eq!(ranked_names, sorted);
         assert!(ranked.iter().all(|m| m.prefix == "/"));
         assert!(ranked.iter().all(|m| m.description.is_some()));
+        assert!(ranked_names.contains(&"petname"));
         assert!(!ranked_names.contains(&"create-room"));
         assert!(!ranked_names.contains(&"delete-room"));
         assert!(!ranked_names.contains(&"fill-room"));
@@ -4750,6 +4816,43 @@ mod tests {
         assert_eq!(unknown_slash_command("hello"), None);
         assert_eq!(unknown_slash_command("// not a command"), None);
         assert_eq!(unknown_slash_command("/bin/ls\nstill talking"), None);
+    }
+
+    fn petname_request(input: &str) -> Option<PetnameRequest> {
+        match parse_petname_command(input) {
+            Some(PetnameParse::Request(r)) => Some(r),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn parse_petname_show_set_clear() {
+        assert_eq!(petname_request("/petname"), Some(PetnameRequest::Show));
+        assert_eq!(petname_request("/petname    "), Some(PetnameRequest::Show));
+        assert_eq!(
+            petname_request("/petname Whiskers"),
+            Some(PetnameRequest::Set("Whiskers".to_string()))
+        );
+        // Inner whitespace runs collapse to a single space.
+        assert_eq!(
+            petname_request("/petname Sir   Hopkins"),
+            Some(PetnameRequest::Set("Sir Hopkins".to_string()))
+        );
+        for word in ["clear", "remove", "none", "off", "CLEAR"] {
+            assert_eq!(
+                petname_request(&format!("/petname {word}")),
+                Some(PetnameRequest::Clear),
+                "{word}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_petname_ignores_non_petname_lines() {
+        assert!(parse_petname_command("/petnames").is_none());
+        assert!(parse_petname_command("/petnamer").is_none());
+        assert!(parse_petname_command("rename my pet").is_none());
+        assert!(parse_petname_command("/dm @alice").is_none());
     }
 
     #[test]

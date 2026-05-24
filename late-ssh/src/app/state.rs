@@ -655,6 +655,7 @@ impl App {
                     last_played: None,
                     last_groomed: None,
                     last_treated: None,
+                    name: None,
                 },
             )
         };
