@@ -380,6 +380,7 @@ Nix flake outputs:
 - `packages.${system}.late` builds only the `late-cli` binary and sets `mainProgram = "late"`
 - `apps.${system}.late` runs that CLI package for `nix run ...#late`
 - `packages.${system}.late-sh` remains the default multi-binary package with `mainProgram = "late-ssh"`
+- On Linux, the Nix package builds with WebKitGTK 4.1, GTK3, ALSA, glib-networking, and GStreamer base/good/bad/ugly/libav plugins. The installed `late` binary is wrapped with `GST_PLUGIN_SYSTEM_PATH_1_0` and `GIO_EXTRA_MODULES` so the embedded YouTube helper can find media plugins and GIO/TLS modules at runtime.
 
 ---
 
