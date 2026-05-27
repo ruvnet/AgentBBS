@@ -229,8 +229,9 @@ struct DrawContext<'a> {
 
 impl App {
     pub fn render(&mut self) -> anyhow::Result<Vec<u8>> {
-        // Clear last-rendered composer rect so screens that don't draw the
-        // chat composer don't leave a stale hit-test target behind.
+        // Clear last-frame mouse hit-test rects so screens that don't draw
+        // them this frame can't leave a stale target behind.
+        self.last_dashboard_activity_rect.set(None);
         self.chat.last_composer_rect.set(None);
 
         // Init theme and layout sync — preview settings-modal draft live while open.
@@ -408,6 +409,8 @@ impl App {
                 inline_images: &self.chat.inline_image_cache,
                 composer_rect_slot: Some(&self.chat.last_composer_rect),
             },
+            activity_scroll: self.dashboard_activity_scroll,
+            activity_rect_slot: Some(&self.last_dashboard_activity_rect),
         };
         let news_view = chat::news::ui::ArticleListView {
             articles: self.chat.news.displayed_articles(),
