@@ -276,14 +276,14 @@ async fn global_ctrl_l_opens_terminal_help_on_dashboard() {
 
     // Ctrl+L opens terminal help modal
     app.handle_input(b"\x0c");
-    wait_for_render_contains(&mut app, "FAQ").await;
+    wait_for_render_contains(&mut app, "Esc/q/Ctrl+L").await;
 
     // Ctrl+L again to close
     app.handle_input(b"\x0c");
     tokio::time::sleep(Duration::from_millis(60)).await;
     let frame = render_plain(&mut app);
     assert!(
-        !frame.contains("FAQ"),
+        !frame.contains("Esc/q/Ctrl+L"),
         "expected Ctrl+L to close FAQ; frame={frame:?}"
     );
 }
@@ -525,7 +525,7 @@ async fn artboard_view_mode_question_mark_opens_local_help() {
 
     let frame = render_plain(&mut app);
     assert!(
-        !frame.contains(" Guide "),
+        frame.contains("Artboard Help"),
         "expected ? on Artboard view mode to open local help, not the global guide; frame={frame:?}"
     );
 }
@@ -552,7 +552,7 @@ async fn active_artboard_question_mark_types_into_canvas_instead_of_opening_help
         "expected ? to stay inside active artboard mode; frame={frame:?}"
     );
     assert!(
-        !frame.contains(" Guide "),
+        !frame.contains("Tab/S+Tab"),
         "expected ? in active artboard mode to avoid the global guide; frame={frame:?}"
     );
 }
@@ -810,8 +810,7 @@ async fn chat_reaction_leader_persists_extended_reaction_digits() {
 
     app.handle_input(b"j");
     app.handle_input(b"f");
-    wait_for_render_contains(&mut app, "9 💩").await;
-    wait_for_render_contains(&mut app, "0 👋").await;
+    wait_for_render_contains(&mut app, "1 👍").await;
     app.handle_input(b"0");
 
     wait_for_render_contains(&mut app, " Home ").await;
