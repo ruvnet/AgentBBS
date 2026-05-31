@@ -806,6 +806,7 @@ async fn chat_reaction_leader_persists_extended_reaction_digits() {
     .expect("create message");
 
     let mut app = make_app(test_db.db.clone(), viewer.id, "f-react-extended-flow-it");
+    app.resize(160, 32).expect("resize test terminal");
     wait_for_render_contains(&mut app, "extended reaction target").await;
 
     app.handle_input(b"j");
