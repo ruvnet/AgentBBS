@@ -31,6 +31,8 @@ use ws::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_rustls_crypto_provider();
+
     let raw_args: Vec<String> = env::args().skip(1).collect();
     match raw_args.first().map(String::as_str) {
         Some("webview-spike") => return run_webview_spike_subcommand(&raw_args[1..]),
@@ -111,6 +113,10 @@ async fn main() -> Result<()> {
     ssh_exit.ensure_success()?;
 
     Ok(())
+}
+
+fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 fn run_webview_spike_subcommand(args: &[String]) -> Result<()> {

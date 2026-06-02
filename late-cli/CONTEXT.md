@@ -119,6 +119,7 @@ Logging:
 - With `--verbose` and no `RUST_LOG`, the filter is `warn,symphonia=error,late=debug`.
 - If `RUST_LOG` is set, it wins through `tracing_subscriber::EnvFilter`.
 - In an interactive terminal, enabled tracing goes to `LATE_LOG_FILE`/the default CLI log path and startup prints that path once before the TUI takes over. Set `LATE_LOG_STDERR=1` for old stderr behavior.
+- `main()` installs Rustls' `ring` crypto provider before any config, HTTP, WebSocket, or LiveKit setup. This is required because the CLI dependency graph can contain both Rustls providers (`aws-lc-rs` from `reqwest` defaults and `ring` from LiveKit/WebSocket TLS), and Rustls panics if no process-level provider is selected explicitly.
 
 Local helper scripts use local override env vars:
 - `LATE_LOCAL_SSH_PORT`, falling back to `.env` `LATE_SSH_PORT` or `2222`

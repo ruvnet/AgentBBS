@@ -3792,6 +3792,7 @@ dependencies = [
  "ringbuf",
  "russh",
  "rustfft",
+ "rustls",
  "serde",
  "serde_json",
  "shlex 1.3.0",
