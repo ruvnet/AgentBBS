@@ -230,6 +230,7 @@ struct DrawContext<'a> {
     hub_state: &'a crate::app::hub::state::HubState,
     quest_state: &'a crate::app::hub::dailies::state::QuestState,
     shop_state: &'a crate::app::hub::shop::state::ShopState,
+    hub_admin_state: &'a crate::app::hub::admin::state::AdminState,
     mod_modal_state: &'a mod_modal::state::ModModalState,
     show_profile_modal: bool,
     profile_modal_state: &'a profile_modal::state::ProfileModalState,
@@ -751,6 +752,7 @@ impl App {
                         hub_state: &self.hub_state,
                         quest_state: &self.quest_state,
                         shop_state: &self.shop_state,
+                        hub_admin_state: &self.hub_admin_state,
                         mod_modal_state: &self.mod_modal_state,
                         show_profile_modal: self.show_profile_modal,
                         profile_modal_state: &self.profile_modal_state,
@@ -1169,9 +1171,11 @@ impl App {
                     state: ctx.hub_state,
                     quest_state: ctx.quest_state,
                     shop_state: ctx.shop_state,
+                    admin_state: ctx.hub_admin_state,
                     leaderboard: ctx.leaderboard,
                     user_id: ctx.user_id,
                     pet_species: ctx.pet_species,
+                    is_admin: ctx.is_admin,
                 },
             );
         }

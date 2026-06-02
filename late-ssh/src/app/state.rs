@@ -390,6 +390,7 @@ pub struct App {
     /// Hub Shop
     pub(crate) quest_state: crate::app::hub::dailies::state::QuestState,
     pub(crate) shop_state: crate::app::hub::shop::state::ShopState,
+    pub(crate) hub_admin_state: crate::app::hub::admin::state::AdminState,
     pub(crate) ultimate_service: crate::app::ultimates::UltimateService,
     pub(crate) ultimate_state: crate::app::ultimates::UltimateState,
 
@@ -772,6 +773,8 @@ impl App {
             config.shop_service.clone(),
             config.shop_snapshot_rx,
         );
+        let hub_admin_state =
+            crate::app::hub::admin::state::AdminState::new(config.quest_service.clone());
         let aquarium_area = aquarium_area_for_terminal(cols, rows);
         let mut aquarium_state =
             crate::app::hub::aquarium::state::AquariumState::default_for_area(aquarium_area)?;
@@ -892,6 +895,7 @@ impl App {
             show_cat_modal: false,
             quest_state,
             shop_state,
+            hub_admin_state,
             ultimate_service: config.ultimate_service,
             ultimate_state: crate::app::ultimates::UltimateState::with_cooldowns(
                 config.initial_ultimate_cooldowns,
@@ -1151,6 +1155,7 @@ impl App {
             self.pet_state.cancel_play();
             self.show_cat_modal = false;
         }
+        self.hub_state.ensure_visible_tab(self.is_admin);
     }
 
     pub fn set_artboard_banned_for_tests(&mut self, banned: bool) {

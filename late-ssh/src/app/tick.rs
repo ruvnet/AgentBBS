@@ -560,6 +560,11 @@ impl App {
             self.banner = Some(banner);
         }
 
+        let admin_tick = self.hub_admin_state.tick(self.is_admin);
+        if let Some(banner) = admin_tick.banner {
+            self.banner = Some(banner);
+        }
+
         self.ultimate_state.tick();
         if shop_tick.snapshot_changed && self.shop_state.is_loaded() {
             let equipped_badge = self.shop_state.equipped_chat_badge();
