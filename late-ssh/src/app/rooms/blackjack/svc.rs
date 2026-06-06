@@ -1,5 +1,5 @@
 use std::{
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
@@ -9,14 +9,17 @@ use uuid::Uuid;
 use crate::app::{
     activity::{event::ActivityGame, publisher::ActivityPublisher},
     games::{cards::PlayingCard, chips::svc::ChipService},
-    rooms::blackjack::{
-        player::{BlackjackPlayerDirectory, BlackjackPlayerInfo},
-        settings::BlackjackTableSettings,
-        state::{
-            Bet, BlackjackSeat, BlackjackSnapshot, MAX_SEATS, Outcome, Phase,
-            SETTLEMENT_MIN_VIEW_MS, SeatAction, SeatPhase, Shoe, can_double, dealer_must_hit,
-            is_bust, is_natural_blackjack, payout_credit, score, settle,
+    rooms::{
+        blackjack::{
+            player::{BlackjackPlayerDirectory, BlackjackPlayerInfo},
+            settings::BlackjackTableSettings,
+            state::{
+                Bet, BlackjackSeat, BlackjackSnapshot, MAX_SEATS, Outcome, Phase,
+                SETTLEMENT_MIN_VIEW_MS, SeatAction, SeatPhase, Shoe, can_double, dealer_must_hit,
+                is_bust, is_natural_blackjack, payout_credit, score, settle,
+            },
         },
+        svc::RoomsService,
     },
 };
 
@@ -34,6 +37,8 @@ pub struct BlackjackService {
     snapshot_rx: watch::Receiver<BlackjackSnapshot>,
     event_tx: broadcast::Sender<BlackjackEvent>,
     activity: ActivityPublisher,
+    rooms_service: RoomsService,
+    room_in_round: Arc<AtomicBool>,
     table: Arc<Mutex<SharedTableState>>,
 }
 
@@ -195,6 +200,7 @@ impl BlackjackService {
         player_directory: BlackjackPlayerDirectory,
         event_tx: broadcast::Sender<BlackjackEvent>,
         activity: ActivityPublisher,
+        rooms_service: RoomsService,
     ) -> Self {
         Self::new_with_settings(
             room_id,
@@ -203,6 +209,7 @@ impl BlackjackService {
             event_tx,
             activity,
             BlackjackTableSettings::default(),
+            rooms_service,
         )
     }
 
@@ -213,6 +220,7 @@ impl BlackjackService {
         event_tx: broadcast::Sender<BlackjackEvent>,
         activity: ActivityPublisher,
         settings: BlackjackTableSettings,
+        rooms_service: RoomsService,
     ) -> Self {
         let table = SharedTableState::new(settings);
         let initial_snapshot = table.snapshot();
@@ -225,6 +233,8 @@ impl BlackjackService {
             snapshot_rx,
             event_tx,
             activity,
+            rooms_service,
+            room_in_round: Arc::new(AtomicBool::new(false)),
             table: Arc::new(Mutex::new(table)),
         }
     }
@@ -1081,6 +1091,12 @@ impl BlackjackService {
 
     fn publish_snapshot_locked(&self, table: &SharedTableState) {
         let _ = self.snapshot_tx.send(table.snapshot());
+        self.sync_room_status(table.round_active());
+    }
+
+    fn sync_room_status(&self, in_round: bool) {
+        self.rooms_service
+            .sync_room_status_task(self.room_id, self.room_in_round.clone(), in_round);
     }
 }
 
@@ -1388,6 +1404,17 @@ impl SharedTableState {
         self.phase == Phase::PlayerTurn
             && self.action_deadline.is_some()
             && self.action_countdown_id == countdown_id
+    }
+
+    fn round_active(&self) -> bool {
+        match self.phase {
+            Phase::Betting => self
+                .seats
+                .iter()
+                .any(|seat| seat.bet.is_some() || seat.pending_bet.is_some()),
+            Phase::BetPending | Phase::PlayerTurn | Phase::DealerTurn => true,
+            Phase::Settling => false,
+        }
     }
 
     fn action_countdown_secs(&self) -> Option<u64> {
