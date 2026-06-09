@@ -602,7 +602,7 @@ impl App {
 
         let activity =
             seed_activity_from_history(config.initial_activity, config.activity_feed_rx.as_mut());
-        let dashboard_room_joins =
+        let mut dashboard_room_joins =
             seed_room_joins_from_history(config.initial_room_joins, config.room_join_rx.as_mut());
 
         let shared = SharedBuffer::default();
@@ -713,6 +713,10 @@ impl App {
         let nes_cabinet_state = crate::app::arcade::nes_cabinet::state::State::new();
         let rooms_snapshot_rx = config.rooms_service.subscribe_snapshot();
         let rooms_snapshot = rooms_snapshot_rx.borrow().clone();
+        crate::app::dashboard::state::seed_persisted_room_joins_from_rooms(
+            &mut dashboard_room_joins,
+            &rooms_snapshot,
+        );
         let rooms_event_rx = config.rooms_service.subscribe_events();
         let dartboard_server = config.dartboard_server.clone();
         let dartboard_provenance = config.dartboard_provenance.clone();

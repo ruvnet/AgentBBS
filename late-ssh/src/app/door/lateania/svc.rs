@@ -3342,7 +3342,7 @@ mod tests {
                 .log
                 .iter()
                 .any(|line| line.kind == LogKind::Travel
-                    && line.text == "Arrived at Embergate - Gilded Flagon."),
+                    && line.text == "Arrived at Embergate - The Gilded Flagon."),
             "movement should leave a compact room-visit breadcrumb"
         );
     }
