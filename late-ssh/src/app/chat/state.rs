@@ -3635,15 +3635,13 @@ impl ChatState {
                     }
                     // PollUpdated fires for votes too; only a previously
                     // unseen poll id in a room we're a member of is a fresh
-                    // /poll start worth notifying about.
+                    // /poll start worth notifying about. The author is
+                    // notified too, doubling as a delivery check.
                     let is_new_poll = self
                         .active_polls
                         .get(&room_id)
                         .is_none_or(|existing| existing.poll.id != poll.poll.id);
-                    if is_new_poll
-                        && self.user_id != actor_user_id
-                        && self.rooms.iter().any(|(room, _)| room.id == room_id)
-                    {
+                    if is_new_poll && self.rooms.iter().any(|(room, _)| room.id == room_id) {
                         self.notifier
                             .push(Notification::poll_started(&poll.poll.question));
                     }
