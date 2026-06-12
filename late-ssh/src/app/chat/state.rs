@@ -378,6 +378,9 @@ pub struct ChatState {
     overlay: Option<Overlay>,
     news_modal: Option<NewsModalState>,
     image_modal: Option<ImageModalState>,
+    /// Cells the open image modal can devote to an image, reported back from
+    /// the previous frame's draw. Sixel fetches encode to fit this.
+    image_modal_capacity: Option<(u16, u16)>,
     pending_reaction_owners_message_id: Option<Uuid>,
     pub(crate) unread_counts: HashMap<Uuid, i64>,
     pending_read_rooms: HashSet<Uuid>,
@@ -565,6 +568,7 @@ impl ChatState {
             overlay: None,
             news_modal: None,
             image_modal: None,
+            image_modal_capacity: None,
             pending_reaction_owners_message_id: None,
             unread_counts: HashMap::new(),
             pending_read_rooms: HashSet::new(),
@@ -839,6 +843,13 @@ impl ChatState {
             self.terminal_image_failed.remove(&modal.message_id);
         }
         self.image_modal = None;
+        self.image_modal_capacity = None;
+    }
+
+    pub(crate) fn set_image_modal_capacity(&mut self, capacity: Option<(u16, u16)>) {
+        if let Some(capacity) = capacity {
+            self.image_modal_capacity = Some(capacity);
+        }
     }
 
     pub(crate) fn news_modal_url(&self) -> Option<&str> {
@@ -2695,10 +2706,29 @@ impl ChatState {
             return;
         };
         let msg_id = modal.message_id;
-        if self
-            .terminal_image_cache
-            .get(&msg_id)
-            .is_some_and(|image| image.supports_protocol(protocol))
+        // Sixel has no terminal-side scaling, so the encode must fit the
+        // modal's image area or the payload is dropped at draw time. The
+        // capacity is reported back from the previous frame's draw; until it
+        // arrives (one frame after the modal opens), hold off fetching.
+        let sixel = protocol == crate::app::files::terminal_image::TerminalImageProtocol::Sixel;
+        let (max_cols, max_rows) = if sixel {
+            let Some((cap_cols, cap_rows)) = self.image_modal_capacity else {
+                return;
+            };
+            (
+                TERMINAL_IMAGE_MAX_COLS.min(u32::from(cap_cols)),
+                TERMINAL_IMAGE_MAX_ROWS.min(u32::from(cap_rows)),
+            )
+        } else {
+            (TERMINAL_IMAGE_MAX_COLS, TERMINAL_IMAGE_MAX_ROWS)
+        };
+        let cached_fits = self.terminal_image_cache.get(&msg_id).is_some_and(|image| {
+            image.supports_protocol(protocol)
+                && (!sixel
+                    || (u32::from(image.display_cols) <= max_cols
+                        && u32::from(image.display_rows) <= max_rows))
+        });
+        if cached_fits
             || self.terminal_image_requested.contains(&msg_id)
             || self.terminal_image_failed.contains(&msg_id)
         {
@@ -2714,10 +2744,7 @@ impl ChatState {
         self.track_inline_image_id(msg_id);
         tokio::spawn(async move {
             let result = crate::app::files::terminal_image::fetch_terminal_image(
-                url,
-                TERMINAL_IMAGE_MAX_COLS,
-                TERMINAL_IMAGE_MAX_ROWS,
-                protocol,
+                url, max_cols, max_rows, protocol,
             )
             .await
             .map_err(|e| e.to_string());

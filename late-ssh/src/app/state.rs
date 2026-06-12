@@ -25,10 +25,10 @@ use crate::{
     app::audio::{client_state::ClientAudioState, viz::Visualizer},
     app::files::inline_image::InlineImageSymbolMode,
     app::files::terminal_image::{
-        TerminalImageProtocol, TerminalImageRenderState, iterm2_capabilities_probe,
-        kitty_cleanup_commands, protocol_from_env_hint, protocol_from_term,
-        protocol_from_terminal_features, protocol_from_xtversion, term_disables_terminal_images,
-        terminal_image_cleanup_commands, terminal_string_terminator,
+        TerminalImageProtocol, TerminalImageRenderState, da1_probe, iterm2_capabilities_probe,
+        kitty_cleanup_commands, protocol_from_device_attributes, protocol_from_env_hint,
+        protocol_from_term, protocol_from_terminal_features, protocol_from_xtversion,
+        term_disables_terminal_images, terminal_image_cleanup_commands, terminal_string_terminator,
     },
     app::{
         chat,
@@ -1333,6 +1333,12 @@ impl App {
     }
 
     pub(crate) fn apply_xtversion_reply(&mut self, value: &str) {
+        tracing::trace!(
+            value,
+            protocol = ?protocol_from_xtversion(value),
+            images_disabled = self.terminal_images_disabled,
+            "terminal xtversion reply"
+        );
         self.apply_inline_image_symbol_mode(InlineImageSymbolMode::from_identity(value));
         if self.terminal_images_disabled {
             return;
@@ -1343,10 +1349,38 @@ impl App {
     }
 
     pub(crate) fn apply_terminal_capabilities(&mut self, value: &str) {
+        tracing::trace!(
+            value,
+            protocol = ?protocol_from_terminal_features(value),
+            images_disabled = self.terminal_images_disabled,
+            "terminal capabilities reply"
+        );
         if self.terminal_images_disabled {
             return;
         }
         if let Some(protocol) = protocol_from_terminal_features(value) {
+            self.terminal_image_protocol = Some(protocol);
+        }
+    }
+
+    pub(crate) fn apply_primary_device_attributes(&mut self, attrs: &[u16]) {
+        tracing::trace!(
+            ?attrs,
+            current_protocol = ?self.terminal_image_protocol,
+            images_disabled = self.terminal_images_disabled,
+            "terminal DA1 reply"
+        );
+        if self.terminal_images_disabled {
+            return;
+        }
+        // DA1 sixel is the weakest protocol signal: terminals like WezTerm
+        // advertise sixel here while supporting richer iTerm2 graphics, so
+        // never displace a protocol detected from TERM, env hints, XTVERSION,
+        // or the iTerm2 capabilities reply.
+        if self.terminal_image_protocol.is_some() {
+            return;
+        }
+        if let Some(protocol) = protocol_from_device_attributes(attrs) {
             self.terminal_image_protocol = Some(protocol);
         }
     }
@@ -1677,6 +1711,9 @@ impl App {
         buf.extend_from_slice(b"\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?2004h");
         buf.extend_from_slice(&crate::app::files::terminal_image::xtversion_probe());
         buf.extend_from_slice(&iterm2_capabilities_probe());
+        // DA1 last: nearly every terminal answers it, and replies arrive in
+        // probe order, so the richer protocol replies above get first claim.
+        buf.extend_from_slice(&da1_probe());
         buf
     }
 
