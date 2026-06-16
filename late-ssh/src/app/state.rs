@@ -238,6 +238,11 @@ pub struct SessionConfig {
 
     /// Session / connection
     pub web_url: String,
+    /// Rebels in the Sky door-game backend (from the global Config).
+    pub rebels_enabled: bool,
+    pub rebels_host: String,
+    pub rebels_port: u16,
+    pub rebels_secret: String,
     pub session_token: String,
     pub session_registry: Option<SessionRegistry>,
     pub paired_client_registry: Option<PairedClientRegistry>,
@@ -425,6 +430,19 @@ pub struct App {
     pub(crate) door_delete_confirm: bool,
     pub(crate) lateania_service: crate::app::door::lateania::svc::LateaniaService,
     pub(crate) lateania_state: Option<crate::app::door::lateania::state::State>,
+    pub(crate) rebels_state: Option<crate::app::door::rebels::state::State>,
+    /// Per-session TERM string (from the PTY request), used to size the rebels
+    /// PTY.
+    pub(crate) rebels_term: String,
+    /// Rebels in the Sky backend config (from the global Config).
+    pub(crate) rebels_enabled: bool,
+    pub(crate) rebels_host: String,
+    pub(crate) rebels_port: u16,
+    pub(crate) rebels_secret: String,
+    /// Render-loop wakeup, set by the active transport. Threaded into the rebels
+    /// proxy so new remote output repaints promptly. `None` in headless/test
+    /// paths (no render loop).
+    pub(crate) repaint_signal: Option<std::sync::Arc<crate::render_signal::RenderSignal>>,
     pub(crate) rooms_service: crate::app::rooms::svc::RoomsService,
     pub(crate) room_game_registry: crate::app::rooms::registry::RoomGameRegistry,
     pub(crate) rooms_selected_index: usize,
@@ -987,6 +1005,13 @@ impl App {
             door_delete_confirm: false,
             lateania_service: config.lateania_service,
             lateania_state: None,
+            rebels_state: None,
+            rebels_term: config.term.clone(),
+            rebels_enabled: config.rebels_enabled,
+            rebels_host: config.rebels_host,
+            rebels_port: config.rebels_port,
+            rebels_secret: config.rebels_secret,
+            repaint_signal: None,
             rooms_service: config.rooms_service,
             room_game_registry: config.room_game_registry,
             rooms_selected_index: 0,
@@ -1103,6 +1128,35 @@ impl App {
 
     pub(crate) fn leave_lateania(&mut self) {
         self.lateania_state = None;
+    }
+
+    /// Store the active transport's render-loop wakeup so the rebels proxy can
+    /// repaint promptly on new remote output.
+    pub(crate) fn set_repaint_signal(
+        &mut self,
+        signal: std::sync::Arc<crate::render_signal::RenderSignal>,
+    ) {
+        self.repaint_signal = Some(signal);
+    }
+
+    pub(crate) fn enter_rebels(&mut self) {
+        if self.rebels_state.is_some() {
+            return;
+        }
+        self.rebels_state = Some(crate::app::door::rebels::state::State::new(
+            self.user_id,
+            self.rebels_host.clone(),
+            self.rebels_port,
+            self.rebels_secret.clone(),
+            self.rebels_term.clone(),
+            self.rebels_enabled,
+            self.repaint_signal.clone(),
+        ));
+    }
+
+    fn leave_rebels(&mut self) {
+        // Dropping the State drops the proxy, which closes the outbound channel.
+        self.rebels_state = None;
     }
 
     pub(crate) fn activate_artboard_interaction(&mut self) -> bool {
@@ -1297,6 +1351,9 @@ impl App {
 
     pub(crate) fn set_screen(&mut self, screen: Screen) {
         if self.screen == screen {
+            if screen == Screen::Rebels {
+                self.enter_rebels();
+            }
             if screen == Screen::Artboard {
                 self.enter_dartboard();
             }
@@ -1329,6 +1386,11 @@ impl App {
             self.force_full_repaint();
         }
 
+        if self.screen == Screen::Rebels {
+            self.leave_rebels();
+            self.force_full_repaint();
+        }
+
         if self.screen == Screen::Pinstar {
             self.leave_pinstar();
             self.force_full_repaint();
@@ -1343,6 +1405,9 @@ impl App {
 
         if self.screen == Screen::Artboard {
             self.enter_dartboard();
+        }
+        if self.screen == Screen::Rebels {
+            self.enter_rebels();
         }
         if self.screen == Screen::Pinstar {
             self.enter_directory();
@@ -1443,6 +1508,16 @@ impl App {
     pub fn handle_input(&mut self, data: &[u8]) {
         if !data.is_empty() {
             self.bonsai_v2_activity_ticks_remaining = BONSAI_V2_ACTIVITY_WINDOW_TICKS;
+        }
+        // While the proxied rebels game is running, every byte (keys + mouse)
+        // goes straight to the remote; late.sh parses nothing. Exit is by
+        // quitting rebels itself (Esc/Ctrl-C), which closes the channel.
+        if self.screen == crate::app::common::primitives::Screen::Rebels
+            && let Some(state) = self.rebels_state.as_ref()
+            && state.is_running()
+        {
+            state.forward_input(data);
+            return;
         }
         crate::app::input::handle(self, data)
     }
