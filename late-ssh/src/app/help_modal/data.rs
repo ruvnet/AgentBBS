@@ -433,7 +433,20 @@ fn irc_help_lines() -> Vec<String> {
         "  Server password   paste that token into your IRC client's server password / PASS field",
         "  Nick              any configured nick is accepted, then locked to your late.sh username",
         "  Dev server        localhost:6667 with TLS off when running make start",
-        "  Production        use the configured IRC host/port; prefer TLS when available",
+        "  Production        irc.late.sh port 6697 with TLS/SSL enabled",
+        "  Verify TLS        keep certificate verification on when using irc.late.sh",
+        "",
+        "WeeChat quick setup",
+        "  /server add late irc.late.sh/6697",
+        "  /set irc.server.late.tls on",
+        "  /set irc.server.late.tls_verify on",
+        "  /set irc.server.late.password \"late-irc-...\"",
+        "  /connect late",
+        "",
+        "Connection troubleshooting",
+        "  IRC is raw TCP, so irc.late.sh must be DNS-only, not proxied.",
+        "  If hostname connects hang, check that DNS resolves to late.sh node IPs.",
+        "  Avoid pasting tokens in public logs or chat; reset the token if it leaks.",
         "",
         "Good Arch clients",
         "  WeeChat           terminal-native; pacman -S weechat",
@@ -1300,6 +1313,9 @@ mod tests {
         assert!(context.contains("Settings > Account > IRC access token"));
         assert!(context.contains("server password / PASS field"));
         assert!(context.contains("localhost:6667 with TLS off when running make start"));
+        assert!(context.contains("irc.late.sh port 6697 with TLS/SSL enabled"));
+        assert!(context.contains("/server add late irc.late.sh/6697"));
+        assert!(context.contains("IRC is raw TCP, so irc.late.sh must be DNS-only"));
         assert!(context.contains("Game-room chat is not exposed as IRC channels."));
         assert!(context.contains("Resetting a token shows the new value once"));
     }
