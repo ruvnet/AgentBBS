@@ -188,6 +188,8 @@ INSTANCE2_OVERRIDES = \
 CHECK_PACKAGES = -p late-cli -p late-core -p late-ssh -p late-web
 CHECK_CARGO_ENV = CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 CHECK_TEST_DATABASE_URL ?= host=127.0.0.1 port=$(LATE_PG_HOST_PORT) user=postgres password=postgres dbname=postgres
+CHECK_DB_START = docker compose -f docker-compose.yml up -d --wait postgres
+CHECK_DB_STOP = docker compose -f docker-compose.yml stop postgres
 
 .PHONY: .env-instance2
 .env-instance2:
@@ -203,18 +205,24 @@ keys:
 
 .PHONY: check-db
 check-db: .env
-	docker compose -f docker-compose.yml up -d --wait postgres
+	$(CHECK_DB_START)
 
 .PHONY: check
-check: check-db
-	cargo fmt $(CHECK_PACKAGES) -- --check
-	$(CHECK_CARGO_ENV) cargo clippy $(CHECK_PACKAGES) --all-targets --no-deps -- -D warnings
+check: .env
+	@set -e; \
+	trap 'status=$$?; $(CHECK_DB_STOP); exit $$status' EXIT; \
+	$(CHECK_DB_START); \
+	cargo fmt $(CHECK_PACKAGES) -- --check; \
+	$(CHECK_CARGO_ENV) cargo clippy $(CHECK_PACKAGES) --all-targets --no-deps -- -D warnings; \
 	TEST_DATABASE_URL="$(CHECK_TEST_DATABASE_URL)" $(CHECK_CARGO_ENV) cargo nextest run $(CHECK_PACKAGES) --all-targets --no-fail-fast
 
 .PHONY: checkci
-checkci: check-db
-	cargo fmt --all -- --check
-	$(CHECK_CARGO_ENV) cargo clippy --workspace --all-targets --features otel -- -D warnings
+checkci: .env
+	@set -e; \
+	trap 'status=$$?; $(CHECK_DB_STOP); exit $$status' EXIT; \
+	$(CHECK_DB_START); \
+	cargo fmt --all -- --check; \
+	$(CHECK_CARGO_ENV) cargo clippy --workspace --all-targets --features otel -- -D warnings; \
 	TEST_DATABASE_URL="$(CHECK_TEST_DATABASE_URL)" $(CHECK_CARGO_ENV) cargo nextest run --workspace --all-targets
 
 start: .env keys

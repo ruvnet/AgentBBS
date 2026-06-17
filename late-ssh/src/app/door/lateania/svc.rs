@@ -3883,11 +3883,16 @@ mod tests {
         let archdemon = boss_achievement_for("the Archdemon Mal'gareth")
             .expect("authored final boss should grant an achievement");
         assert_eq!(archdemon.reward_key, LATEANIA_ARCHDEMON_REWARD_KEY);
+        assert_eq!(archdemon.ledger_reason, LATEANIA_ARCHDEMON_LEDGER_REASON);
         assert_eq!(archdemon.award_category, LATEANIA_ARCHDEMON_AWARD_CATEGORY);
 
         let frontier_king = boss_achievement_for("the King Who Was Promised Nothing")
             .expect("last Frontier boss should grant an achievement");
         assert_eq!(frontier_king.reward_key, LATEANIA_FRONTIER_KING_REWARD_KEY);
+        assert_eq!(
+            frontier_king.ledger_reason,
+            LATEANIA_FRONTIER_KING_LEDGER_REASON
+        );
         assert_eq!(
             frontier_king.award_category,
             LATEANIA_FRONTIER_KING_AWARD_CATEGORY

@@ -260,8 +260,8 @@ Progression:
 - Mob kills grant XP, reduced gold, possible loot, and titles. Boss XP and Frontier quest XP/gold bounties are intentionally damped so boss chains do not skip too much of the level curve.
 - Boss title format is `Bane of ...`; lesser foes grant a derived `...bane` title.
 - Frontier boss kills complete their zone quest, award XP/gold, and grant `Champion of the <zone>`.
-- Defeating the authored final boss, the Archdemon Mal'gareth, pays a once-per-account 10,000 chip lifetime payout and grants the `LAD` profile-award badge.
-- Defeating the final Frontier boss, the King Who Was Promised Nothing, pays a once-per-account 20,000 chip lifetime payout and grants the `LFK` profile-award badge.
+- Defeating the authored final boss, the Archdemon Mal'gareth, pays a once-per-account 10,000 chip lifetime payout and grants the `LAD` profile-award badge; repeat kills can still grant normal in-world rewards but not the chip payout again.
+- Defeating the final Frontier boss, the King Who Was Promised Nothing, pays a once-per-account 20,000 chip lifetime payout and grants the `LFK` profile-award badge; repeat kills can still grant normal in-world rewards but not the chip payout again.
 - Every mob kill emits a Lateania activity win event. Final-boss kills route through lifetime reward templates; if the chip payout was already claimed, activity still records the defeat without the chip/badge detail.
 
 ---
