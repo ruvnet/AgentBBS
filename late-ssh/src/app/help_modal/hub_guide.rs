@@ -91,12 +91,14 @@ fn leaderboard_sections() -> Vec<GuideSection> {
         GuideSection {
             title: "Arcade Wins",
             body: vec![
-                "Counts daily Sudoku, Nonograms, Solitaire, Minesweeper, and Le Word.".to_string(),
+                "Counts daily Sudoku, Nonograms, Solitaire, Minesweeper, Le Word, and Rubik's Cube."
+                    .to_string(),
                 "Each completed daily adds monthly points:".to_string(),
                 "easy / draw-1  1 pt".to_string(),
                 "medium         3 pts".to_string(),
                 "hard / draw-3  5 pts".to_string(),
                 "Le Word daily  1 pt".to_string(),
+                "Rubik's Cube   3 pts".to_string(),
                 "More hard dailies across more games wins the board.".to_string(),
             ],
         },
@@ -124,10 +126,12 @@ fn arcade_sections() -> Vec<GuideSection> {
         GuideSection {
             title: "Arcade Overview",
             body: vec![
-                "The Arcade mixes daily puzzle runs with endless score chases.".to_string(),
+                "The Arcade mixes daily puzzle runs, daily challenges, and endless score chases."
+                    .to_string(),
                 "Open The Arcade with 2.".to_string(),
                 "High-score games: 2048, Lateris, Snake.".to_string(),
-                "Daily games: Sudoku, Nonograms, Minesweeper, Solitaire, Le Word.".to_string(),
+                "Daily games: Rubik's Cube, Sudoku, Nonograms, Minesweeper, Solitaire, Le Word."
+                    .to_string(),
                 "NES Cabinet runs bundled homebrew ROMs locally.".to_string(),
             ],
         },
@@ -161,6 +165,16 @@ fn arcade_sections() -> Vec<GuideSection> {
             body: vec![
                 "hjkl, WASD, or arrows steer.".to_string(),
                 "p pauses; r/n restarts.".to_string(),
+            ],
+        },
+        GuideSection {
+            title: "Rubik's Cube",
+            body: vec![
+                "Everyone gets the same UTC daily scramble.".to_string(),
+                "u/d/l/r/f/b turns a face clockwise.".to_string(),
+                "Uppercase turns the same face inverse.".to_string(),
+                "s or 0 resets today's scramble.".to_string(),
+                "v or any arrow rotates the view.".to_string(),
             ],
         },
         GuideSection {

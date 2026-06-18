@@ -13,6 +13,7 @@ use late_ssh::app::arcade::le_word::svc::LeWordService;
 use late_ssh::app::arcade::minesweeper::svc::MinesweeperService;
 use late_ssh::app::arcade::nonogram::state::Library as NonogramLibrary;
 use late_ssh::app::arcade::nonogram::svc::NonogramService;
+use late_ssh::app::arcade::rubiks_cube::svc::RubiksCubeService;
 use late_ssh::app::arcade::snake::svc::SnakeService;
 use late_ssh::app::arcade::solitaire::svc::SolitaireService;
 use late_ssh::app::arcade::sudoku::svc::SudokuService;
@@ -240,6 +241,7 @@ pub fn test_app_state(db: Db, config: Config) -> State {
     let tetris_service = LaterisService::new(db.clone());
     let snake_service = SnakeService::new(db.clone());
     let le_word_service = LeWordService::new(db.clone(), activity_tx.clone());
+    let rubiks_cube_service = RubiksCubeService::new(db.clone(), activity_tx.clone());
     let chip_service = ChipService::new(db.clone());
     let rooms_service = RoomsService::new(db.clone());
     let blackjack_player_directory = BlackjackPlayerDirectory::new(db.clone());
@@ -297,6 +299,7 @@ pub fn test_app_state(db: Db, config: Config) -> State {
         tetris_service,
         snake_service,
         le_word_service,
+        rubiks_cube_service,
         sudoku_service,
         nonogram_service,
         solitaire_service,
@@ -427,6 +430,7 @@ fn make_app_with_chat_service_and_permissions(
         initial_tetris_high_score: None,
         initial_snake_high_score: None,
         le_word_service: LeWordService::new(db.clone(), broadcast::channel::<ActivityEvent>(64).0),
+        rubiks_cube_service: RubiksCubeService::new(db.clone(), activity_tx.clone()),
         initial_le_word_daily_word: None,
         initial_le_word_game: None,
         sudoku_service: SudokuService::new(db.clone(), broadcast::channel::<ActivityEvent>(64).0),
@@ -566,6 +570,7 @@ pub fn make_app_with_paired_client(
         initial_tetris_high_score: None,
         initial_snake_high_score: None,
         le_word_service: LeWordService::new(db.clone(), broadcast::channel::<ActivityEvent>(64).0),
+        rubiks_cube_service: RubiksCubeService::new(db.clone(), activity_tx.clone()),
         initial_le_word_daily_word: None,
         initial_le_word_game: None,
         sudoku_service: SudokuService::new(db.clone(), broadcast::channel::<ActivityEvent>(64).0),

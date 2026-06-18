@@ -827,6 +827,7 @@ impl russh::server::Handler for ClientHandler {
             initial_2048_high_score,
             tetris_service: self.state.tetris_service.clone(),
             snake_service: self.state.snake_service.clone(),
+            rubiks_cube_service: self.state.rubiks_cube_service.clone(),
             initial_tetris_game,
             initial_snake_game,
             initial_tetris_high_score,

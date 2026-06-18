@@ -328,6 +328,7 @@ pub async fn build_session_config(state: &State, inputs: SessionBootstrapInputs)
         initial_2048_high_score,
         tetris_service: state.tetris_service.clone(),
         snake_service: state.snake_service.clone(),
+        rubiks_cube_service: state.rubiks_cube_service.clone(),
         initial_tetris_game,
         initial_snake_game,
         initial_tetris_high_score,
