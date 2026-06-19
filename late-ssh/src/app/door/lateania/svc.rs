@@ -2158,7 +2158,7 @@ impl WorldState {
             .iter()
             .any(|owned| owned == FRONTIER_GATE_TITLE)
         {
-            return "Defeat the Archdemon Mal'gareth before seeking the King beyond it."
+            return "Defeat the Archdemon Mal'gareth, then claim the three living-dark seals before seeking the King beyond it."
                 .to_string();
         }
         let missing: Vec<&str> = [
@@ -5200,6 +5200,13 @@ mod tests {
                 .iter()
                 .any(|line| line.text.contains("Archdemon Mal'gareth")),
             "gate should point the player at the authored final boss"
+        );
+        assert!(
+            s.players[&uid(1)]
+                .log
+                .iter()
+                .any(|line| line.text.contains("three living-dark seals")),
+            "gate should mention the full Frontier unlock chain"
         );
 
         s.players
