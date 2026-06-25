@@ -94,7 +94,14 @@ RUN sed -i "s|^/\* #define VAR_PLAYGROUND .*|#define VAR_PLAYGROUND \"${NETHACK_
     && make fetch-Lua \
     && make PREFIX=${NETHACK_PREFIX} HACKDIR=${NETHACK_HACKDIR} VARDIR=${NETHACK_VAR_PLAYGROUND} GAMEUID=root GAMEGRP=games all \
     && make PREFIX=${NETHACK_PREFIX} HACKDIR=${NETHACK_HACKDIR} VARDIR=${NETHACK_VAR_PLAYGROUND} GAMEUID=root GAMEGRP=games install \
+    # `make install` writes sysconf as 0600 root. HACKDIR is read-only at runtime
+    # and the host runs as the unprivileged `late` user, which must READ sysconf at
+    # startup -- otherwise nethack aborts with "Unable to open SYSCF_FILE." Make it
+    # world-readable (it holds only non-secret game sysconf). This is why the door
+    # worked in dev (runs as root) but failed in the prod pod (runs as late).
+    && chmod 0644 ${NETHACK_HACKDIR}/sysconf \
     && test -x ${NETHACK_HACKDIR}/nethack \
+    && [ "$(stat -c '%a' ${NETHACK_HACKDIR}/sysconf)" = "644" ] \
     && test -d ${NETHACK_VAR_PLAYGROUND}/save
 
 # ==============================================================================
