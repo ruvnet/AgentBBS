@@ -290,8 +290,14 @@ CMD ["/app/late-web-bin"]
 # .nethackrc HOME. LATE_NETHACK_BIN defaults to /usr/games/nethack.
 FROM runtime-base AS runtime-nethack
 USER root
+# libncursesw6: nethack's curses runtime. ncurses-term: the EXTENDED terminfo DB
+# (alacritty, rxvt, st, etc.) so clients on those terminals get native terminfo
+# rather than the xterm-256color fallback. Terminals that ship their own terminfo
+# (ghostty/kitty/wezterm) are still covered by the host's TERM fallback in
+# late-nethack (effective_term), since they are not in ncurses-term.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libncursesw6 \
+    ncurses-term \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/lib/late-nethack && chown late:late /var/lib/late-nethack
 COPY --from=nethack-build /var/games/nethack /var/games/nethack
