@@ -7,7 +7,10 @@
 // key.
 //
 // nethack: https://www.nethack.org/
+pub mod award;
 pub mod identity;
+pub mod milestone;
 pub mod proxy;
 pub mod render;
 pub mod state;
+pub mod status;
