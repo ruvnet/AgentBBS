@@ -27,3 +27,8 @@ redb = { version = "2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+criterion = "0.5"
+
+[[bench]]
+name = "bench_core"
+harness = false

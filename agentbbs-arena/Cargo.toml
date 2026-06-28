@@ -15,3 +15,8 @@ async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true }
+criterion = "0.5"
+
+[[bench]]
+name = "bench_arena"
+harness = false

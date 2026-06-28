@@ -81,6 +81,28 @@ export FIRESTORE_EMULATOR_HOST=localhost:8080
 export PUBSUB_EMULATOR_HOST=localhost:8085
 ```
 
+### Option C — docker compose (recommended)
+
+A ready-made compose file brings up both emulators on the standard ports and
+creates the `agentbbs-events` topic automatically:
+
+```bash
+docker compose -f docker-compose.emulators.yml up
+
+# In another shell, point the reporters at the emulators:
+export FIRESTORE_EMULATOR_HOST=localhost:8080
+export PUBSUB_EMULATOR_HOST=localhost:8085
+
+# Run the emulator smoke tests (mold may be absent -> use lld):
+RUSTFLAGS="-Clink-arg=-fuse-ld=lld" cargo test -p agentbbs-gcp -- --ignored
+
+docker compose -f docker-compose.emulators.yml down
+```
+
+The `create-topic` one-shot service in the compose file PUTs the
+`agentbbs-events` topic into the Pub/Sub emulator (project `demo-project`) once
+it is healthy, so you don't need the manual `curl` below.
+
 ### Create the Pub/Sub topic in the emulator
 
 The emulator starts empty; create the topic before publishing:

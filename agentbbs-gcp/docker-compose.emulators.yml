@@ -1,0 +1,79 @@
+# Local GCP emulators for agentbbs-gcp development.
+#
+# Brings up the Firestore and Pub/Sub emulators from the official
+# google-cloud-cli image, on the standard ports the Rust code expects:
+#
+#   Firestore : localhost:8080   (FIRESTORE_EMULATOR_HOST)
+#   Pub/Sub   : localhost:8085   (PUBSUB_EMULATOR_HOST)
+#
+# The project id is `demo-project` and the Pub/Sub topic is `agentbbs-events`
+# (DEFAULT_TOPIC), matching agentbbs-gcp/src/pubsub.rs.
+#
+# Quickstart:
+#
+#   docker compose -f docker-compose.emulators.yml up
+#
+#   # In another shell, point the reporters at the emulators:
+#   export FIRESTORE_EMULATOR_HOST=localhost:8080
+#   export PUBSUB_EMULATOR_HOST=localhost:8085
+#
+#   # Create the topic (the emulator starts empty):
+#   curl -s -X PUT \
+#     "http://localhost:8085/v1/projects/demo-project/topics/agentbbs-events"
+#
+#   # Run the emulator smoke tests (mold may be absent -> use lld):
+#   RUSTFLAGS="-Clink-arg=-fuse-ld=lld" cargo test -p agentbbs-gcp -- --ignored
+#
+#   docker compose -f docker-compose.emulators.yml down
+
+services:
+  firestore-emulator:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:latest
+    container_name: agentbbs-firestore-emulator
+    command: >-
+      gcloud beta emulators firestore start
+      --host-port=0.0.0.0:8080
+      --database-mode=firestore-native
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # The Firestore emulator answers a plain GET on its root once ready.
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  pubsub-emulator:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:latest
+    container_name: agentbbs-pubsub-emulator
+    command: >-
+      gcloud beta emulators pubsub start
+      --host-port=0.0.0.0:8085
+      --project=demo-project
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8085/v1/projects/demo-project/topics || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # One-shot helper that waits for the Pub/Sub emulator and creates the
+  # `agentbbs-events` topic so publishing works out of the box. Remove or skip
+  # with `docker compose ... up firestore-emulator pubsub-emulator` if you'd
+  # rather create the topic by hand.
+  create-topic:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:latest
+    container_name: agentbbs-create-topic
+    depends_on:
+      pubsub-emulator:
+        condition: service_healthy
+    environment:
+      PUBSUB_EMULATOR_HOST: "pubsub-emulator:8085"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        curl -s -X PUT
+        "http://pubsub-emulator:8085/v1/projects/demo-project/topics/agentbbs-events"
+        && echo "created topic agentbbs-events"
+    restart: "no"

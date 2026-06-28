@@ -1,0 +1,97 @@
+# cargo-deny configuration for the AgentBBS workspace.
+#
+# Run locally with:
+#   cargo deny check
+# (install once with `cargo install cargo-deny`).
+#
+# This config targets the cargo-deny 0.16+ schema. It gates security
+# advisories (RUSTSEC), license policy, banned/duplicate crates, and crate
+# sources. Keep it strict but realistic for this tree.
+
+[graph]
+# Check all targets the workspace actually builds for.
+all-features = false
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "wasm32-unknown-unknown" },
+]
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Security advisories — fail on any known RUSTSEC advisory or unmaintained crate.
+# ---------------------------------------------------------------------------
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# `deny` (the default in modern cargo-deny) on vulnerabilities/unmaintained.
+yanked = "deny"
+# Add RUSTSEC ids here (with a rationale) only when a fix is genuinely
+# unavailable and the path is unreachable.
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licenses — allow the permissive + source-available families this tree uses.
+# The workspace crates are FSL-1.1-Apache-2.0 (Functional Source License with an
+# Apache-2.0 future grant); dependencies are the usual MIT/Apache/BSD/etc mix.
+# ---------------------------------------------------------------------------
+[licenses]
+# SPDX confidence threshold for detecting a license from crate text.
+confidence-threshold = 0.8
+allow = [
+    # This workspace's own license + its future-grant license.
+    "FSL-1.1-Apache-2.0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    # Permissive families.
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    # Unicode data (used transitively by unicode-* / idna crates).
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    # MPL is file-level copyleft; widely accepted (e.g. webpki-roots data).
+    "MPL-2.0",
+]
+# Per-crate license clarifications can be added here if a crate's license text
+# is non-standard and trips the confidence threshold.
+exceptions = []
+
+[licenses.private]
+# Don't require license metadata on the workspace's own unpublished crates.
+ignore = true
+
+# ---------------------------------------------------------------------------
+# Bans — duplicate versions, wildcard deps, and explicitly disallowed crates.
+# ---------------------------------------------------------------------------
+[bans]
+# Multiple versions of the same crate are common in a large tree; warn rather
+# than fail so this stays usable, but surface them.
+multiple-versions = "warn"
+wildcard-dependencies = "warn"
+# Prefer the highest version when a crate is skipped/treed.
+highlight = "all"
+# Crates that must never appear (none for now).
+deny = []
+# Skip noise from crates that legitimately appear at multiple versions.
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources — only allow crates.io and explicitly trusted git sources.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
