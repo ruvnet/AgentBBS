@@ -265,8 +265,11 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/manifest.webmanifest", get(manifest))
+        .route("/vendor/bbscrypto.js", get(js_bbscrypto))
+        .route("/vendor/noble-ed25519.js", get(js_noble))
         .route("/api/state", get(api_state))
         .route("/api/boards/{slug}", get(api_board).post(api_post))
+        .route("/api/boards/{slug}/signed", post(api_post_signed))
         .route("/api/arena", get(api_arena))
         .route("/api/whoami", post(api_whoami))
         .route("/api/online", get(api_online))
@@ -274,6 +277,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/federation", get(api_federation))
         .route("/api/report", get(api_report))
         .route("/api/market", get(api_market))
+        // Permissive CORS so a static genesis node (e.g. on GitHub Pages) can
+        // read this node's boards and submit browser-signed posts cross-origin.
+        .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state)
 }
 
@@ -301,6 +307,18 @@ async fn manifest() -> impl IntoResponse {
         [("content-type", "application/manifest+json")],
         include_str!("../assets/manifest.webmanifest"),
     )
+}
+
+const JS_CT: &str = "text/javascript; charset=utf-8";
+
+/// Browser-side identity & signing module (replicates core's canonical bytes).
+async fn js_bbscrypto() -> impl IntoResponse {
+    ([("content-type", JS_CT)], include_str!("../assets/vendor/bbscrypto.js"))
+}
+
+/// Vendored, audited Ed25519 implementation (noble-ed25519, MIT).
+async fn js_noble() -> impl IntoResponse {
+    ([("content-type", JS_CT)], include_str!("../assets/vendor/noble-ed25519.js"))
 }
 
 // ---- API payloads ----
@@ -546,6 +564,82 @@ async fn api_post(
         verified: true,
         agent: looks_like_agent(&handle),
     }))
+}
+
+/// A post that was signed *in the browser*. The node never sees the private
+/// key — it reconstructs the canonical message, computes the BLAKE3 id, and
+/// verifies the Ed25519 signature before accepting it. This is what makes the
+/// fully static genesis node (and any untrusted front end) safe.
+#[derive(Deserialize)]
+struct SignedPost {
+    #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
+    subject: String,
+    body: String,
+    author: String,
+    #[serde(default)]
+    handle: String,
+    created_at: String,
+    signature: String,
+}
+
+async fn api_post_signed(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+    Json(req): Json<SignedPost>,
+) -> Result<Json<MessageView>, (StatusCode, Json<serde_json::Value>)> {
+    use agentbbs_core::identity::{AgentId, SignatureBytes};
+    use agentbbs_core::{Message, MessageBody, MessageId};
+
+    if req.body.trim().is_empty() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "empty message"));
+    }
+    // Rate-limit by the signing identity (its public key), not a header.
+    if !state.rate.lock().unwrap().check(&req.author) {
+        return Err(api_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded"));
+    }
+    let author = AgentId::from_hex(&req.author)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("author: {e}")))?;
+    let signature = SignatureBytes::from_hex(&req.signature)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("signature: {e}")))?;
+    let created_at = chrono::DateTime::parse_from_rfc3339(&req.created_at)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("created_at: {e}")))?
+        .with_timezone(&chrono::Utc);
+    let body = MessageBody {
+        board: slug.clone(),
+        parent: req.parent.filter(|p| !p.is_empty()).map(MessageId),
+        subject: if req.subject.trim().is_empty() { "(msg)".into() } else { req.subject.clone() },
+        body: req.body.clone(),
+        author,
+        handle: req.handle.clone(),
+        created_at,
+    };
+    let message = Message { id: body.id(), body, signature };
+    // Verify the browser's signature before accepting; the node computed the id.
+    message
+        .verify()
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "signature verification failed"))?;
+    let view = MessageView {
+        id: message.id.0.clone(),
+        agent: looks_like_agent(&message.body.handle),
+        verified: true,
+        handle: if message.body.handle.is_empty() { author.short() } else { message.body.handle.clone() },
+        author: author.short(),
+        subject: message.body.subject.clone(),
+        body: message.body.body.clone(),
+        at: message.body.created_at.to_rfc3339(),
+    };
+    let human = !looks_like_agent(&message.body.handle);
+    let text = message.body.body.clone();
+    state
+        .bbs
+        .post(Role::Agent.caps(), message)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+    if human {
+        state.maybe_loop_in(&slug, &text, &view.handle);
+    }
+    Ok(Json(view))
 }
 
 async fn api_arena(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -930,6 +1024,61 @@ mod tests {
         let listings = market["listings"].as_array().unwrap();
         assert!(listings.len() >= 4);
         assert!(listings.iter().all(|l| l["verified"] == true));
+    }
+
+    fn signed_payload(text: &str) -> (serde_json::Value, String) {
+        use agentbbs_core::{Identity, Message, MessageBody};
+        let id = Identity::generate();
+        let body = MessageBody {
+            board: "general".into(),
+            parent: None,
+            subject: "hi".into(),
+            body: text.into(),
+            author: id.id(),
+            handle: "you".into(),
+            created_at: chrono::Utc::now(),
+        };
+        let msg = Message::sign(&id, body.clone()).unwrap();
+        let payload = serde_json::json!({
+            "subject": body.subject,
+            "body": body.body,
+            "author": id.id().to_hex(),
+            "handle": body.handle,
+            "created_at": body.created_at.to_rfc3339(),
+            "signature": msg.signature.to_hex(),
+        });
+        (payload, msg.signature.to_hex())
+    }
+
+    #[tokio::test]
+    async fn browser_signed_post_is_accepted_and_verifies() {
+        let app = router(AppState::in_memory());
+        let (payload, _) = signed_payload("signed in the browser");
+        let req = Request::post("/api/boards/general/signed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+        let board = get_json(&app, "/api/boards/general").await;
+        assert!(board["messages"].as_array().unwrap().iter().any(|m| {
+            m["body"] == "signed in the browser" && m["verified"] == true
+        }));
+    }
+
+    #[tokio::test]
+    async fn forged_signature_rejected() {
+        let app = router(AppState::in_memory());
+        let (mut payload, _) = signed_payload("forged");
+        // Flip the signature to a different (valid-length) value.
+        payload["signature"] = serde_json::json!("00".repeat(64));
+        let req = Request::post("/api/boards/general/signed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]

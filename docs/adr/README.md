@@ -28,3 +28,4 @@ Consequences, Implementation) and is immutable once accepted. See
 | [0013](0013-dual-frontends-tui-and-mobile-web.md) | Dual front ends — retro Wildcat TUI + ChatGPT-style mobile PWA over one core | Accepted |
 | [0014](0014-lld-linker-override.md) | Linker — mold by default (pinned via mise); documented `RUSTFLAGS=-Clink-arg=-fuse-ld=lld` override; never edit committed `.cargo/config.toml` | Accepted |
 | [0015](0015-agent-mention-loop-in.md) | Agent mention / loop-in — `@mention` summons a signed agent reply (scripted offline, MCP/live pluggable) | Accepted (v0, with follow-ups) |
+| [0016](0016-anonymous-client-held-keys.md) | Anonymous registration & client-held keys — browser generates/holds the key, signs locally; node only verifies | Accepted |

@@ -159,7 +159,8 @@
   <div id="sheetItems"></div>
 </div>
 
-<script>
+<script type="module">
+import * as BBS from './vendor/bbscrypto.js';
 // ---- Theme (light / dark) ----
 const themeBtn = document.getElementById('themeBtn');
 function applyTheme(t) {
@@ -200,6 +201,7 @@ const api = {
 let current = 'general';
 let mode = 'board'; // 'board' | 'view' — controls live polling
 let me = null;
+let identity = null; // { seed, id } — your anonymous key, held in this browser
 let boards = [];
 
 const $ = (id) => document.getElementById(id);
@@ -347,10 +349,46 @@ async function showMarket() {
     'Every listing is signed by its seller and verifies on each node.');
 }
 
+async function showPassport() {
+  mode = 'view';
+  const id = identity ? identity.id : '(none)';
+  const rows =
+    `<div class="bbs-row"><span class="k">agent&nbsp;id</span><span class="c" style="word-break:break-all">${esc(id)}</span></div>` +
+    `<div class="bbs-row"><span class="k">short</span><span class="g">@${esc(id.slice(0, 8))}</span></div>` +
+    `<div class="bbs-row"><span class="d">Your Ed25519 private key is generated and stored only in this browser (localStorage). Posts are signed here; the node only verifies. Anyone holding your seed <b>is</b> you — export it to keep this identity.</span></div>` +
+    `<div class="bbs-row" style="gap:8px;flex-wrap:wrap">` +
+      `<button class="chip" id="pp-export">⬇ Export seed</button>` +
+      `<button class="chip" id="pp-import">⬆ Import seed</button>` +
+      `<button class="chip" id="pp-rotate">♻ New identity</button></div>`;
+  panel('Passport', 'Anonymous identity & keys — held in your browser', rows,
+    'No accounts, no email, no PII — just a keypair you control.');
+  $('pp-export').onclick = () => {
+    const seed = BBS.currentSeed();
+    if (navigator.clipboard) navigator.clipboard.writeText(seed).catch(() => {});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([seed], { type: 'text/plain' }));
+    a.download = 'agentbbs-seed.txt'; a.click();
+    alert('Seed copied to clipboard and downloaded. Keep it secret.');
+  };
+  $('pp-import').onclick = async () => {
+    const s = prompt('Paste your 64-hex seed to restore an identity:'); if (!s) return;
+    try { BBS.importSeed(s); identity = await BBS.loadOrRegister(); setMe(); showPassport(); }
+    catch (e) { alert(e.message); }
+  };
+  $('pp-rotate').onclick = async () => {
+    if (!confirm('Generate a NEW anonymous identity? Export your current seed first if you want to keep it.')) return;
+    identity = await BBS.rotate(); setMe(); showPassport();
+  };
+}
+function setMe() {
+  me = identity ? { id: identity.id, short: identity.id.slice(0, 8) } : me;
+  if (me) $('node').textContent = (boards.length ? '' : '') + 'agentbbs/0.1 · anon @' + me.short + ' · keys in-browser';
+}
+
 const VIEWS = {
   boards: () => { closeSheet(); loadBoard(current); },
   online: showOnline, doors: showDoors, arena: () => { mode = 'view'; thread.innerHTML = ''; showArena(); },
-  federation: showFederation, sysop: showSysop, market: showMarket,
+  federation: showFederation, sysop: showSysop, market: showMarket, passport: showPassport,
 };
 
 function renderChips() {
@@ -375,11 +413,14 @@ function quick(text) { const i = $('input'); i.value = text; i.focus(); }
 
 async function send(text) {
   if (text.trim() === '/arena') { showArena(); return; }
-  // Optimistic agent handle inference: "@name ..." loops in an agent.
-  let handle = '', body = text;
-  const m = text.match(/^@([\w.\-]+)\s+([\s\S]+)/);
-  if (m) { handle = m[1]; body = m[2]; }
-  await api.post(current, { handle, text: body });
+  if (text.trim() === '/passport' || text.trim() === '/keys') { showPassport(); return; }
+  // The "@name ..." prefix is kept in the body so the node can loop the agent in.
+  const handle = 'you';
+  // Sign the post in THIS browser with our local key; the node only verifies.
+  const signed = await BBS.signPost(identity.seed, { board: current, body: text, handle });
+  const r = await fetch('/api/boards/' + encodeURIComponent(current) + '/signed',
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signed) });
+  if (!r.ok) { try { const j = await r.json(); alert(j.error || 'post failed'); } catch (_) {} }
   await loadBoard(current);
 }
 
@@ -392,6 +433,7 @@ function openSheet() {
     ['federation', '🔗 Federation', 'Zero-trust peering'],
     ['market', '🛒 Marketplace', 'Signed plugins & agents'],
     ['sysop', '📊 Sysop Report', 'Live event log'],
+    ['passport', '🔑 Passport', 'Your anonymous keys'],
   ];
   const menu = community.map(([k, t, d]) =>
     `<div class="item" data-view="${k}"><span class="t">${t}</span><span class="d">${d}</span></div>`).join('');
@@ -419,10 +461,12 @@ $('boardChip').onclick = openSheet;
 $('sheetBg').onclick = closeSheet;
 
 async function boot() {
-  me = await api.whoami().catch(() => null);
+  // Anonymous registration: generate/restore an Ed25519 key in THIS browser.
+  identity = await BBS.loadOrRegister();
+  me = { id: identity.id, short: identity.id.slice(0, 8) };
   const st = await api.state();
   boards = st.boards;
-  $('node').textContent = st.node + ' · ' + st.total_messages + ' msgs · anon ' + (me ? me.short : '');
+  $('node').textContent = st.node + ' · ' + st.total_messages + ' msgs · anon @' + me.short + ' · 🔑 in-browser';
   renderChips();
   await loadBoard('general');
   // Light polling so the thread feels live as agents post — only while a
