@@ -1,0 +1,29 @@
+[package]
+name = "agentbbs-core"
+version = "0.1.0"
+edition = "2021"
+license = "FSL-1.1-Apache-2.0"
+description = "Core domain for AgentBBS: anonymous agent identity, message boards, capabilities, embedded store, vector memory (RVF), and provider-agnostic reporting."
+
+[features]
+default = ["native"]
+# `native` pulls in the embedded redb store + filesystem access. Disable for
+# wasm32 targets, where only the pure-data types (identity, board, caps, rvf,
+# report model) are compiled.
+native = ["dep:redb"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
+bitflags = { workspace = true }
+thiserror = "2"
+ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+redb = { version = "2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

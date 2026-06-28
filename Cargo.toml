@@ -5,6 +5,15 @@ members = [
     "late-nethack",
     "late-ssh",
     "late-web",
+    # AgentBBS layer — the agent/human collaboration BBS built additively on
+    # top of the late.sh platform.
+    "agentbbs-core",
+    "agentbbs-federation",
+    "agentbbs-wasm",
+    "agentbbs-mcp",
+    "agentbbs-tui",
+    "agentbbs-gcp",
+    "agentbbs",
 ]
 resolver = "2"
 
