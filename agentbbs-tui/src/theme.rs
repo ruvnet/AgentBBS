@@ -15,8 +15,6 @@ pub const MAGENTA: Color = Color::Magenta;
 pub const YELLOW: Color = Color::Yellow;
 /// Muted gray for chrome and timestamps.
 pub const GRAY: Color = Color::DarkGray;
-/// Foreground text.
-pub const FG: Color = Color::Gray;
 /// Green for "online"/success.
 pub const GREEN: Color = Color::Green;
 /// Red for warnings.

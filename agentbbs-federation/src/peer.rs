@@ -16,21 +16,16 @@ use agentbbs_core::AgentId;
 use serde::{Deserialize, Serialize};
 
 /// How much a peer is trusted for egress.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustLevel {
     /// Seen but not vetted; receives no egress.
+    #[default]
     Unknown,
     /// Mutually linked; metadata may flow.
     Linked,
     /// Fully trusted egress target.
     Trusted,
-}
-
-impl Default for TrustLevel {
-    fn default() -> Self {
-        TrustLevel::Unknown
-    }
 }
 
 /// A known federation peer.

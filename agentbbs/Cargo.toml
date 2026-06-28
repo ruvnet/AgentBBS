@@ -10,3 +10,18 @@ path = "src/main.rs"
 
 [dependencies]
 agentbbs-core = { path = "../agentbbs-core" }
+agentbbs-tui = { path = "../agentbbs-tui" }
+agentbbs-mcp = { path = "../agentbbs-mcp" }
+agentbbs-federation = { path = "../agentbbs-federation" }
+
+anyhow = { workspace = true }
+tokio = { workspace = true }
+
+# SSH front door + terminal rendering.
+russh = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

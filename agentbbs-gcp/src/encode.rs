@@ -11,6 +11,54 @@ use agentbbs_core::report::Event;
 use base64::Engine as _;
 use serde_json::{json, Value};
 
+/// The marker substituted for a redacted value.
+pub const REDACTED: &str = "[redacted]";
+
+/// Substrings (lowercased) that mark an object key as PII-bearing.
+const SENSITIVE: &[&str] = &["email", "ip", "host", "token", "secret", "key", "phone"];
+
+fn is_sensitive(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    SENSITIVE.iter().any(|needle| lower.contains(needle))
+}
+
+/// Recursively redact PII-bearing object keys in `value` in place.
+///
+/// Any object key whose (case-insensitive) name contains one of the
+/// [`SENSITIVE`] substrings has its value replaced with [`REDACTED`]; other
+/// values are recursed into. Arrays are recursed element-wise. Scalars are
+/// left untouched — we redact by *key name*, never by guessing scalar content.
+///
+/// This is applied to every event's `detail` before it leaves the process to
+/// Firestore or Pub/Sub, so the GCP egress path can never carry free-form PII
+/// even if a future event populates `detail` with sensitive text.
+pub fn strip_pii(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if is_sensitive(k) {
+                    *v = Value::String(REDACTED.to_string());
+                } else {
+                    strip_pii(v);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                strip_pii(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Return a PII-scrubbed copy of an event's `detail`.
+fn scrubbed_detail(event: &Event) -> Value {
+    let mut v = event.detail.clone();
+    strip_pii(&mut v);
+    v
+}
+
 /// Convert a core [`Event`] into a Firestore REST "typed value" document body.
 ///
 /// Firestore's REST API does not accept plain JSON; every field must be tagged
@@ -42,7 +90,7 @@ pub fn to_firestore_fields(event: &Event) -> Value {
 
     // `at` is RFC 3339 with a trailing Z, which Firestore accepts directly.
     let at = event.at.to_rfc3339();
-    let detail = serde_json::to_string(&event.detail).unwrap_or_else(|_| "null".to_string());
+    let detail = serde_json::to_string(&scrubbed_detail(event)).unwrap_or_else(|_| "null".to_string());
 
     json!({
         "fields": {
@@ -59,7 +107,12 @@ pub fn to_firestore_fields(event: &Event) -> Value {
 /// Serialize an [`Event`] to a compact JSON string (the message payload that
 /// rides inside a Pub/Sub message and is later decoded by the Cloud Function).
 pub fn event_json(event: &Event) -> String {
-    serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string())
+    // Scrub the free-form `detail` before it egresses to Pub/Sub. We clone the
+    // event and replace its detail with the scrubbed copy so the rest of the
+    // shape is untouched.
+    let mut scrubbed = event.clone();
+    scrubbed.detail = scrubbed_detail(event);
+    serde_json::to_string(&scrubbed).unwrap_or_else(|_| "{}".to_string())
 }
 
 /// Build the request body for a Pub/Sub `topics/{topic}:publish` REST call.
@@ -96,7 +149,7 @@ mod tests {
             kind: EventKind::Security,
             agent: Some(id),
             subject: "rate-limit".to_string(),
-            detail: json!({ "ip_bucket": 7, "denied": true }),
+            detail: json!({ "bucket": 7, "denied": true }),
         }
     }
 
@@ -112,7 +165,7 @@ mod tests {
                 "kind": { "stringValue": "security" },
                 "agent": { "stringValue": id_hex },
                 "subject": { "stringValue": "rate-limit" },
-                "detail": { "stringValue": "{\"denied\":true,\"ip_bucket\":7}" },
+                "detail": { "stringValue": "{\"bucket\":7,\"denied\":true}" },
                 "severity": { "stringValue": "warn" },
             }
         });
@@ -155,6 +208,51 @@ mod tests {
         let expected_data =
             base64::engine::general_purpose::STANDARD.encode(event_json(&ev));
         assert_eq!(data, expected_data);
+    }
+
+    #[test]
+    fn firestore_detail_redacts_pii() {
+        let ev = Event {
+            at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            kind: EventKind::Security,
+            agent: None,
+            subject: "leak".to_string(),
+            detail: json!({ "email": "a@b.com", "ok": 1 }),
+        };
+        let got = to_firestore_fields(&ev);
+        let detail = got["fields"]["detail"]["stringValue"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(detail).unwrap();
+        assert_eq!(parsed["email"], json!(REDACTED));
+        assert_eq!(parsed["ok"], json!(1));
+    }
+
+    #[test]
+    fn pubsub_payload_redacts_pii() {
+        let ev = Event {
+            at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            kind: EventKind::Security,
+            agent: None,
+            subject: "leak".to_string(),
+            detail: json!({ "client_ip": "10.0.0.1", "token": "abc", "ok": 1 }),
+        };
+        let raw = event_json(&ev);
+        let decoded: Event = serde_json::from_str(&raw).unwrap();
+        assert_eq!(decoded.detail["client_ip"], json!(REDACTED));
+        assert_eq!(decoded.detail["token"], json!(REDACTED));
+        assert_eq!(decoded.detail["ok"], json!(1));
+    }
+
+    #[test]
+    fn strip_pii_recurses_nested() {
+        let mut v = json!({
+            "outer": { "host": "secret.internal", "fine": true },
+            "list": [{ "phone": "555" }, { "x": 2 }],
+        });
+        strip_pii(&mut v);
+        assert_eq!(v["outer"]["host"], json!(REDACTED));
+        assert_eq!(v["outer"]["fine"], json!(true));
+        assert_eq!(v["list"][0]["phone"], json!(REDACTED));
+        assert_eq!(v["list"][1]["x"], json!(2));
     }
 
     #[test]

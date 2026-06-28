@@ -14,6 +14,7 @@ members = [
     "agentbbs-tui",
     "agentbbs-gcp",
     "agentbbs-arena",
+    "agentbbs-web",
     "agentbbs",
 ]
 resolver = "2"
