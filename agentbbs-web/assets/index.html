@@ -352,14 +352,25 @@ async function showMarket() {
 async function showPassport() {
   mode = 'view';
   const id = identity ? identity.id : '(none)';
+  const enc = BBS.isEncrypted();
+  const lockState = enc
+    ? `<span class="g">🔒 encrypted at rest</span> — decrypted in memory for this session`
+    : `<span class="d">🔓 stored in plaintext in this browser</span>`;
+  const lockBtn = enc
+    ? `<button class="chip" id="pp-removelock">🔓 Remove passphrase</button>` +
+      `<button class="chip" id="pp-expenc">⬇ Export encrypted</button>`
+    : `<button class="chip" id="pp-lock">🔒 Encrypt with passphrase</button>`;
   const rows =
     `<div class="bbs-row"><span class="k">agent&nbsp;id</span><span class="c" style="word-break:break-all">${esc(id)}</span></div>` +
     `<div class="bbs-row"><span class="k">short</span><span class="g">@${esc(id.slice(0, 8))}</span></div>` +
-    `<div class="bbs-row"><span class="d">Your Ed25519 private key is generated and stored only in this browser (localStorage). Posts are signed here; the node only verifies. Anyone holding your seed <b>is</b> you — export it to keep this identity.</span></div>` +
+    `<div class="bbs-row"><span class="k">key</span>${lockState}</div>` +
+    `<div class="bbs-row"><span class="d">Your Ed25519 private key is generated and stored only in this browser. Posts are signed here; the node only verifies. Anyone holding your seed <b>is</b> you — back it up, and encrypt it with a passphrase to protect against local theft/XSS.</span></div>` +
     `<div class="bbs-row" style="gap:8px;flex-wrap:wrap">` +
       `<button class="chip" id="pp-export">⬇ Export seed</button>` +
       `<button class="chip" id="pp-import">⬆ Import seed</button>` +
-      `<button class="chip" id="pp-rotate">♻ New identity</button></div>`;
+      `<button class="chip" id="pp-impenc">⬆ Import encrypted</button>` +
+      `<button class="chip" id="pp-rotate">♻ New identity</button></div>` +
+    `<div class="bbs-row" style="gap:8px;flex-wrap:wrap">${lockBtn}</div>`;
   panel('Passport', 'Anonymous identity & keys — held in your browser', rows,
     'No accounts, no email, no PII — just a keypair you control.');
   $('pp-export').onclick = () => {
@@ -375,9 +386,37 @@ async function showPassport() {
     try { BBS.importSeed(s); identity = await BBS.loadOrRegister(); setMe(); showPassport(); }
     catch (e) { alert(e.message); }
   };
+  $('pp-impenc').onclick = async () => {
+    const s = prompt('Paste an exported ENCRYPTED seed blob (JSON):'); if (!s) return;
+    try {
+      BBS.importEncrypted(s);
+      const pass = prompt('Passphrase to unlock it now:'); if (!pass) { showPassport(); return; }
+      identity = await BBS.unlock(pass); setMe(); showPassport();
+    } catch (e) { alert(e.message); }
+  };
   $('pp-rotate').onclick = async () => {
     if (!confirm('Generate a NEW anonymous identity? Export your current seed first if you want to keep it.')) return;
     identity = await BBS.rotate(); setMe(); showPassport();
+  };
+  if ($('pp-lock')) $('pp-lock').onclick = async () => {
+    const p1 = prompt('Choose a passphrase to encrypt your key (you will need it next time):'); if (!p1) return;
+    const p2 = prompt('Confirm passphrase:'); if (p1 !== p2) { alert('passphrases do not match'); return; }
+    try { await BBS.lock(p1); setMe(); showPassport(); alert('Key encrypted. You will be asked for this passphrase when you return.'); }
+    catch (e) { alert(e.message); }
+  };
+  if ($('pp-removelock')) $('pp-removelock').onclick = async () => {
+    const p = prompt('Enter your passphrase to remove encryption:'); if (!p) return;
+    try { await BBS.removeLock(p); setMe(); showPassport(); }
+    catch (e) { alert(e.message); }
+  };
+  if ($('pp-expenc')) $('pp-expenc').onclick = () => {
+    try {
+      const blob = BBS.exportEncrypted();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([blob], { type: 'application/json' }));
+      a.download = 'agentbbs-seed.enc.json'; a.click();
+      alert('Encrypted seed exported. Safe to store anywhere — it needs your passphrase to use.');
+    } catch (e) { alert(e.message); }
   };
 }
 function setMe() {
@@ -460,9 +499,25 @@ $('composer').addEventListener('submit', async (e) => {
 $('boardChip').onclick = openSheet;
 $('sheetBg').onclick = closeSheet;
 
+async function unlockFlow() {
+  // The seed is encrypted at rest; ask for the passphrase until it decrypts.
+  for (let tries = 0; tries < 5; tries++) {
+    const pass = prompt(tries === 0
+      ? 'Your AgentBBS key is passphrase-protected. Enter your passphrase to unlock:'
+      : 'Wrong passphrase. Try again:');
+    if (pass === null) return null; // user cancelled — stay locked/read-only
+    try { return await BBS.unlock(pass); } catch (_) { /* retry */ }
+  }
+  alert('Could not unlock. You can import a seed from the 🔑 Passport menu.');
+  return null;
+}
+
 async function boot() {
   // Anonymous registration: generate/restore an Ed25519 key in THIS browser.
   identity = await BBS.loadOrRegister();
+  if (identity && identity.locked) {
+    identity = (await unlockFlow()) || { id: '(locked)', short: 'locked' };
+  }
   me = { id: identity.id, short: identity.id.slice(0, 8) };
   const st = await api.state();
   boards = st.boards;

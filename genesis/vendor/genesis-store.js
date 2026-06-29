@@ -229,7 +229,10 @@ export const store = {
   async boot() {
     ensureSeeded();
     const identity = await BBS.loadOrRegister();
-    logEvent('node.boot', 'genesis node started · anon @' + identity.id.slice(0, 8));
+    // If the seed is passphrase-encrypted at rest, the UI unlocks it first.
+    if (!identity.locked) {
+      logEvent('node.boot', 'genesis node started · anon @' + identity.id.slice(0, 8));
+    }
     return identity;
   },
 

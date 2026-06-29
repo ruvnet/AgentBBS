@@ -68,23 +68,131 @@ export async function agentId(seedHex) {
   return hex(await ed.getPublicKeyAsync(unhex(seedHex)));
 }
 
-const KEY = 'agentbbs.seed';
+const KEY = 'agentbbs.seed';       // plaintext seed (default / unlocked-at-rest)
+const ENC = 'agentbbs.seed.enc';   // passphrase-encrypted seed blob (JSON)
 
+// The active decrypted seed for this tab. When the seed is encrypted at rest
+// we hold it only here in memory, never writing the plaintext back to disk.
+let _active = null;
+
+function b64(bytes) { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); }
+function unb64(str) { const s = atob(str); const a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; }
+
+const PBKDF2_ITER = 210000; // OWASP-ish floor for PBKDF2-SHA256
+
+async function deriveKey(passphrase, salt, iter) {
+  const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: iter, hash: 'SHA-256' },
+    km, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+
+// Encrypt a 64-hex seed with a passphrase -> a self-describing JSON blob.
+export async function encryptSeed(seedHex, passphrase) {
+  if (!passphrase) throw new Error('passphrase required');
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(passphrase, salt, PBKDF2_ITER);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, unhex(seedHex)));
+  return { v: 1, kdf: 'PBKDF2-SHA256', iter: PBKDF2_ITER, salt: b64(salt), iv: b64(iv), ct: b64(ct) };
+}
+
+// Decrypt a blob back to a 64-hex seed. Throws "wrong passphrase" on failure.
+export async function decryptSeed(blob, passphrase) {
+  try {
+    const key = await deriveKey(passphrase, unb64(blob.salt), blob.iter || PBKDF2_ITER);
+    const pt = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(blob.iv) }, key, unb64(blob.ct)));
+    return hex(pt);
+  } catch (_) { throw new Error('wrong passphrase'); }
+}
+
+/** Whether the seed is encrypted at rest (locked). */
+export function isEncrypted() { return !!localStorage.getItem(ENC) && !localStorage.getItem(KEY); }
+/** Whether we currently hold a usable (decrypted/plain) seed. */
+export function isUnlocked() { return !!(_active || localStorage.getItem(KEY)); }
+
+/**
+ * Load the active identity, or register a fresh one. If the seed is encrypted
+ * at rest and not yet unlocked this returns `{ locked: true }` and the caller
+ * must `unlock(passphrase)` before signing.
+ */
 export async function loadOrRegister() {
   let seed = localStorage.getItem(KEY);
-  if (!seed) { seed = newSeed(); localStorage.setItem(KEY, seed); }
+  if (!seed) {
+    if (localStorage.getItem(ENC)) {
+      if (_active) return { seed: _active, id: await agentId(_active) };
+      return { locked: true };
+    }
+    seed = newSeed();
+    localStorage.setItem(KEY, seed);
+  }
+  _active = seed;
   return { seed, id: await agentId(seed) };
 }
+
+/** Encrypt the current seed at rest under `passphrase` (removes the plaintext). */
+export async function lock(passphrase) {
+  const seed = currentSeed();
+  if (!seed) throw new Error('no seed to lock');
+  const blob = await encryptSeed(seed, passphrase);
+  localStorage.setItem(ENC, JSON.stringify(blob));
+  localStorage.removeItem(KEY);
+  _active = seed; // keep usable for this session
+  return { id: await agentId(seed) };
+}
+
+/** Decrypt the at-rest seed into memory for this session (stays encrypted on disk). */
+export async function unlock(passphrase) {
+  const raw = localStorage.getItem(ENC);
+  if (!raw) throw new Error('not locked');
+  const seed = await decryptSeed(JSON.parse(raw), passphrase);
+  _active = seed;
+  return { seed, id: await agentId(seed) };
+}
+
+/** Remove encryption: verify the passphrase, then store the seed in plaintext. */
+export async function removeLock(passphrase) {
+  const raw = localStorage.getItem(ENC);
+  if (!raw) throw new Error('not locked');
+  const seed = await decryptSeed(JSON.parse(raw), passphrase);
+  localStorage.setItem(KEY, seed);
+  localStorage.removeItem(ENC);
+  _active = seed;
+  return { id: await agentId(seed) };
+}
+
+/** The encrypted blob as a string, for download/backup (only when locked). */
+export function exportEncrypted() {
+  const raw = localStorage.getItem(ENC);
+  if (!raw) throw new Error('not locked — nothing encrypted to export');
+  return raw;
+}
+
+/** Import an encrypted blob (replaces the at-rest seed; needs unlock to use). */
+export function importEncrypted(blobStr) {
+  const blob = JSON.parse(blobStr);
+  if (!blob || !blob.ct || !blob.salt || !blob.iv) throw new Error('not an AgentBBS encrypted seed');
+  localStorage.setItem(ENC, JSON.stringify(blob));
+  localStorage.removeItem(KEY);
+  _active = null;
+}
+
 export function importSeed(seedHex) {
   if (!/^[0-9a-fA-F]{64}$/.test(seedHex.trim())) throw new Error('seed must be 64 hex chars');
-  localStorage.setItem(KEY, seedHex.trim().toLowerCase());
+  const s = seedHex.trim().toLowerCase();
+  localStorage.setItem(KEY, s);
+  localStorage.removeItem(ENC);
+  _active = s;
 }
 export async function rotate() {
   const seed = newSeed();
   localStorage.setItem(KEY, seed);
+  localStorage.removeItem(ENC);
+  _active = seed;
   return { seed, id: await agentId(seed) };
 }
-export function currentSeed() { return localStorage.getItem(KEY); }
+/** The active seed: the in-memory one if unlocked, else the plaintext on disk. */
+export function currentSeed() { return _active || localStorage.getItem(KEY); }
 
 // Build a fully signed post payload for POST /api/boards/{slug}/signed.
 export async function signPost(seedHex, { board, subject, body, handle, parent }) {
