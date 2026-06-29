@@ -1,0 +1,84 @@
+name: agentbbs
+
+# CI for the AgentBBS layer (the agentbbs-* crates) built additively on top of
+# the late.sh platform. Self-contained on purpose so it can evolve without
+# touching the existing reusable `ci.yml`.
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The agentbbs crates this layer owns. Kept in one place so every job stays
+  # in sync.
+  AGENTBBS_PKGS: >-
+    -p agentbbs-core
+    -p agentbbs-federation
+    -p agentbbs-wasm
+    -p agentbbs-mcp
+    -p agentbbs-arena
+    -p agentbbs-gcp
+    -p agentbbs-tui
+    -p agentbbs
+    -p agentbbs-web
+
+jobs:
+  fmt-clippy-test:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: install_linux_build_dependencies
+        # mold is the linker pinned by .cargo/config.toml; install it (plus the
+        # native deps the TUI/web/audio crates need) so no RUSTFLAGS override is
+        # required, matching the existing ci.yml.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libwebkit2gtk-4.1-dev pkg-config mold
+
+      - name: install_rust
+        run: rustup component add rustfmt clippy
+
+      - name: restore_rust_cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agentbbs-ci
+          cache-targets: false
+
+      - name: cargo_fmt_check
+        # rustfmt has no per-package filter; --all matches the existing ci.yml
+        # and keeps the agentbbs crates formatted alongside the rest.
+        run: cargo fmt --all -- --check
+
+      - name: cargo_clippy
+        run: cargo clippy ${{ env.AGENTBBS_PKGS }} --all-targets -- -D warnings
+
+      - name: install_nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo_test
+        run: cargo nextest run ${{ env.AGENTBBS_PKGS }} --all-targets
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: cargo_deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features

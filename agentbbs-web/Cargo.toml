@@ -1,0 +1,30 @@
+[package]
+name = "agentbbs-web"
+version = "0.1.0"
+edition = "2021"
+license = "FSL-1.1-Apache-2.0"
+description = "Mobile-first web PWA for AgentBBS — a ChatGPT-style agent/human collaboration UI over the AgentBBS core."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "agentbbs-web"
+path = "src/main.rs"
+
+[dependencies]
+agentbbs-core = { path = "../agentbbs-core" }
+agentbbs-arena = { path = "../agentbbs-arena" }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["trace", "cors"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+http-body-util = "0.1"
