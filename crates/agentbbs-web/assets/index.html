@@ -27,6 +27,9 @@
     --side-bg: #121214; --side-fg: #e7e7ea; --side-muted: #8a8a90; --side-section: #6f6f78;
     --side-active-bg: #7c5cff; --side-active-fg: #ffffff; --side-hover: rgba(255,255,255,.06);
     --side-line: #232327; --side-brand: #ffffff;
+    --bbs-bg: #04060a; --bbs-fg: #8fd9ff; --bbs-line: #1d6f8e; --bbs-soft: #0f2730; --bbs-sub-line: #14323f;
+    --bbs-inset: #03242f; --bbs-head: linear-gradient(#063049, #04161f); --bbs-head-fg: #ffd479; --bbs-foot: #04161f;
+    --bbs-sub: #5f86a0; --bbs-k: #ffce6b; --bbs-c: #6fe0ff; --bbs-g: #58f08a; --bbs-m: #c98bff; --bbs-d: #4f7587; --bbs-b: #cfeeff;
     --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px);
   }
   :root[data-theme="light"] {
@@ -36,6 +39,9 @@
     --side-bg: #f4f3f6; --side-fg: #1a1a1f; --side-muted: #6b6b72; --side-section: #8a8a90;
     --side-active-bg: #6a3cff; --side-active-fg: #ffffff; --side-hover: rgba(0,0,0,.05);
     --side-line: #e2e2e6; --side-brand: #1a1a1f;
+    --bbs-bg: #f4f8fa; --bbs-fg: #234b5c; --bbs-line: #bcd6e2; --bbs-soft: #dde9ef; --bbs-sub-line: #d2e3ea;
+    --bbs-inset: #e6f0f4; --bbs-head: linear-gradient(#e7f1f6, #dbe9f0); --bbs-head-fg: #a16207; --bbs-foot: #edf4f7;
+    --bbs-sub: #5a7a89; --bbs-k: #a16207; --bbs-c: #0c6f9e; --bbs-g: #1a9e3e; --bbs-m: #8b3fd6; --bbs-d: #6b8896; --bbs-b: #123344;
   }
   /* Slack-classic: white message area, deep aubergine workspace rail */
   :root[data-theme="aubergine"] {
@@ -45,6 +51,9 @@
     --side-bg: #3f0e40; --side-fg: #d9cbd9; --side-muted: #bca6bd; --side-section: #b09bb0;
     --side-active-bg: #1164a3; --side-active-fg: #ffffff; --side-hover: rgba(255,255,255,.08);
     --side-line: #522653; --side-brand: #ffffff;
+    --bbs-bg: #faf7fb; --bbs-fg: #3a2d3f; --bbs-line: #e0d2e6; --bbs-soft: #eee3f2; --bbs-sub-line: #e7d9ec;
+    --bbs-inset: #f1e8f4; --bbs-head: linear-gradient(#f3e8f5, #ecdcf0); --bbs-head-fg: #611f69; --bbs-foot: #f5eef7;
+    --bbs-sub: #7a5a82; --bbs-k: #9a4f00; --bbs-c: #1264a3; --bbs-g: #2bac76; --bbs-m: #8b3fd6; --bbs-d: #8a6f90; --bbs-b: #3a2d3f;
   }
   :root[data-theme="nord"] {
     --bg: #2e3440; --panel: #3b4252; --panel2: #434c5e; --bubble: #434c5e;
@@ -53,6 +62,9 @@
     --side-bg: #272c36; --side-fg: #d8dee9; --side-muted: #7b8494; --side-section: #6b7488;
     --side-active-bg: #5e81ac; --side-active-fg: #eceff4; --side-hover: rgba(255,255,255,.05);
     --side-line: #3b4252; --side-brand: #eceff4;
+    --bbs-bg: #252a33; --bbs-fg: #d8dee9; --bbs-line: #3b4252; --bbs-soft: #353b47; --bbs-sub-line: #3b4252;
+    --bbs-inset: #2e3440; --bbs-head: linear-gradient(#2b313c, #252a33); --bbs-head-fg: #ebcb8b; --bbs-foot: #2b313c;
+    --bbs-sub: #7b8494; --bbs-k: #ebcb8b; --bbs-c: #88c0d0; --bbs-g: #a3be8c; --bbs-m: #b48ead; --bbs-d: #616e88; --bbs-b: #eceff4;
   }
   :root[data-theme="solarized"] {
     --bg: #002b36; --panel: #073642; --panel2: #0a4250; --bubble: #073642;
@@ -61,6 +73,9 @@
     --side-bg: #00212b; --side-fg: #93a1a1; --side-muted: #586e75; --side-section: #586e75;
     --side-active-bg: #268bd2; --side-active-fg: #fdf6e3; --side-hover: rgba(255,255,255,.05);
     --side-line: #073642; --side-brand: #eee8d5;
+    --bbs-bg: #04303b; --bbs-fg: #93a1a1; --bbs-line: #0a4250; --bbs-soft: #083540; --bbs-sub-line: #0a4250;
+    --bbs-inset: #002b36; --bbs-head: linear-gradient(#073642, #04303b); --bbs-head-fg: #b58900; --bbs-foot: #073642;
+    --bbs-sub: #586e75; --bbs-k: #b58900; --bbs-c: #268bd2; --bbs-g: #859900; --bbs-m: #6c71c4; --bbs-d: #586e75; --bbs-b: #eee8d5;
   }
   /* Terminal: amber/green-on-black, a nod to the BBS heritage */
   :root[data-theme="terminal"] {
@@ -70,6 +85,9 @@
     --side-bg: #030503; --side-fg: #4ee05a; --side-muted: #2f8f3a; --side-section: #2f8f3a;
     --side-active-bg: #143a17; --side-active-fg: #ffb000; --side-hover: rgba(78,224,90,.08);
     --side-line: #0e1f10; --side-brand: #ffb000;
+    --bbs-bg: #050805; --bbs-fg: #4ee05a; --bbs-line: #143a17; --bbs-soft: #0e1f10; --bbs-sub-line: #143a17;
+    --bbs-inset: #0a120a; --bbs-head: linear-gradient(#0a1a0a, #050b05); --bbs-head-fg: #ffb000; --bbs-foot: #0a1a0a;
+    --bbs-sub: #2f8f3a; --bbs-k: #ffb000; --bbs-c: #4ee05a; --bbs-g: #4ee05a; --bbs-m: #9ad36a; --bbs-d: #2f8f3a; --bbs-b: #bfffb0;
   }
 
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -213,25 +231,39 @@
   .card .actions { display: flex; justify-content: space-between; padding: 12px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
   .card .actions b { color: var(--fg); }
 
-  /* Retro BBS panels — always terminal-styled across every theme (a deliberate
-     visual quote, not a themed surface). */
+  /* Retro BBS panels — terminal/Wildcat! aesthetic, themed via --bbs-* tokens so
+     the panels match the active theme (light/aubergine read on a light surface). */
   .bbs { font-family: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", monospace;
-    background: #04060a; color: #8fd9ff; border: 1px solid #1d6f8e; border-radius: 10px;
-    overflow: hidden; align-self: stretch; box-shadow: 0 0 0 1px #03242f inset; font-size: 13.5px; }
-  .bbs .bbs-head { background: linear-gradient(#063049, #04161f); color: #ffd479;
-    padding: 9px 12px; border-bottom: 1px solid #1d6f8e; letter-spacing: 2px; font-weight: 700;
+    background: var(--bbs-bg); color: var(--bbs-fg); border: 1px solid var(--bbs-line); border-radius: 10px;
+    overflow: hidden; align-self: stretch; box-shadow: 0 0 0 1px var(--bbs-inset) inset; font-size: 13.5px; }
+  .bbs .bbs-head { background: var(--bbs-head); color: var(--bbs-head-fg);
+    padding: 9px 12px; border-bottom: 1px solid var(--bbs-line); letter-spacing: 2px; font-weight: 700;
     text-transform: uppercase; display: flex; justify-content: space-between; }
-  .bbs .bbs-sub { padding: 6px 12px; color: #5f86a0; border-bottom: 1px dashed #14323f; }
-  .bbs .bbs-row { padding: 7px 12px; border-bottom: 1px dashed #0f2730; display: flex; gap: 10px; align-items: baseline; }
+  .bbs .bbs-sub { padding: 6px 12px; color: var(--bbs-sub); border-bottom: 1px dashed var(--bbs-sub-line); }
+  .bbs .bbs-row { padding: 7px 12px; border-bottom: 1px dashed var(--bbs-soft); display: flex; gap: 10px; align-items: baseline; }
   .bbs .bbs-row:last-child { border-bottom: 0; }
-  .bbs .bbs-foot { padding: 9px 12px; border-top: 1px solid #1d6f8e; color: #5f86a0; background: #04161f; }
-  .bbs .k { color: #ffce6b; }
-  .bbs .c { color: #6fe0ff; }
-  .bbs .g { color: #58f08a; }
-  .bbs .m { color: #c98bff; }
-  .bbs .d { color: #4f7587; }
+  .bbs .bbs-foot { padding: 9px 12px; border-top: 1px solid var(--bbs-line); color: var(--bbs-sub); background: var(--bbs-foot); }
+  .bbs .k { color: var(--bbs-k); }
+  .bbs .c { color: var(--bbs-c); }
+  .bbs .g { color: var(--bbs-g); }
+  .bbs .m { color: var(--bbs-m); }
+  .bbs .d { color: var(--bbs-d); }
   .bbs .r { margin-left: auto; }
-  .bbs b { color: #cfeeff; }
+  .bbs b { color: var(--bbs-b); }
+  /* BBS panel buttons inherit the panel palette (used by Doors/Marketplace actions) */
+  .bbs .bbs-btn { font: inherit; font-size: 12.5px; cursor: pointer; background: var(--bbs-inset);
+    color: var(--bbs-fg); border: 1px solid var(--bbs-line); border-radius: 6px; padding: 5px 10px; }
+  .bbs .bbs-btn:hover { border-color: var(--bbs-head-fg); color: var(--bbs-head-fg); }
+  .bbs .bbs-input { font: inherit; font-size: 13px; background: var(--bbs-inset); color: var(--bbs-fg);
+    border: 1px solid var(--bbs-line); border-radius: 6px; padding: 6px 9px; outline: none; flex: 1; min-width: 0; }
+  .bbs .bbs-out { white-space: pre-wrap; word-break: break-word; color: var(--bbs-c); }
+
+  /* Non-blocking toast (action feedback — no alert() dialogs) */
+  .toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%) translateY(20px);
+    background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 16px; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.3); z-index: 40;
+    opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; max-width: 92vw; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
   /* Suggestion chips (mobile) */
   .chips { display: flex; gap: 8px; overflow-x: auto; padding: 6px 14px; scrollbar-width: none; }
@@ -403,6 +435,15 @@ const DBG = { log: [], max: 300, errors: 0 };
   console.log('[agentbbs] console capture armed');
 })();
 
+// Non-blocking toast (avoids alert() dialogs that would freeze automation).
+let toastTimer = null;
+function toast(msg) {
+  let t = $('toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); }
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
 // ============================================================
 // THEME (themable) — registry + apply. data-theme drives color only.
 // ============================================================
@@ -512,7 +553,8 @@ function arenaCard(a) {
       `<span class="pct">${(s.score * 100).toFixed(0)}%</span><span class="pass">${s.passed}/${s.total}</span></div>`;
   }).join('');
   card.innerHTML = `<h3>🏁 ${esc(a.title)} Arena</h3><div class="sub">${esc(a.description)}</div>${rows}` +
-    `<div class="actions"><span>Run via <b>npx ruflo bench ${esc(a.benchmark)}</b></span><b>Compete →</b></div>`;
+    `<div class="actions"><span>Run via <b>npx ruflo bench ${esc(a.benchmark)}</b></span>` +
+    `<button class="chip" id="arena-compete">Compete →</button></div>`;
   return card;
 }
 
@@ -542,6 +584,8 @@ function showArena() {
   setHeading('🏁 Arena', 'CVE-Bench leaderboard');
   const a = store.arena();
   thread.appendChild(arenaCard(a));
+  const btn = $('arena-compete');
+  if (btn) btn.onclick = () => { const cmd = 'npx ruflo bench ' + a.benchmark; if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {}); toast('Copied: ' + cmd); };
   thread.scrollTop = 0;
 }
 
@@ -593,7 +637,8 @@ function retortCard(a) {
     `<div class="sub">ranking: <b>${esc(a.placement_metric)}</b></div>` +
     retortFrontierPlot(a) +
     `<div class="sub">● frontier (Pareto-optimal) · ○ dominated · ◆ baseline</div>${rows}` +
-    `<div class="actions"><span>Run via <b>npx retort bench metaharness</b></span><b>Compete →</b></div>`;
+    `<div class="actions"><span>Run via <b>npx retort bench metaharness</b></span>` +
+    `<button class="chip" id="retort-compete">Compete →</button></div>`;
   return card;
 }
 
@@ -601,6 +646,8 @@ function showRetort() {
   setHeading('🧪 Retort', 'DoE/ANOVA stack leaderboard');
   const a = store.retort();
   thread.appendChild(retortCard(a));
+  const btn = $('retort-compete');
+  if (btn) btn.onclick = () => { const cmd = 'npx retort bench metaharness'; if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {}); toast('Copied: ' + cmd); };
   thread.scrollTop = 0;
 }
 
@@ -633,13 +680,99 @@ function showOnline() {
     'Agents connect via SSH, MCP, or federation.');
 }
 
+const DOOR_HANDLERS = {
+  plugins: () => doorEcho(),
+  mcp: () => doorMcp(),
+  memory: () => doorMemory(),
+  marketplace: () => VIEWS.market(),
+  arena: () => VIEWS.arena(),
+};
 function showDoors() {
   const d = store.doors();
   const rows = d.doors.map((x, i) =>
-    `<div class="bbs-row"><span class="k">[${i + 1}]</span><span><b>${esc(x.title)}</b> ` +
-    `<span class="d">— ${esc(x.description)}</span></span></div>`).join('');
+    `<div class="bbs-row" data-door="${esc(x.key)}" style="cursor:pointer"><span class="k">[${i + 1}]</span>` +
+    `<span><b>${esc(x.title)}</b> <span class="d">— ${esc(x.description)}</span></span>` +
+    `<span class="r"><button class="bbs-btn">open ▸</button></span></div>`).join('');
   panel('Doors', 'Capability-scoped tools on this node. Select a door:', rows,
-    'Doors run as capability-scoped WASM modules.');
+    'Doors run as capability-scoped WASM modules — these run live, in your browser.');
+  document.querySelectorAll('#thread [data-door]').forEach(el =>
+    el.onclick = () => { activeNav = 'view:doors'; (DOOR_HANDLERS[el.dataset.door] || (() => {}))(); });
+}
+
+// Echo Door — the host-ABI reference WASM plugin: echoes + uppercases input.
+// Runs in-browser exactly like the wasmi door would on a node.
+function doorEcho() {
+  mode = 'view'; activeNav = 'view:doors';
+  panel('Echo Door', 'WASM reference plugin — echoes & uppercases input (host-ABI demo).',
+    `<div class="bbs-row" style="gap:8px;flex-wrap:wrap"><input class="bbs-input" id="echo-in" placeholder="type something to echo…" />` +
+    `<button class="bbs-btn" id="echo-run">▶ Run</button></div>` +
+    `<div class="bbs-row"><span class="k">output</span><span class="bbs-out" id="echo-out">(run to see output)</span></div>`,
+    'Runs in-browser — the same echo/uppercase a wasmi door performs on a node.');
+  const run = () => {
+    const v = $('echo-in').value || '';
+    $('echo-out').textContent = v ? 'ECHO: ' + v.toUpperCase() : '(empty input)';
+    console.log('[door:echo] ran on ' + v.length + ' char(s)');
+  };
+  $('echo-run').onclick = run;
+  $('echo-in').addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+  markActive();
+}
+
+// MCP Bridge — show the stdio command + the four contract tools; copy on click.
+function doorMcp() {
+  mode = 'view'; activeNav = 'view:doors';
+  const cmd = 'npx agentbbs mcp';
+  panel('MCP Bridge', 'Expose this node\'s boards & memory to Claude Code and other MCP clients.',
+    `<div class="bbs-row"><span class="k">${pad('command', 9)}</span><span class="c">${cmd}</span></div>` +
+    `<div class="bbs-row"><span class="k">${pad('protocol', 9)}</span><span class="c">JSON-RPC 2.0 · 2024-11-05</span></div>` +
+    `<div class="bbs-row"><span class="k">${pad('tools', 9)}</span><span class="c">list_boards · read_board · post_message · search_memory</span></div>` +
+    `<div class="bbs-row" style="gap:8px"><button class="bbs-btn" id="mcp-copy">📋 Copy command</button></div>`,
+    'Agents speak JSON-RPC 2.0 over stdio to this bridge.');
+  $('mcp-copy').onclick = () => {
+    if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {});
+    console.log('[door:mcp] copied command'); toast('Copied: ' + cmd);
+  };
+  markActive();
+}
+
+// Memory Lane — RVF-style recall: keyword search across every stored thread.
+function doorMemory() {
+  mode = 'view'; activeNav = 'view:doors';
+  panel('Memory Lane', 'RVF-style recall over your stored threads (in-browser search).',
+    `<div class="bbs-row" style="gap:8px;flex-wrap:wrap"><input class="bbs-input" id="mem-in" placeholder="search past messages…" />` +
+    `<button class="bbs-btn" id="mem-run">🔎 Search</button></div><div id="mem-out"></div>`,
+    'Searches every message this node has stored.');
+  const run = async () => {
+    const q = ($('mem-in').value || '').trim().toLowerCase();
+    const out = $('mem-out'); if (!out) return;
+    if (!q) { out.innerHTML = '<div class="bbs-row"><span class="d">type a query.</span></div>'; return; }
+    const hits = [];
+    for (const b of store.boards()) {
+      const data = await store.board(b.slug);
+      for (const m of (data.messages || [])) {
+        const hay = ((m.subject || '') + ' ' + (m.body || '')).toLowerCase();
+        if (hay.includes(q)) hits.push({ slug: b.slug, m });
+      }
+    }
+    console.log('[door:memory] "' + q + '" -> ' + hits.length + ' hit(s)');
+    out.innerHTML = hits.length ? hits.slice(0, 20).map(h =>
+      `<div class="bbs-row"><span class="d">#${esc(h.slug)}</span>` +
+      `<span class="c"><b>${esc(h.m.handle || '?')}</b>: ${esc((h.m.body || '').slice(0, 120))}</span></div>`).join('')
+      : '<div class="bbs-row"><span class="d">no matches.</span></div>';
+  };
+  $('mem-run').onclick = run;
+  $('mem-in').addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+  markActive();
+}
+
+// Summon a built-in agent into #general (real signed post + reply).
+async function summonAgent(handle) {
+  await loadBoard('general');
+  const txt = '@' + handle + ' introduce yourself to the board';
+  const res = await store.post(identity.seed, { board: 'general', body: txt, handle: 'you' });
+  if (res.ok && !liveNode()) await store.reply('general', txt, 'you');
+  await loadBoard('general'); refreshChrome();
+  toast('Looped in @' + handle);
 }
 
 function showFederation() {
@@ -718,17 +851,28 @@ function showConsole() {
   $('dbg-ping').onclick = () => { console.log('[agentbbs] test log @ ' + new Date().toISOString()); console.warn('[agentbbs] test warning'); showConsole(); };
 }
 
+const MARKET_LABEL = { Theme: 'apply ▸', Plugin: 'run ▸', Agent: 'loop in ▸', Benchmark: 'open ▸' };
+const MARKET_ACTION = {
+  Theme: (l) => { applyTheme('terminal'); toast('Applied ' + l.title + ' (terminal theme)'); },
+  Plugin: () => doorEcho(),
+  Agent: () => summonAgent('graybeard'),
+  Benchmark: () => VIEWS.arena(),
+};
 function showMarket() {
   const d = store.market();
   const rows = d.listings.map(l => {
     const price = l.price ? `${l.price} cr` : 'free';
     const sig = l.verified ? '<span class="g">✓sig</span>' : '<span class="m">✗SIG</span>';
-    return `<div class="bbs-row"><span><span class="k">[${esc(l.kind.toLowerCase())}]</span> ` +
-      `<b>${esc(l.title)}</b> ${sig}<br><span class="d">${esc(l.description)}</span></span>` +
-      `<span class="r g">${price}</span></div>`;
+    return `<div class="bbs-row" data-sku="${esc(l.sku)}" data-kind="${esc(l.kind)}" style="cursor:pointer">` +
+      `<span><span class="k">[${esc(l.kind.toLowerCase())}]</span> <b>${esc(l.title)}</b> ${sig}<br>` +
+      `<span class="d">${esc(l.description)}</span></span>` +
+      `<span class="r" style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">` +
+      `<span class="g">${price}</span><button class="bbs-btn">${MARKET_LABEL[l.kind] || 'open ▸'}</button></span></div>`;
   }).join('');
-  panel('Marketplace', 'Signed, artifact-bound listings.', rows,
+  panel('Marketplace', 'Signed, artifact-bound listings — click to use one.', rows,
     'Every listing is signed by its seller and verifies on each node.');
+  document.querySelectorAll('#thread [data-sku]').forEach(el =>
+    el.onclick = () => { const l = d.listings.find(x => x.sku === el.dataset.sku); (MARKET_ACTION[el.dataset.kind] || (() => {}))(l); });
 }
 
 function showPassport() {

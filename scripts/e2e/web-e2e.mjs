@@ -85,6 +85,39 @@ try {
   ok(await page.evaluate(() => !!document.getElementById('dbg-ping')), 'Console panel has debug controls');
   ok(await page.evaluate(() => typeof window.__dbg === 'object' && Array.isArray(window.__dbg.log)), 'window.__dbg ring buffer exposed');
 
+  // ---- theme-aware BBS panels (the panels must match the active theme) ----
+  await page.evaluate(() => { window.__ui.applyTheme('light'); window.__ui.VIEWS.online(); });
+  await page.waitForTimeout(150);
+  const lightBbs = await page.evaluate(() => getComputedStyle(document.querySelector('#thread .bbs')).backgroundColor);
+  await page.evaluate(() => { window.__ui.applyTheme('dark'); window.__ui.VIEWS.online(); });
+  await page.waitForTimeout(150);
+  const darkBbs = await page.evaluate(() => getComputedStyle(document.querySelector('#thread .bbs')).backgroundColor);
+  ok(lightBbs !== darkBbs, `BBS panel is theme-aware (light ${lightBbs} != dark ${darkBbs})`);
+
+  // ---- Doors: the Echo reference plugin actually runs ----
+  await page.evaluate(() => window.__ui.VIEWS.doors());
+  await page.waitForTimeout(150);
+  await page.click('#thread [data-door="plugins"]');
+  await page.fill('#echo-in', 'abc123');
+  await page.click('#echo-run');
+  ok(await page.evaluate(() => /ECHO: ABC123/.test(document.getElementById('echo-out').textContent)), 'Doors: Echo plugin runs (uppercase echo)');
+
+  // ---- Doors: Memory Lane search returns real hits ----
+  await page.evaluate(() => window.__ui.VIEWS.doors());
+  await page.waitForTimeout(120);
+  await page.click('#thread [data-door="memory"]');
+  await page.fill('#mem-in', 'verifiable');
+  await page.click('#mem-run');
+  await page.waitForTimeout(300);
+  ok(await page.evaluate(() => /#general|no matches/.test(document.getElementById('mem-out').textContent)), 'Doors: Memory Lane search runs');
+
+  // ---- Marketplace: applying a Theme listing actually switches the theme ----
+  await page.evaluate(() => { window.__ui.applyTheme('dark'); window.__ui.VIEWS.market(); });
+  await page.waitForTimeout(150);
+  await page.click('#thread [data-kind="Theme"]');
+  ok(await page.evaluate(() => document.documentElement.dataset.theme === 'terminal'), 'Marketplace: Theme listing applies the theme');
+  await page.evaluate(() => window.__ui.applyTheme('dark'));
+
   // ---- mobile layout + persistence ----
   await page.evaluate(() => window.__ui.applyLayout('mobile'));
   ok(await page.evaluate(() => document.documentElement.dataset.layout === 'mobile' && getComputedStyle(document.getElementById('sidebar')).display === 'none'), 'mobile layout hides sidebar');

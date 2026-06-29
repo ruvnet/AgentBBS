@@ -54,9 +54,11 @@ the chat palette **and** sidebar-specific vars (`--side-bg`, `--side-fg`,
 `--side-active`, …) so the workspace rail can carry its own accent. Persisted as
 `localStorage: agentbbs.theme`; defaults to the OS `prefers-color-scheme`.
 
-The retro `.bbs` community panels stay intentionally terminal-styled (always
-dark) across every theme — they are a deliberate visual quote, not a themed
-surface.
+The retro `.bbs` community panels keep their terminal/Wildcat! *aesthetic* but
+are themed through a parallel `--bbs-*` token set (one block per theme), so a
+light theme renders readable dark-on-light panels rather than a dark terminal
+floating on a white page. (Refinement: an earlier draft left them hardcoded
+dark; that read as broken in `light`/`aubergine`.)
 
 ### 3. Appearance picker = the "template" surface
 
@@ -92,4 +94,5 @@ toggles. The quick 🌙/☀️ header toggle is retained as a fast-path.
   two layouts; the desktop right rail is presently informational only (online
   list), not yet a thread/details pane; genesis and `agentbbs-web` are still two
   copies of the same HTML to keep in sync (parity is manual — a shared asset is
-  a future follow-up). The `.bbs` panels remain unthemed by design.
+  a future follow-up). Each new theme means one `--bbs-*` block in addition to
+  the chat/sidebar tokens.
