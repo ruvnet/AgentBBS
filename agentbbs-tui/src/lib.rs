@@ -239,4 +239,20 @@ mod tests {
         assert!(text.contains("Marketplace"));
         assert!(text.contains("Echo Door"));
     }
+
+    #[test]
+    fn marketplace_buy_settles_credits() {
+        let mut app = App::in_memory();
+        let start = app.balance();
+        assert_eq!(start, 100); // seeded wallet
+        app.on_key(press(KeyCode::Enter)); // -> main
+        app.on_key(press(KeyCode::Char('K'))); // -> market
+        // Move to the first priced listing (graybeard = 25cr is index 1).
+        app.on_key(press(KeyCode::Down));
+        let price = app.market.all()[app.market_index].body.price;
+        app.on_key(press(KeyCode::Char('b'))); // buy
+        assert_eq!(app.balance(), start - price);
+        assert!(app.status.contains("Bought"));
+        assert!(app.status.contains("receipt"));
+    }
 }

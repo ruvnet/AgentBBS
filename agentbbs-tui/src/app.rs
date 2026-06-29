@@ -13,6 +13,7 @@ use std::time::Instant;
 use agentbbs_arena::{Arena, BenchmarkId, RunResult, Submission};
 use agentbbs_core::caps::Caps;
 use agentbbs_core::identity::Identity;
+use agentbbs_core::ledger::{purchase, Ledger};
 use agentbbs_core::market::{Listing, ListingBody, ListingKind, Market};
 use agentbbs_core::presence::Presence;
 use agentbbs_core::report::MemoryReporter;
@@ -123,6 +124,10 @@ pub struct App {
     pub presence: Arc<Presence>,
     /// Signed marketplace listings shown in the Marketplace screen.
     pub market: Market,
+    /// Highlighted row in the Marketplace screen.
+    pub market_index: usize,
+    /// Credits ledger backing marketplace settlement.
+    pub ledger: Ledger,
     /// Monotonic clock base for presence heartbeats.
     pub started: Instant,
     /// One-line status / error message.
@@ -174,6 +179,8 @@ impl App {
             arena_index: 0,
             presence,
             market: Market::new(),
+            market_index: 0,
+            ledger: Ledger::new(),
             started: Instant::now(),
             status: "Connected. Press ENTER.".into(),
             should_quit: false,
@@ -181,9 +188,35 @@ impl App {
         app.seed_defaults();
         app.seed_arena();
         app.seed_market();
+        // Give this session a starting wallet so marketplace settlement is live.
+        app.ledger.mint(app.session.identity.id(), 100);
         app.heartbeat();
         app.refresh_boards();
         app
+    }
+
+    /// This session's credit balance.
+    pub fn balance(&self) -> u64 {
+        self.ledger.balance(&self.session.identity.id())
+    }
+
+    /// Buy the highlighted marketplace listing, settling via the ledger.
+    pub fn buy_selected(&mut self) {
+        let Some(listing) = self.market.all().get(self.market_index).cloned() else {
+            return;
+        };
+        match purchase(&self.session.identity, &listing, &mut self.ledger) {
+            Ok(r) => {
+                self.status = format!(
+                    "Bought '{}' for {} cr — signed receipt {}. Balance: {} cr",
+                    listing.body.title,
+                    listing.body.price,
+                    &r.transfer.id.0[..8],
+                    self.balance()
+                );
+            }
+            Err(e) => self.status = format!("Purchase failed: {e}"),
+        }
     }
 
     /// Monotonic milliseconds since this session started (presence clock).

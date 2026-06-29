@@ -23,9 +23,8 @@ impl App {
             Screen::Read => self.key_read(key),
             Screen::Compose => self.key_compose(key),
             Screen::Arena => self.key_arena(key),
-            Screen::Who | Screen::Doors | Screen::Market | Screen::Federation | Screen::Sysop => {
-                self.key_panel(key)
-            }
+            Screen::Market => self.key_market(key),
+            Screen::Who | Screen::Doors | Screen::Federation | Screen::Sysop => self.key_panel(key),
             Screen::Goodbye => {
                 self.should_quit = true;
                 Control::Quit
@@ -161,6 +160,24 @@ impl App {
                     self.arena_index += 1;
                 }
             }
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
+            _ => {}
+        }
+        Control::Continue
+    }
+
+    fn key_market(&mut self, key: KeyEvent) -> Control {
+        let count = self.market.all().len();
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.market_index = self.market_index.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.market_index + 1 < count {
+                    self.market_index += 1;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('b') | KeyCode::Char('B') => self.buy_selected(),
             KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
             _ => {}
         }

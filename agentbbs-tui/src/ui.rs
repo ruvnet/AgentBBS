@@ -298,34 +298,39 @@ impl App {
 
     fn render_market(&self, frame: &mut Frame, area: Rect) {
         let mut lines = vec![
-            Line::from(Span::styled(
-                "SKU            KIND        TITLE                          PRICE",
-                theme::hotkey(),
-            )),
+            Line::from(vec![
+                Span::styled("WALLET ", theme::hotkey()),
+                Span::styled(format!("{} cr", self.balance()), Style::default().fg(theme::GREEN)),
+                Span::styled("   ↑↓ select · [B]/ENTER buy · ESC back", theme::dim()),
+            ]),
             Line::from("──────────────────────────────────────────────────────────"),
         ];
-        for l in self.market.all() {
+        for (i, l) in self.market.all().iter().enumerate() {
+            let selected = i == self.market_index;
+            let marker = if selected { "▶ " } else { "  " };
             let price = if l.body.price == 0 {
                 "free".to_string()
             } else {
                 format!("{} cr", l.body.price)
             };
             let sig = if l.verify().is_ok() { "✓" } else { "✗" };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:<14} ", l.body.sku), theme::hotkey()),
-                Span::styled(format!("{:<11} ", format!("{:?}", l.body.kind).to_lowercase()), theme::dim()),
-                Span::styled(format!("{:<30} ", l.body.title), theme::chrome()),
+            let row = Line::from(vec![
+                Span::styled(marker, theme::hotkey()),
+                Span::styled(format!("{:<13} ", l.body.sku), theme::hotkey()),
+                Span::styled(format!("{:<10} ", format!("{:?}", l.body.kind).to_lowercase()), theme::dim()),
+                Span::styled(format!("{:<26} ", l.body.title), theme::chrome()),
                 Span::styled(format!("{price:<6} "), Style::default().fg(theme::GREEN)),
                 Span::styled(sig, Style::default().fg(theme::GREEN)),
-            ]));
+            ]);
+            lines.push(if selected { row.style(theme::lightbar()) } else { row });
             lines.push(Line::from(Span::styled(
-                format!("   {}", l.body.description),
+                format!("    {}", l.body.description),
                 theme::dim(),
             )));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Every listing is signed by its seller and verifies on each node. ESC to return.",
+            "Listings are seller-signed; purchases settle as signed, verifiable credit transfers.",
             theme::chrome(),
         )));
         frame.render_widget(
