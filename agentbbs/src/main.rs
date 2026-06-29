@@ -133,11 +133,16 @@ async fn run_federate_serve(port: u16, peer: Option<String>) -> anyhow::Result<(
     }
 
     let identity = Identity::generate(); // anonymous, ephemeral node identity
+    // Honour AGENTBBS_SOCKS5 (e.g. Tor at 127.0.0.1:9050) for anonymous egress.
+    let transport = TcpTransport::from_env();
+    if transport.is_proxied() {
+        println!("federation egress tunnelled through SOCKS5 (AGENTBBS_SOCKS5)");
+    }
     let federator = Arc::new(Federator::new(
         identity,
         store.clone(),
         reporter,
-        Arc::new(TcpTransport::new()),
+        Arc::new(transport),
         peers,
     ));
 

@@ -1,0 +1,30 @@
+# AgentBBS — Tor configuration: SOCKS5 egress + v3 onion services.
+#
+# This fronts the AgentBBS services with .onion addresses (so callers reach the
+# node without learning its IP) and exposes a SOCKS5 port the node itself uses
+# to dial peers anonymously (AGENTBBS_SOCKS5), including other .onion peers.
+
+# SOCKS5 proxy for outbound (federation egress / dialling .onion peers).
+# Exposed to the host as 127.0.0.1:9050 by the compose file.
+SocksPort 0.0.0.0:9050
+
+# Keep logs minimal (anonymity: don't retain more than needed).
+Log notice stderr
+SafeLogging 1
+
+# --- v3 onion services -------------------------------------------------------
+# One hidden-service dir holds the key + the generated hostname (.onion). Each
+# HiddenServicePort maps an onion virtual port to an AgentBBS service. The
+# services run on the host (host.docker.internal); run them with the binaries:
+#   agentbbs ssh --port 2222
+#   cargo run -p agentbbs-web        # PORT=8088
+#   agentbbs federate serve --port 7420
+HiddenServiceDir /var/lib/tor/agentbbs
+HiddenServiceVersion 3
+
+# SSH front door  (onion :22  -> host :2222)
+HiddenServicePort 22   host.docker.internal:2222
+# Web UI          (onion :80  -> host :8088)
+HiddenServicePort 80   host.docker.internal:8088
+# Federation      (onion :7420 -> host :7420)
+HiddenServicePort 7420 host.docker.internal:7420
