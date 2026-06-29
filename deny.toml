@@ -102,14 +102,10 @@ allow = [
     "CDLA-Permissive-2.0",
 ]
 # Per-crate license clarifications can be added here if a crate's license text
-# is non-standard or absent. The vendored crates under crates/vendor/potatis/
-# (mos6502 + nes) are sourced from github.com/henrikpersson/potatis which ships
-# under MIT but does not embed a `license = "MIT"` field in their per-crate
-# Cargo.toml. We pin the MIT identifier here on their behalf.
-exceptions = [
-  { allow = ["MIT"], crate = "mos6502" },
-  { allow = ["MIT"], crate = "nes" },
-]
+# is non-standard and trips the confidence threshold. Currently empty —
+# vendored crates (mos6502, nes) and workspace crates (late-ssh, late-web)
+# have explicit `license` fields in their Cargo.toml now.
+exceptions = []
 
 [licenses.private]
 # Don't require license metadata on the workspace's own unpublished crates.
