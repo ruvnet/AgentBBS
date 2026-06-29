@@ -93,7 +93,7 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
-    font-size: 16px; overscroll-behavior: none; }
+    font-size: 16px; overscroll-behavior: none; overflow-x: hidden; }
 
   /* ---- visibility helpers (driven by data-layout ONLY) ---- */
   .desk-only { display: none !important; }
@@ -120,6 +120,21 @@
     :root[data-layout="desktop"] #app { grid-template-columns: 240px minmax(0, 1fr); }
     :root[data-layout="desktop"] #rightbar { display: none; }
   }
+  /* Below ~760px the 3-pane workspace can't fit — collapse to the mobile
+     presentation even when data-layout="desktop" is persisted/selected, so a
+     phone (or a narrowed window) is never too wide and the ☰ menu stays reachable. */
+  @media (max-width: 760px) {
+    :root[data-layout="desktop"] #app { display: flex; flex-direction: column; height: 100dvh; max-width: 560px; margin: 0 auto; grid-template-columns: none; }
+    :root[data-layout="desktop"] #sidebar, :root[data-layout="desktop"] #rightbar { display: none; }
+    :root[data-layout="desktop"] .col { border-left: 0; border-right: 0; }
+    :root[data-layout="desktop"] main { max-width: none; margin: 0; }
+    :root[data-layout="desktop"] .chips { display: flex !important; }
+    :root[data-layout="desktop"] .desk-only { display: none !important; }
+    :root[data-layout="desktop"] .hamburger { display: flex !important; }
+    :root[data-layout="desktop"] .board-chip { display: flex !important; }
+  }
+  /* Very narrow phones: drop the mode-badge label so the header never crowds. */
+  @media (max-width: 430px) { #modeText { display: none; } .mode-badge { padding: 4px 7px; } }
 
   /* Top bar */
   header { display: flex; align-items: center; gap: 10px;

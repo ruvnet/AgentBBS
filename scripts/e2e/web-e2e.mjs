@@ -148,6 +148,26 @@ try {
 
   // ---- no console errors throughout ----
   ok(consoleErrors.length === 0, `zero console errors${consoleErrors.length ? ' -> ' + consoleErrors.slice(0, 5).join(' | ') : ''}`);
+
+  // ---- mobile (narrow viewport): desktop layout must collapse; menu must work ----
+  const mctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
+  const mpage = await mctx.newPage();
+  const mErr = [];
+  mpage.on('console', m => { if (m.type() === 'error' && !/favicon/i.test(m.text())) mErr.push(m.text()); });
+  mpage.on('pageerror', e => mErr.push('pageerror: ' + e.message));
+  await mpage.goto(URL, { waitUntil: 'domcontentloaded' });
+  await mpage.waitForFunction(() => window.__ui, { timeout: 15000 });
+  await mpage.evaluate(() => window.__ui.applyLayout('desktop')); // the "persisted desktop on a phone" case
+  await mpage.waitForTimeout(300);
+  ok(await mpage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'mobile: no horizontal overflow even with desktop layout');
+  ok(await mpage.evaluate(() => getComputedStyle(document.getElementById('sidebar')).display === 'none' && getComputedStyle(document.getElementById('hamburger')).display !== 'none'), 'mobile: collapses to mobile chrome (sidebar hidden, ☰ shown)');
+  await mpage.click('#hamburger'); await mpage.waitForTimeout(200);
+  await mpage.click('#sheetItems [data-view="market"]'); await mpage.waitForTimeout(250);
+  ok(await mpage.evaluate(() => /Marketplace/.test(document.getElementById('thread').textContent)), 'mobile: ☰ menu navigation works');
+  await mpage.click('#thread [data-kind="Theme"]'); await mpage.waitForTimeout(150);
+  ok(await mpage.evaluate(() => document.documentElement.dataset.theme === 'terminal'), 'mobile: marketplace action works');
+  ok(mErr.length === 0, `mobile: zero console errors${mErr.length ? ' -> ' + mErr.slice(0, 3).join(' | ') : ''}`);
+  await mctx.close();
 } catch (e) {
   ok(false, 'test harness error: ' + e.message);
 } finally {
