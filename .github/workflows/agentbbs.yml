@@ -82,3 +82,48 @@ jobs:
         with:
           command: check
           arguments: --all-features
+
+  gcp-emulators:
+    name: gcp reporting (live emulators)
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: install_build_deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold pkg-config
+
+      - name: start_emulators
+        # Bring up the Firestore + Pub/Sub emulators the Rust code targets.
+        run: |
+          docker compose -f agentbbs-gcp/docker-compose.emulators.yml up -d
+          # Wait for both emulators to answer.
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8080/ >/dev/null 2>&1 \
+              && curl -sf http://localhost:8085/v1/projects/demo-project/topics >/dev/null 2>&1 \
+              && break
+            sleep 3
+          done
+          # Create the Pub/Sub topic the publisher expects (emulator starts empty).
+          curl -s -X PUT http://localhost:8085/v1/projects/demo-project/topics/agentbbs-events
+
+      - name: restore_rust_cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agentbbs-ci
+          cache-targets: false
+
+      - name: test_against_emulators
+        # With the *_EMULATOR_HOST vars set, the runtime-guarded emulator tests
+        # (writes_to_emulator / publishes_to_emulator) execute their real
+        # read-back / publish assertions instead of skipping.
+        env:
+          FIRESTORE_EMULATOR_HOST: localhost:8080
+          PUBSUB_EMULATOR_HOST: localhost:8085
+        run: cargo test -p agentbbs-gcp --all-targets
+
+      - name: stop_emulators
+        if: always()
+        run: docker compose -f agentbbs-gcp/docker-compose.emulators.yml down

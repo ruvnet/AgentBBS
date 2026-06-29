@@ -127,15 +127,46 @@ mod tests {
         );
     }
 
-    // Requires a live Firestore emulator on FIRESTORE_EMULATOR_HOST.
+    // End-to-end against a live Firestore emulator. Runs only when
+    // FIRESTORE_EMULATOR_HOST is set (skips cleanly otherwise, so the suite is
+    // green offline); when set, it reports an event and reads it back.
     #[tokio::test]
-    #[ignore]
     async fn writes_to_emulator() {
-        let reporter = FirestoreReporter::start("demo-project", None, &Handle::current());
+        if std::env::var(crate::env::FIRESTORE_EMULATOR_ENV)
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true)
+        {
+            eprintln!(
+                "skip writes_to_emulator: {} not set",
+                crate::env::FIRESTORE_EMULATOR_ENV
+            );
+            return;
+        }
+        let project = "demo-project";
+        let subject = format!("emu-smoke-{}", std::process::id());
+        let reporter = FirestoreReporter::start(project, None, &Handle::current());
         reporter
-            .report(Event::now(EventKind::SessionOpen, "emulator-smoke"))
+            .report(Event::now(EventKind::SessionOpen, subject.clone()))
             .unwrap();
-        // Give the drain task a moment to flush.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Poll the collection until our document lands (drain is async).
+        let base = crate::env::firestore_base(None);
+        let url = format!(
+            "{base}/v1/projects/{project}/databases/(default)/documents/{EVENTS_COLLECTION}"
+        );
+        let client = reqwest::Client::new();
+        let mut found = false;
+        for _ in 0..25 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if let Ok(resp) = client.get(&url).send().await {
+                if let Ok(text) = resp.text().await {
+                    if text.contains(&subject) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(found, "reported event did not land in the Firestore emulator");
     }
 }

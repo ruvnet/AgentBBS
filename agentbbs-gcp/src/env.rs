@@ -58,18 +58,27 @@ fn trim_trailing_slash(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
-    // A unique env var name so this test never races other crates.
+    // A unique env var name so these tests never race other crates.
     const TEST_ENV: &str = "AGENTBBS_GCP_TEST_EMULATOR_HOST";
+
+    // Serializes the env-mutating tests against each other: cargo runs tests in
+    // parallel threads within one process and process-global env is shared, so
+    // two tests touching TEST_ENV concurrently would race. The lock makes each
+    // test's set/read/remove sequence atomic (fixes the prior flakiness).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn explicit_override_wins() {
+        // The override path never reads env, so it needs no lock.
         let got = resolve_base(Some("http://example/"), TEST_ENV, FIRESTORE_PROD_BASE);
         assert_eq!(got, "http://example");
     }
 
     #[test]
     fn env_then_removed() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Not set → production fallback.
         std::env::remove_var(TEST_ENV);
         assert_eq!(
@@ -101,6 +110,7 @@ mod tests {
 
     #[test]
     fn blank_env_falls_back() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         std::env::set_var(TEST_ENV, "   ");
         assert_eq!(
             resolve_base(None, TEST_ENV, FIRESTORE_PROD_BASE),

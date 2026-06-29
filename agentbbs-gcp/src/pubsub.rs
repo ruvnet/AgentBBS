@@ -146,16 +146,33 @@ mod tests {
         assert_eq!(p.publish(&[]).await.unwrap(), 0);
     }
 
-    // Requires a live Pub/Sub emulator on PUBSUB_EMULATOR_HOST with the topic
-    // already created.
+    // End-to-end against a live Pub/Sub emulator. Runs only when
+    // PUBSUB_EMULATOR_HOST is set (skips cleanly otherwise); creates the topic
+    // (idempotent) and publishes one event, asserting the emulator accepted it.
     #[tokio::test]
-    #[ignore]
     async fn publishes_to_emulator() {
-        let p = PubSubPublisher::new("demo-project", DEFAULT_TOPIC, None);
+        if std::env::var(crate::env::PUBSUB_EMULATOR_ENV)
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true)
+        {
+            eprintln!(
+                "skip publishes_to_emulator: {} not set",
+                crate::env::PUBSUB_EMULATOR_ENV
+            );
+            return;
+        }
+        let project = "demo-project";
+        let base = crate::env::pubsub_base(None);
+        // Ensure the topic exists (the emulator starts empty); PUT is idempotent.
+        let client = reqwest::Client::new();
+        let topic_url = format!("{base}/v1/projects/{project}/topics/{DEFAULT_TOPIC}");
+        let _ = client.put(&topic_url).send().await;
+
+        let p = PubSubPublisher::new(project, DEFAULT_TOPIC, None);
         let n = p
             .publish(&[Event::now(EventKind::SessionOpen, "emulator-smoke")])
             .await
             .unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, 1, "Pub/Sub emulator should accept one published message");
     }
 }
