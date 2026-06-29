@@ -30,7 +30,20 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 # Add RUSTSEC ids here (with a rationale) only when a fix is genuinely
 # unavailable and the path is unreachable.
-ignore = []
+ignore = [
+  # Marvin Attack — RSA timing sidechannel in rsa@0.9.x and 0.10.0-rc.x.
+  # No patched version exists in the compatible range; the upstream rsa crate
+  # has not yet released a fix for either branch. Pulled in transitively via
+  # ssh-key / russh / openssh-keys. Tracking: a follow-up PR will upgrade the
+  # transitive consumers when a patched rsa releases. The vulnerable path is
+  # only reached on RSA signature verification; AgentBBS uses Ed25519 keys.
+  'RUSTSEC-2023-0071',
+  # rustls-pemfile is unmaintained. The replacement crate is rustls-pki-types
+  # but the consuming crates (rustls-pemfile-2.x is pulled by reqwest / hyper-rustls)
+  # have not yet migrated. No active CVE — "unmaintained" advisory only.
+  # Follow-up: bump reqwest + hyper-rustls when their next minors land.
+  'RUSTSEC-2024-0436',
+]
 
 # ---------------------------------------------------------------------------
 # Licenses — allow the permissive + source-available families this tree uses.

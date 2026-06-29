@@ -80,7 +80,7 @@ impl Presence {
             .filter(|m| now_ms.saturating_sub(m.last_seen_ms) < self.ttl_ms)
             .cloned()
             .collect();
-        live.sort_by(|a, b| b.last_seen_ms.cmp(&a.last_seen_ms));
+        live.sort_by_key(|m| std::cmp::Reverse(m.last_seen_ms));
         live
     }
 
