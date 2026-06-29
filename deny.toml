@@ -100,6 +100,12 @@ allow = [
     # CDLA-Permissive-2.0 — used by webpki-root-certs 1.0.7 (the trust-anchor
     # data bundle, not code). Permissive Community Data License.
     "CDLA-Permissive-2.0",
+    # The workspace's own license is FSL-1.1-Apache-2.0 (Functional Source
+    # License with an Apache-2.0 future-grant). This is not a standard SPDX
+    # identifier; cargo-deny's "LicenseRef-" prefix is the SPDX-blessed way
+    # to express a non-standard license. The late-{core,ssh,web,nethack}
+    # workspace crates declare `license = "LicenseRef-FSL-1.1-Apache-2.0"`.
+    "LicenseRef-FSL-1.1-Apache-2.0",
 ]
 # Per-crate license clarifications can be added here if a crate's license text
 # is non-standard and trips the confidence threshold. Currently empty —
