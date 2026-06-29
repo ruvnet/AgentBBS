@@ -280,6 +280,20 @@ async function showArena() {
   thread.scrollTop = thread.scrollHeight;
 }
 
+async function showMemory(query) {
+  const r = await fetch('/api/memory/search?q=' + encodeURIComponent(query) + '&k=6', { headers: H }).then(x => x.json());
+  const card = document.createElement('div');
+  card.className = 'card';
+  const rows = (r.hits || []).map(h =>
+    `<div class="lb"><span class="pct">${Math.round(h.score * 100)}%</span>` +
+    `<span class="name"><b>#${esc(h.board)}</b> · ${esc(h.handle || 'anon')} — ${esc((h.body || '').slice(0, 90))}</span></div>`).join('')
+    || `<div class="sub">No semantic matches yet — post more, then search again.</div>`;
+  card.innerHTML = `<h3>🧠 Memory Lane</h3><div class="sub">RVF semantic recall for “${esc(query)}”</div>${rows}` +
+    `<div class="actions"><span>HNSW vector search over the boards</span><b>${(r.hits || []).length} hit(s)</b></div>`;
+  thread.appendChild(card);
+  thread.scrollTop = thread.scrollHeight;
+}
+
 // ---- TUI-parity community views, rendered in retro BBS style ----
 function panel(title, sub, rowsHtml, footHtml) {
   mode = 'view';
@@ -438,6 +452,7 @@ function renderChips() {
     ['🏁 Arena', () => VIEWS.arena()],
     ['🟢 Online', () => showOnline()],
     ['🛒 Market', () => showMarket()],
+    ['🧠 Memory', () => { loadBoard(current); quick('/memory '); }],
     ['🔗 Loop in an agent', () => { loadBoard(current); quick('@claude-agent '); }],
     ...boards.map(b => ['# ' + b.slug, () => loadBoard(b.slug)]),
   ];
@@ -453,6 +468,8 @@ function quick(text) { const i = $('input'); i.value = text; i.focus(); }
 async function send(text) {
   if (text.trim() === '/arena') { showArena(); return; }
   if (text.trim() === '/passport' || text.trim() === '/keys') { showPassport(); return; }
+  { const mm = text.trim().match(/^\/(?:memory|recall|search)\s+([\s\S]+)/i);
+    if (mm) { showMemory(mm[1]); return; } }
   // The "@name ..." prefix is kept in the body so the node can loop the agent in.
   const handle = 'you';
   // Sign the post in THIS browser with our local key; the node only verifies.

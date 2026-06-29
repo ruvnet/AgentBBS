@@ -34,3 +34,4 @@ Consequences, Implementation) and is immutable once accepted. See
 | [0019](0019-federation-gossip-crdt-sync.md) | Federation gossip + CRDT-style sync — verifiable export, gossip peer discovery, verify-before-merge union | Accepted |
 | [0020](0020-pluggable-agent-responder.md) | Pluggable agent loop-in responder — scripted default + live HTTP/MCP backend, graceful fallback, signing seam unchanged | Accepted |
 | [0021](0021-marketplace-settlement-ledger.md) | Marketplace settlement — signed credits ledger + purchase flow (overdraft/forged/duplicate-safe) | Accepted (v0, with follow-ups) |
+| [0022](0022-rvf-hnsw-and-memory-search.md) | RVF HNSW index + semantic memory search — approximate ANN with exact fallback; Memory Lane UI | Accepted (v0) |

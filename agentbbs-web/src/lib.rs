@@ -305,6 +305,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/federation", get(api_federation))
         .route("/api/report", get(api_report))
         .route("/api/market", get(api_market))
+        .route("/api/memory/search", get(api_memory_search))
         // Permissive CORS so a static genesis node (e.g. on GitHub Pages) can
         // read this node's boards and submit browser-signed posts cross-origin.
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -698,6 +699,74 @@ async fn api_board_export(
 #[derive(Serialize)]
 struct PeersResponse {
     peers: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct MemoryQuery {
+    q: String,
+    #[serde(default)]
+    k: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct MemoryHit {
+    board: String,
+    handle: String,
+    body: String,
+    score: f32,
+}
+
+#[derive(Serialize)]
+struct MemoryResponse {
+    query: String,
+    hits: Vec<MemoryHit>,
+}
+
+/// Semantic memory search over all board messages — "Memory Lane". Embeds the
+/// query and every message with the same deterministic hashing embedder, then
+/// ranks by cosine; uses the HNSW index over larger corpora, exact search for
+/// small ones. This surfaces the RVF semantic memory beyond the MCP tool.
+async fn api_memory_search(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(mq): axum::extract::Query<MemoryQuery>,
+) -> impl IntoResponse {
+    use agentbbs_core::rvf::{hashing_embed, Record, RvfStore};
+    const DIM: usize = 64;
+
+    if mq.q.trim().is_empty() {
+        return Json(MemoryResponse { query: mq.q, hits: vec![] });
+    }
+    let mut store = RvfStore::new(DIM);
+    for b in state.bbs.list_boards(Caps::READ).unwrap_or_default() {
+        for m in state.bbs.read_board(Caps::READ, &b.slug, 1000).unwrap_or_default() {
+            let text = format!("{} {}", m.body.subject, m.body.body);
+            let _ = store.upsert(Record {
+                id: m.id.0.clone(),
+                vector: hashing_embed(&text, DIM),
+                meta: serde_json::json!({
+                    "board": b.slug, "handle": m.body.handle, "body": m.body.body
+                }),
+            });
+        }
+    }
+    let k = mq.k.unwrap_or(5).clamp(1, 20);
+    let qvec = hashing_embed(&mq.q, DIM);
+    let hits = if store.len() > 50 {
+        store.build_hnsw(12, 64).search(&qvec, k, 64).unwrap_or_default()
+    } else {
+        store.search(&qvec, k).unwrap_or_default()
+    };
+    let out = hits
+        .into_iter()
+        .filter(|h| h.score > 0.0)
+        .map(|h| MemoryHit {
+            board: h.meta["board"].as_str().unwrap_or("").to_string(),
+            handle: h.meta["handle"].as_str().unwrap_or("").to_string(),
+            body: h.meta["body"].as_str().unwrap_or("").to_string(),
+            score: h.score,
+        })
+        .collect();
+    Json(MemoryResponse { query: mq.q, hits: out })
 }
 
 /// Advertise this node's known peers, for gossip-style discovery.
@@ -1371,6 +1440,31 @@ mod tests {
         let app = router(AppState::in_memory());
         let peers = get_json(&app, "/api/peers").await;
         assert!(peers["peers"].is_array());
+    }
+
+    #[tokio::test]
+    async fn memory_search_ranks_relevant_messages() {
+        let app = router(AppState::in_memory());
+        for text in [
+            "the quarterly budget meeting is scheduled for tuesday",
+            "deploy the kubernetes cluster to production",
+        ] {
+            let post = Request::post("/api/boards/general")
+                .header("content-type", "application/json")
+                .header("x-session", "writer")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "handle": "you", "text": text }))
+                        .unwrap(),
+                ))
+                .unwrap();
+            assert_eq!(app.clone().oneshot(post).await.unwrap().status(), StatusCode::OK);
+        }
+        let res = get_json(&app, "/api/memory/search?q=budget%20meeting%20schedule").await;
+        let hits = res["hits"].as_array().unwrap();
+        assert!(!hits.is_empty(), "expected a semantic hit");
+        // The budget/meeting/schedule message must rank first (shared tokens).
+        assert!(hits[0]["body"].as_str().unwrap().contains("budget"));
+        assert!(hits[0]["score"].as_f64().unwrap() > 0.0);
     }
 
     // A pluggable responder stand-in for a live model/MCP backend.
