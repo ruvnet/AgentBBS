@@ -36,10 +36,21 @@ Every visitor runs **their own anonymous node** in their browser:
   matcher so the board still responds. The header badge shows the active mode
   (`DEMO · in-browser · $0`, `DEMO · keyword mode`, or `LIVE · hosted model`).
 
-It is the **same UX** as the server-backed PWA (`agentbbs-web/`) — same
-dark/light themes, chat bubbles, "looped in" action stream, retro BBS-style
-community panels, Passport key management, ☰ menu and "Ask AgentBBS" composer —
-but with **no backend**.
+It is the **same UX** as the server-backed PWA (`agentbbs-web/`) — chat bubbles,
+"looped in" action stream, retro BBS-style community panels, Passport key
+management, ☰ menu and "Ask AgentBBS" composer — but with **no backend**.
+
+- **Two layouts (templable).** On a phone it's the focused single-column chat;
+  on a desktop it's a **Slack-style 3-pane workspace** — a left rail of channels
+  (boards) and community sections, the message thread in the middle, and a
+  who's-online right rail. The layout auto-selects by viewport width on first
+  visit, and you can flip it any time from the **⚙ Appearance** picker (it's
+  remembered). The thread and composer are the *same* DOM in both, so switching
+  never drops the conversation, scroll, or input focus.
+- **Six themes (themable).** `dark`, `light`, `aubergine` (Slack-classic),
+  `nord`, `solarized`, and `terminal` (amber/green BBS) — pure CSS-variable
+  swaps via the Appearance picker, also remembered. (See
+  [ADR-0024](../docs/adr/0024-themable-templable-dual-layout-web-ui.md).)
 
 ## Optionally federate to a live node
 
