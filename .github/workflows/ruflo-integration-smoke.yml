@@ -205,14 +205,14 @@ jobs:
           # federation_bbs_publish semantically calls. Re-run them here so a
           # break shows up under the regression-guard banner even if the main
           # agentbbs.yml workflow is skipped on a docs-only PR elsewhere.
-          cargo test -p agentbbs-federation --release \
-            envelope_seal_open_roundtrip \
-            forged_node_id_rejected \
-            tampered_payload_rejected \
-            ingest_replay_is_idempotent \
-            announce_board_replicates \
-            loopback_two_node_replication \
-            ruflo_adapter_shells_npx
+          # cargo test accepts only ONE positional TESTNAME filter — loop over
+          # each named test so we get explicit pass/fail per test rather than
+          # a silent miss when one is renamed upstream.
+          tests="envelope_seal_open_roundtrip forged_node_id_rejected tampered_payload_rejected ingest_replay_is_idempotent announce_board_replicates loopback_two_node_replication ruflo_adapter_shells_npx"
+          for t in $tests; do
+            echo "== running $t =="
+            cargo test -p agentbbs-federation --release "$t"
+          done
 
   report-status:
     name: report regression status
