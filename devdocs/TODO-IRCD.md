@@ -120,7 +120,7 @@ Spec: FRD-IRCD.md §5.2 / §7. Implemented as a single listener:
 
 ## Task #9 — Tests + docs (in progress)
 
-- Done: repo-root `CONTEXT.md` now documents the embedded IRC listener,
+- Done: `docs/design/CONTEXT.md` now documents the embedded IRC listener,
   Settings > Account token flow, protocol bridge, moderation projection,
   disconnect semantics, and agent test-command boundary.
 - Done: splash tip pools now mention IRC token setup from Settings > Account.

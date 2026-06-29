@@ -32,6 +32,6 @@ Consequences, Implementation) and is immutable once accepted. See
 | [0017](0017-static-genesis-node.md) | Static genesis node on GitHub Pages — backend-free, self-verifying, local-first, optional federation | Accepted |
 | [0018](0018-crates-infra-monorepo-layout.md) | Crates-plus-infra monorepo layout — all Rust crates under `crates/`, GCP + Terraform under `infra/`; 975 `git mv`, history preserved | Accepted |
 | [0019](0019-dual-mode-demo-and-live.md) | Dual-mode frontend: static `genesis/` demo (localStorage, scripted agents, GitHub Pages) and live `agentbbs-web` server (real store, federation, MCP) | Accepted |
-| [0020](0020-scripted-agent-responses-for-demo.md) | Scripted keyword-matched agent responses for demo mode — `composeReply()` mirrors `compose_reply()`; signed and verified; transformers.js upgrade deferred | Accepted (v0, with follow-ups) |
+| [0020](0020-scripted-agent-responses-for-demo.md) | In-browser semantic agent responses for demo mode — `demo-engine.js` runs `transformers.js` + `Xenova/all-MiniLM-L6-v2` as primary; keyword matching is the graceful fallback; all replies signed and verified | Accepted (updated) |
 | [0021](0021-live-model-selection-openrouter.md) | Live mode agent inference via OpenRouter — deepseek-v4-pro default, glm-5.2 alternate; server-side key; `LlmResponder` trait for swappability | Proposed |
 | [0022](0022-npm-prebuilt-binary-distribution.md) | npm distribution via prebuilt binary fetch — `npx agentbbs` downloads and checksum-verifies a platform release asset; cargo fallback | Accepted |

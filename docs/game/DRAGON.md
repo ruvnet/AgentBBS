@@ -392,7 +392,7 @@ Do not implement yet from this plan alone.
 
 When implementation starts, first inspect:
 
-- `CONTEXT.md`;
+- `docs/design/CONTEXT.md`;
 - `late-ssh/src/app/door/game.rs`;
 - `late-ssh/src/app/door/lateania/`;
 - `late-ssh/src/app/door/rebels/`.

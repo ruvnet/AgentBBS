@@ -49,7 +49,7 @@ extra setup needed.
 
 ### Contributing themes
 
-If you want to add a built-in SSH theme, read [`THEME.md`](THEME.md) before
+If you want to add a built-in SSH theme, read [`THEME.md`](docs/design/THEME.md) before
 opening a PR. It covers the required code changes, stable `theme_id` rules, and
 theme-specific review expectations.
 
@@ -187,17 +187,17 @@ to `tests/`.
 This codebase was largely built with AI assistance and is set up for that
 workflow.
 
-[`CONTEXT.md`](CONTEXT.md) is the main file to feed your LLM. It contains
+[`CONTEXT.md`](docs/design/CONTEXT.md) is the main file to feed your LLM. It contains
 architecture, invariants, test strategy, module layout, and current work
 context — everything an agent needs to make good decisions without reading every
 source file first. Think of it as a project brief written for LLMs.
 
 If you use an editor with AI integration (Cursor, Claude Code, Copilot, etc.),
-point it at `CONTEXT.md` and `CONTRIBUTING.md` as initial context. The
+point it at `docs/design/CONTEXT.md` and `CONTRIBUTING.md` as initial context. The
 combination covers both the "what" (architecture, constraints) and the "how"
 (workflow, test rules, module patterns).
 
-When your AI-assisted changes alter behavior covered in `CONTEXT.md`, update
+When your AI-assisted changes alter behavior covered in `docs/design/CONTEXT.md`, update
 that file too — it's a living document meant to stay in sync with the code.
 
 ## Picking what to work on
@@ -218,7 +218,7 @@ that file too — it's a living document meant to stay in sync with the code.
 - Larger features welcome: new game domains, service additions, new screens.
 - Follow the domain module pattern above.
 - Integration tests expected for anything touching the DB or services.
-- Read `CONTEXT.md` for architecture details, invariants, and gotchas before
+- Read `docs/design/CONTEXT.md` for architecture details, invariants, and gotchas before
   diving in.
 
 ## Practical notes
