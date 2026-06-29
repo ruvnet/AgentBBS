@@ -194,6 +194,19 @@ export async function rotate() {
 /** The active seed: the in-memory one if unlocked, else the plaintext on disk. */
 export function currentSeed() { return _active || localStorage.getItem(KEY); }
 
+// Verify an exported/peer message (the verifiable wire shape with full author
+// pubkey, created_at string, and signature). Returns true iff the Ed25519
+// signature is valid over the canonical bytes — what a peer runs before merging.
+export async function verifySigned(m) {
+  try {
+    const sb = signingBytes({
+      board: m.board, parent: m.parent || null, subject: m.subject,
+      body: m.body, author: m.author, handle: m.handle || '', createdAt: m.created_at,
+    });
+    return await ed.verifyAsync(unhex(m.signature), sb, unhex(m.author));
+  } catch (_) { return false; }
+}
+
 // Build a fully signed post payload for POST /api/boards/{slug}/signed.
 export async function signPost(seedHex, { board, subject, body, handle, parent }) {
   const author = await agentId(seedHex);

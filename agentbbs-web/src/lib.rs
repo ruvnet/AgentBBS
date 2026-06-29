@@ -95,6 +95,19 @@ pub struct AppState {
     /// Stable identities for built-in agents you can "loop in" by @mention,
     /// keyed by handle, so an agent always signs with the same key.
     agents: Mutex<HashMap<String, Identity>>,
+    /// Known federation peer base URLs, advertised via `/api/peers` for gossip
+    /// discovery. Seeded from `AGENTBBS_PEERS` (comma-separated).
+    peers: Vec<String>,
+}
+
+/// Parse the `AGENTBBS_PEERS` env var (comma-separated base URLs) into a list.
+fn parse_peers_env() -> Vec<String> {
+    std::env::var("AGENTBBS_PEERS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 impl AppState {
@@ -110,6 +123,7 @@ impl AppState {
             reporter,
             market: Mutex::new(seed_market()),
             agents: Mutex::new(HashMap::new()),
+            peers: parse_peers_env(),
         })
     }
 
@@ -270,6 +284,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/state", get(api_state))
         .route("/api/boards/{slug}", get(api_board).post(api_post))
         .route("/api/boards/{slug}/signed", post(api_post_signed))
+        .route("/api/boards/{slug}/export", get(api_board_export))
+        .route("/api/peers", get(api_peers))
         .route("/api/arena", get(api_arena))
         .route("/api/whoami", post(api_whoami))
         .route("/api/online", get(api_online))
@@ -513,6 +529,67 @@ async fn api_board(
         description: board.description,
         messages,
     }))
+}
+
+/// The full, *verifiable* form of a signed message — unlike [`MessageView`]
+/// this carries the author's full public key, the exact `created_at` string,
+/// and the Ed25519 signature, so a peer (e.g. a genesis node) can independently
+/// re-verify it before merging. This is the federation/sync wire shape.
+#[derive(Serialize)]
+struct SignedMessageView {
+    id: String,
+    board: String,
+    parent: Option<String>,
+    subject: String,
+    body: String,
+    author: String,
+    handle: String,
+    created_at: String,
+    signature: String,
+}
+
+/// Export a board's messages in fully-verifiable form for peer sync.
+async fn api_board_export(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+) -> Result<Json<Vec<SignedMessageView>>, StatusCode> {
+    state
+        .bbs
+        .store()
+        .get_board(&slug)
+        .ok()
+        .flatten()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let out = state
+        .bbs
+        .read_board(Caps::READ, &slug, 1000)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| SignedMessageView {
+            id: m.id.0,
+            board: m.body.board,
+            parent: m.body.parent.map(|p| p.0),
+            subject: m.body.subject,
+            body: m.body.body,
+            author: m.body.author.to_hex(),
+            handle: m.body.handle,
+            created_at: m.body.created_at.to_rfc3339(),
+            signature: m.signature.to_hex(),
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+#[derive(Serialize)]
+struct PeersResponse {
+    peers: Vec<String>,
+}
+
+/// Advertise this node's known peers, for gossip-style discovery.
+async fn api_peers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(PeersResponse {
+        peers: state.peers.clone(),
+    })
 }
 
 /// Build a `(status, Json{error})` tuple for an API error response.
@@ -1130,5 +1207,54 @@ mod tests {
             .unwrap()
             .iter()
             .any(|e| e["kind"] == "Post"));
+    }
+
+    #[tokio::test]
+    async fn export_is_independently_verifiable() {
+        use agentbbs_core::identity::{AgentId, SignatureBytes};
+        use agentbbs_core::{Message, MessageBody, MessageId};
+
+        let app = router(AppState::in_memory());
+        let (payload, _) = signed_payload("exported + reverified");
+        let post = Request::post("/api/boards/general/signed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        assert_eq!(app.clone().oneshot(post).await.unwrap().status(), StatusCode::OK);
+
+        let exported = get_json(&app, "/api/boards/general/export").await;
+        let arr = exported.as_array().unwrap();
+        let m = arr
+            .iter()
+            .find(|m| m["body"] == "exported + reverified")
+            .expect("exported message present");
+
+        // Reconstruct the signed message purely from the exported fields and
+        // verify it — exactly what a peer (genesis node) does before merging.
+        let body = MessageBody {
+            board: m["board"].as_str().unwrap().into(),
+            parent: m["parent"].as_str().map(|s| MessageId(s.into())),
+            subject: m["subject"].as_str().unwrap().into(),
+            body: m["body"].as_str().unwrap().into(),
+            author: AgentId::from_hex(m["author"].as_str().unwrap()).unwrap(),
+            handle: m["handle"].as_str().unwrap().into(),
+            created_at: chrono::DateTime::parse_from_rfc3339(m["created_at"].as_str().unwrap())
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        };
+        let message = Message {
+            id: body.id(),
+            body,
+            signature: SignatureBytes::from_hex(m["signature"].as_str().unwrap()).unwrap(),
+        };
+        assert!(message.verify().is_ok(), "exported message must re-verify");
+        assert_eq!(message.id.0, m["id"].as_str().unwrap());
+    }
+
+    #[tokio::test]
+    async fn peers_endpoint_returns_list() {
+        let app = router(AppState::in_memory());
+        let peers = get_json(&app, "/api/peers").await;
+        assert!(peers["peers"].is_array());
     }
 }

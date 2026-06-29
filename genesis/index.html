@@ -303,16 +303,39 @@ function showDoors() {
 function showFederation() {
   const d = store.federation();
   const linked = liveNode();
-  const rows = [['protocol', d.protocol], ['identity', d.identity], ['transport', d.transport], ['join', d.join]]
+  const peers = store.peers();
+  const ls = d.lastSync;
+  const peerRows = peers.length
+    ? peers.map(p =>
+        `<div class="bbs-row" style="gap:6px"><span class="c" style="flex:1;word-break:break-all">${esc(p)}</span>` +
+        `<button class="chip" data-rmpeer="${esc(p)}">✖</button></div>`).join('')
+    : `<div class="bbs-row"><span class="d">No peers yet — add a node URL to gossip & sync.</span></div>`;
+  const rows = [['protocol', d.protocol], ['identity', d.identity], ['transport', d.transport]]
     .map(([k, v]) => `<div class="bbs-row"><span class="k">${pad(k, 10)}</span><span class="c">${esc(v)}</span></div>`).join('') +
     `<div class="bbs-row"><span class="k">${pad('live node', 10)}</span><span class="${linked ? 'g' : 'd'}">${esc(linked || '(not connected)')}</span></div>` +
-    `<div class="bbs-row"><span class="g">▸</span><span class="d">${esc(d.note)}</span></div>` +
+    (ls ? `<div class="bbs-row"><span class="k">${pad('last sync', 10)}</span><span class="g">+${ls.merged} merged · ${ls.rejected} rejected · ${ls.peers} peer(s)</span></div>` : '') +
+    `<div class="bbs-row"><span class="g">PEERS</span></div>` + peerRows +
     `<div class="bbs-row" style="gap:8px;flex-wrap:wrap">` +
-      `<button class="chip" id="fed-connect">🔗 ${linked ? 'Change' : 'Connect to'} live node</button>` +
+      `<button class="chip" id="fed-addpeer">➕ Add peer</button>` +
+      `<button class="chip" id="fed-sync">🔄 Sync now</button>` +
+      `<button class="chip" id="fed-connect">🔗 ${linked ? 'Change' : 'Connect'} live node</button>` +
       (linked ? `<button class="chip" id="fed-disconnect">✖ Disconnect</button>` : '') + `</div>`;
-  panel('Federation', 'Zero-trust peering.', rows, 'Link a peer with <b>npx ruflo federation join &lt;addr&gt;</b>');
+  panel('Federation', 'Zero-trust peering · gossip discovery · CRDT-style sync.', rows,
+    'Messages are verified (Ed25519) before merge; union by content id converges across nodes.');
   $('fed-connect').onclick = connectLiveNode;
   if ($('fed-disconnect')) $('fed-disconnect').onclick = () => { setLiveNode(''); showFederation(); };
+  $('fed-addpeer').onclick = () => {
+    const u = prompt('Peer node base URL to gossip & sync with\n(e.g. https://node.example.com):');
+    if (u && u.trim()) { store.addPeer(u.trim()); showFederation(); }
+  };
+  $('fed-sync').onclick = async () => {
+    const s = await store.syncPeers();
+    showFederation();
+    alert(`Synced ${s.peers} peer(s): ${s.merged} new message(s) merged, ${s.rejected} rejected (bad signature).`);
+    if (mode === 'board') loadBoard(current, { keepScroll: true });
+  };
+  document.querySelectorAll('[data-rmpeer]').forEach(el =>
+    el.onclick = () => { store.removePeer(el.dataset.rmpeer); showFederation(); });
 }
 
 function connectLiveNode() {

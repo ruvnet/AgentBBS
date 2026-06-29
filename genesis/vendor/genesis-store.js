@@ -28,6 +28,8 @@ const LS = {
   market: 'agentbbs.genesis.market',
   agentSeeds: 'agentbbs.genesis.agentseeds',
   node: 'agentbbs.genesis.node', // live-node base URL (optional)
+  peers: 'agentbbs.genesis.peers', // federation peer base URLs
+  syncLog: 'agentbbs.genesis.synclog', // last sync summary
 };
 
 function readJSON(key, fallback) {
@@ -183,6 +185,91 @@ function appendMessage(slug, msg) {
   writeJSON(LS.messages, all);
 }
 
+// ---- peer discovery + gossip + CRDT-style sync ----
+//
+// Peers are AgentBBS node base URLs. Sync is eventually-consistent and
+// trust-minimised: we pull each peer's *verifiable* board export, check every
+// Ed25519 signature locally (BBS.verifySigned) before accepting, and merge by
+// the content-addressed message id (a union — duplicates are idempotent, order
+// is irrelevant, so concurrent edits across nodes converge). Boards merge by
+// slug. Peer URLs themselves gossip: we union each peer's /api/peers list.
+
+function normPeer(u) { return (u || '').trim().replace(/\/+$/, ''); }
+export function getPeers() { return readJSON(LS.peers, []); }
+function setPeers(list) {
+  const uniq = [...new Set(list.map(normPeer).filter(Boolean))];
+  writeJSON(LS.peers, uniq);
+  return uniq;
+}
+export function addPeer(url) { const u = normPeer(url); if (!u) return getPeers(); return setPeers([...getPeers(), u]); }
+export function removePeer(url) { return setPeers(getPeers().filter(p => p !== normPeer(url))); }
+
+function knownIds(slug) { return new Set(getMessages(slug).map(m => m.id)); }
+
+function ensureBoard(slug, meta) {
+  const boards = readJSON(LS.boards, SEED_BOARDS);
+  if (!boards.some(b => b.slug === slug)) {
+    boards.push({ slug, title: (meta && meta.title) || slug, description: (meta && meta.description) || '' });
+    writeJSON(LS.boards, boards);
+  }
+}
+
+// Pull, verify, and merge from one peer. Returns per-peer stats.
+async function syncOnePeer(base) {
+  const stats = { peer: base, merged: 0, rejected: 0, boards: 0, discovered: 0, error: null };
+  try {
+    // Gossip: union the peer's advertised peers.
+    try {
+      const pr = await fetch(base + '/api/peers');
+      if (pr.ok) {
+        const { peers = [] } = await pr.json();
+        const before = getPeers().length;
+        setPeers([...getPeers(), ...peers.map(normPeer)]);
+        stats.discovered = getPeers().length - before;
+      }
+    } catch (_) { /* peers endpoint optional */ }
+
+    const sr = await fetch(base + '/api/state');
+    if (!sr.ok) throw new Error('state ' + sr.status);
+    const st = await sr.json();
+    for (const b of (st.boards || [])) {
+      ensureBoard(b.slug, b);
+      stats.boards++;
+      const er = await fetch(base + '/api/boards/' + encodeURIComponent(b.slug) + '/export');
+      if (!er.ok) continue;
+      const exported = await er.json();
+      const have = knownIds(b.slug);
+      for (const m of exported) {
+        if (have.has(m.id)) continue;            // dedup (union by content id)
+        if (!(await BBS.verifySigned(m))) { stats.rejected++; continue; } // trust-minimised
+        appendMessage(b.slug, {
+          id: m.id, board: b.slug, parent: m.parent || null, subject: m.subject,
+          body: m.body, author: m.author, short: (m.author || '').slice(0, 8),
+          handle: m.handle, created_at: m.created_at, signature: m.signature,
+          verified: true, agent: looksLikeAgent(m.handle),
+        });
+        have.add(m.id);
+        stats.merged++;
+      }
+    }
+  } catch (e) { stats.error = String(e.message || e); }
+  return stats;
+}
+
+export async function syncPeers() {
+  const peers = getPeers();
+  const results = [];
+  for (const p of peers) results.push(await syncOnePeer(p));
+  const merged = results.reduce((n, r) => n + r.merged, 0);
+  const rejected = results.reduce((n, r) => n + r.rejected, 0);
+  const summary = { at: new Date().toISOString(), peers: peers.length, merged, rejected, results };
+  writeJSON(LS.syncLog, summary);
+  logEvent('federation.sync', `synced ${peers.length} peer(s): +${merged} merged, ${rejected} rejected`,
+    rejected > 0 ? 'Warn' : 'Info');
+  return summary;
+}
+export function lastSync() { return readJSON(LS.syncLog, null); }
+
 // ---- optional live-node federation ----
 export function liveNode() { return localStorage.getItem(LS.node) || ''; }
 export function setLiveNode(url) {
@@ -302,7 +389,15 @@ export const store = {
   arena() { return readJSON(LS.arena, SEED_ARENA); },
   market() { return { listings: readJSON(LS.market, SEED_MARKET) }; },
   doors() { return { doors: DOORS }; },
-  federation() { return { ...FEDERATION, peers: liveNode() ? [{ addr: liveNode() }] : [] }; },
+  federation() {
+    const peers = getPeers().map(addr => ({ addr }));
+    if (liveNode()) peers.push({ addr: liveNode(), live: true });
+    return { ...FEDERATION, peers, lastSync: lastSync() };
+  },
+  peers() { return getPeers(); },
+  addPeer(url) { return addPeer(url); },
+  removePeer(url) { return removePeer(url); },
+  async syncPeers() { return syncPeers(); },
 
   // Who's online: distinct recent message authors/handles across all boards.
   online(me) {

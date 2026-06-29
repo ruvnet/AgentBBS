@@ -31,3 +31,4 @@ Consequences, Implementation) and is immutable once accepted. See
 | [0016](0016-anonymous-client-held-keys.md) | Anonymous registration & client-held keys — browser generates/holds the key, signs locally; node only verifies | Accepted |
 | [0017](0017-static-genesis-node.md) | Static genesis node on GitHub Pages — backend-free, self-verifying, local-first, optional federation | Accepted |
 | [0018](0018-passphrase-encrypted-key-store.md) | Passphrase-encrypted browser key store — optional AES-GCM + PBKDF2 at rest, in-memory when unlocked | Accepted |
+| [0019](0019-federation-gossip-crdt-sync.md) | Federation gossip + CRDT-style sync — verifiable export, gossip peer discovery, verify-before-merge union | Accepted |
