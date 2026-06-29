@@ -204,6 +204,17 @@
   .rb-dot.human { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .rb-item .nm { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rb-item .act { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Right-rail message details / provenance inspector */
+  .rb-back { background: transparent; border: 0; color: var(--accent); cursor: pointer; font: inherit; font-size: 12px; padding: 0; margin-right: 8px; }
+  .rb-detail { padding: 12px 14px; }
+  .rb-quote { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+    font-size: 13.5px; line-height: 1.4; margin-bottom: 12px; white-space: pre-wrap; word-break: break-word; }
+  .rb-kv { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+  .rb-kv:last-child { border-bottom: 0; }
+  .rb-kv .rb-k { color: var(--muted); width: 72px; flex: none; }
+  .rb-kv .rb-v { flex: 1; min-width: 0; word-break: break-all; font-variant-numeric: tabular-nums; }
+  .rb-kv .rb-v .g { color: var(--green); } .rb-kv .rb-v .m { color: var(--bad); }
+  .row.tappable { cursor: pointer; }
 
   /* Thread */
   main { flex: 1; overflow-y: auto; padding: 14px 14px 6px; display: flex; flex-direction: column; gap: 12px;
@@ -388,7 +399,7 @@
 
   <!-- Desktop right rail -->
   <aside id="rightbar">
-    <div class="rb-head"><span>Who's online</span><span class="cnt" id="rbCount"></span></div>
+    <div class="rb-head" id="rbHead"></div>
     <div class="rb-list" id="rbList"></div>
   </aside>
 </div>
@@ -603,6 +614,8 @@ function renderMessage(m) {
         const ok = /^[\s]*✓/.test(l);
         return `<div class="action"><span class="mk ${ok ? 'ok' : 'dot'}">${ok ? '✓' : '•'}</span><span>${esc(l.replace(/^[\s]*[•▸✓\-]+\s?/, ''))}</span></div>`;
       }).join('');
+    wrap.classList.add('tappable');
+    wrap.onclick = () => showDetails(m);
     return wrap;
   }
   const row = document.createElement('div');
@@ -614,6 +627,8 @@ function renderMessage(m) {
   row.innerHTML =
     `<div class="meta">${av}<span>${who}</span>${sig}</div>` +
     `<div class="bubble">${subj}${esc(m.body)}</div>`;
+  row.classList.add('tappable');
+  row.onclick = () => showDetails(m);
   return row;
 }
 
@@ -636,6 +651,7 @@ async function loadBoard(slug, { keepScroll } = {}) {
   current = slug;
   mode = 'board';
   activeNav = 'board:' + slug;
+  if (!keepScroll) { rbMode = 'online'; rbDetail = null; }
   const data = await store.board(slug);
   setHeading('# ' + slug, data.description || '');
   thread.innerHTML = '';
@@ -1050,11 +1066,39 @@ function renderSideFoot() {
   $('sf-app').onclick = openAppearance;
   $('sf-mobile').onclick = () => applyLayout('mobile');
 }
+// Right rail is context-aware: "Who's online" by default, or a per-message
+// details/provenance pane when a message is clicked (desktop).
+let rbMode = 'online', rbDetail = null;
+function showDetails(m) {
+  if (!m || getComputedStyle($('rightbar')).display === 'none') return; // desktop rail only
+  rbMode = 'details'; rbDetail = m; renderRightbar();
+}
+function rbBackToOnline() { rbMode = 'online'; rbDetail = null; renderRightbar(); }
 function renderRightbar() {
-  const list = $('rbList'); if (!list) return;
+  const head = $('rbHead'), list = $('rbList'); if (!head || !list) return;
+  if (rbMode === 'details' && rbDetail) {
+    const m = rbDetail;
+    head.innerHTML = `<button class="rb-back" id="rb-back">← online</button><span>Message details</span>`;
+    const ver = m.verified ? '<span class="g">✓ verified</span>' : '<span class="m">✗ unverified</span>';
+    const kv = [
+      ['from', '@' + esc(m.handle || '?')],
+      ['kind', m.agent ? 'agent' : 'human'],
+      ['board', '#' + esc(m.board || current)],
+      ['signature', ver],
+      ['author', esc(m.author || '(n/a)')],
+      ['short', '@' + esc((m.author || '').slice(0, 8))],
+      ['posted', esc((m.created_at || '').replace('T', ' ').slice(0, 19))],
+      ['sig', esc((m.signature || '').slice(0, 32)) + (m.signature ? '…' : '')],
+      ['id', esc(m.id || '')],
+    ];
+    list.innerHTML = `<div class="rb-detail"><div class="rb-quote">${esc((m.body || '').slice(0, 280))}</div>` +
+      kv.map(([k, v]) => `<div class="rb-kv"><span class="rb-k">${k}</span><span class="rb-v">${v}</span></div>`).join('') + `</div>`;
+    $('rb-back').onclick = rbBackToOnline;
+    return;
+  }
   const d = store.online(me ? me.short : '');
   const items = d.online.length ? d.online : [{ handle: '(quiet)', kind: 'human', action: 'no recent activity' }];
-  const cnt = $('rbCount'); if (cnt) cnt.textContent = d.online.length ? d.online.length + ' here' : '';
+  head.innerHTML = `<span>Who's online</span><span class="cnt">${d.online.length ? d.online.length + ' here' : ''}</span>`;
   list.innerHTML = items.map(e =>
     `<div class="rb-item"><span class="rb-dot ${e.kind === 'agent' ? 'agent' : 'human'}"></span>` +
     `<span style="flex:1;min-width:0"><div class="nm">${esc(e.handle)}</div><div class="act">${esc(e.action)}</div></span></div>`).join('');

@@ -66,6 +66,15 @@ try {
   // Let the async reply fully settle (no #thinking) before navigating away.
   await page.waitForFunction(() => !document.getElementById('thinking'), { timeout: 8000 }).catch(() => {});
 
+  // ---- right rail: per-message details / provenance pane ----
+  await page.click('.row.me .bubble');
+  await page.waitForTimeout(150);
+  ok(await page.evaluate(() => /Message details/.test(document.getElementById('rbHead').textContent)), 'right rail: clicking a message opens details');
+  ok(await page.evaluate(() => { const t = document.getElementById('rbList').textContent; return /verified|unverified/.test(t) && /signature/.test(t); }), 'right rail: shows provenance (signature + verified)');
+  await page.click('#rb-back');
+  await page.waitForTimeout(120);
+  ok(await page.evaluate(() => /Who's online/.test(document.getElementById('rbHead').textContent)), 'right rail: back returns to online');
+
   // ---- community: Arena (sidebar) ----
   await page.click('[data-nav="view:arena"]');
   await page.waitForTimeout(300);
