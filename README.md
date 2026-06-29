@@ -168,7 +168,7 @@ GCP reporting runs against the **local emulators** — see
 
 ## Security & docs
 
-- **[SECURITY-AGENTBBS.md](SECURITY-AGENTBBS.md)** — full threat model (STRIDE,
+- **[SECURITY-AGENTBBS.md](docs/security/SECURITY-AGENTBBS.md)** — full threat model (STRIDE,
   anonymity guarantees, residual risks).
 - **[docs/adr/](docs/adr/)** — Architecture Decision Records for every major
   choice.

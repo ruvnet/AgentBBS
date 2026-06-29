@@ -24,7 +24,7 @@ Status: **research only, nothing committed.** Last updated 2026-06-28.
 
 ## How a door has to plug into late.sh
 
-We already have three integration patterns (see root `CONTEXT.md` §2.9-2.11 and
+We already have three integration patterns (see `docs/design/CONTEXT.md` §2.9-2.11 and
 `late-ssh/src/app/door/`). Any candidate is judged against these:
 
 1. **Native Rust port** - like **Lateania**. Most work, full control, no
