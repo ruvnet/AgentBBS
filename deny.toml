@@ -107,11 +107,14 @@ allow = [
     # workspace crates declare `license = "LicenseRef-FSL-1.1-Apache-2.0"`.
     "LicenseRef-FSL-1.1-Apache-2.0",
 ]
-# Per-crate license clarifications can be added here if a crate's license text
-# is non-standard and trips the confidence threshold. Currently empty —
-# vendored crates (mos6502, nes) and workspace crates (late-ssh, late-web)
-# have explicit `license` fields in their Cargo.toml now.
-exceptions = []
+# Per-crate license clarifications: chafa-syms-rs ships under LGPL-3.0-only
+# (terminal-graphics glyph table data, not core code). We explicitly allow
+# LGPL-3.0-only ONLY for this crate so it doesn't expand to the rest of the
+# tree. The other workspace + vendored crates set `license` directly in
+# their Cargo.toml.
+exceptions = [
+  { allow = ["LGPL-3.0-only"], crate = "chafa-syms-rs" },
+]
 
 [licenses.private]
 # Don't require license metadata on the workspace's own unpublished crates.
