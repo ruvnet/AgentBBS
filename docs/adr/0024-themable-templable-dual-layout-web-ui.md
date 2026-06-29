@@ -54,6 +54,11 @@ the chat palette **and** sidebar-specific vars (`--side-bg`, `--side-fg`,
 `--side-active`, …) so the workspace rail can carry its own accent. Persisted as
 `localStorage: agentbbs.theme`; defaults to the OS `prefers-color-scheme`.
 
+A **Custom** theme extends this: the Appearance picker offers a base theme plus
+color inputs (accent, background, surface, text) applied as inline overrides on
+top of the chosen base and persisted to `localStorage: agentbbs.customtheme`
+(theme key `custom`). Switching to any built-in theme clears the overrides.
+
 The retro `.bbs` community panels keep their terminal/Wildcat! *aesthetic* but
 are themed through a parallel `--bbs-*` token set (one block per theme), so a
 light theme renders readable dark-on-light panels rather than a dark terminal

@@ -263,6 +263,29 @@
     opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; max-width: 92vw; }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+  /* Notifications — bell + unread badge + centered modal */
+  .bell { position: relative; }
+  .bell .badge2 { position: absolute; top: 0; right: 0; min-width: 15px; height: 15px; padding: 0 3px;
+    border-radius: 8px; background: var(--bad); color: #fff; font-size: 9px; font-weight: 700; line-height: 15px;
+    text-align: center; box-shadow: 0 0 0 2px var(--header); }
+  .bell .badge2.hidden { display: none; }
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; z-index: 30; }
+  .modal { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(.96); opacity: 0;
+    width: min(440px, 92vw); max-height: 80vh; display: flex; flex-direction: column; overflow: hidden;
+    background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.45); z-index: 31; transition: opacity .18s, transform .18s; pointer-events: none; }
+  .modal.open { opacity: 1; transform: translate(-50%, -50%) scale(1); pointer-events: auto; }
+  .modal-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); font-weight: 700; }
+  .modal-head .x { margin-left: auto; cursor: pointer; color: var(--muted); background: transparent; border: 0; font-size: 18px; }
+  .modal-body { overflow-y: auto; flex: 1; }
+  .modal-foot { padding: 10px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; }
+  .note { display: flex; gap: 11px; align-items: flex-start; padding: 11px 16px; border-bottom: 1px solid var(--line); }
+  .note:last-child { border-bottom: 0; }
+  .note.unread { background: var(--accentSoft); }
+  .note .ic { flex: none; font-size: 16px; line-height: 1.3; }
+  .note .tx { flex: 1; min-width: 0; }
+  .note .tx .when { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
   /* Suggestion chips (mobile) */
   .chips { display: flex; gap: 8px; overflow-x: auto; padding: 6px 14px; scrollbar-width: none; }
   .chips::-webkit-scrollbar { display: none; }
@@ -325,6 +348,7 @@
         <span class="mode-badge" id="modeBadge" title="In-browser demo — no server, $0">
           <span class="blip pulse"></span><span id="modeText">DEMO · loading model…</span>
         </span>
+        <button class="iconbtn bell" id="bellBtn" title="Notifications">🔔<span class="badge2 hidden" id="bellBadge">0</span></button>
         <button class="iconbtn theme-toggle" id="themeBtn" title="Toggle light/dark">🌙</button>
         <button class="iconbtn desk-only" id="gearBtn" title="Appearance">⚙</button>
         <button class="board-chip mob-only" id="boardChip"><span class="dot"></span><span id="boardName">general</span> ▾</button>
@@ -365,6 +389,16 @@
   <div class="grip"></div>
   <div class="d" style="padding:2px 18px 8px;font-weight:700">Appearance</div>
   <div id="appItems"></div>
+</div>
+
+<div class="modal-bg" id="notifBg"></div>
+<div class="modal" id="notifModal">
+  <div class="modal-head">🔔 Notifications <button class="x" id="notifClose" title="Close">✕</button></div>
+  <div class="modal-body" id="notifBody"></div>
+  <div class="modal-foot">
+    <button class="chip" id="notifClear">Clear all</button>
+    <button class="chip" id="notifRead">Mark all read</button>
+  </div>
 </div>
 
 <script type="module">
@@ -410,6 +444,34 @@ function toast(msg) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
+// ---- Notifications center (bell icon + modal) ----
+const NOTES = [];
+let unread = 0;
+const NOTE_ICON = { agent: '💬', market: '🛒', door: '🚪', fed: '🔗', error: '⚠️', info: '🔔' };
+function renderBellBadge() {
+  const b = $('bellBadge'); if (!b) return;
+  b.textContent = unread > 9 ? '9+' : String(unread);
+  b.classList.toggle('hidden', unread === 0);
+}
+// notify(): record a notification, badge the bell, and surface a transient toast.
+// silent=true records without toast/unread bump (used for the boot welcome).
+function notify(text, kind = 'info', silent = false) {
+  NOTES.unshift({ t: Date.now(), text, kind });
+  if (NOTES.length > 60) NOTES.pop();
+  if (!silent) { unread++; renderBellBadge(); toast(text); }
+  if ($('notifModal') && $('notifModal').classList.contains('open')) renderNotifs();
+}
+function renderNotifs() {
+  const body = $('notifBody'); if (!body) return;
+  body.innerHTML = NOTES.length ? NOTES.map((n, i) => {
+    const when = new Date(n.t).toLocaleTimeString();
+    return `<div class="note ${i < unread ? 'unread' : ''}"><span class="ic">${NOTE_ICON[n.kind] || '🔔'}</span>` +
+      `<span class="tx"><div>${esc(n.text)}</div><div class="when">${when}</div></span></div>`;
+  }).join('') : '<div class="note"><span class="ic">🔔</span><span class="tx">No notifications yet.</span></div>';
+}
+function openNotifs() { renderNotifs(); $('notifBg').style.display = 'block'; requestAnimationFrame(() => $('notifModal').classList.add('open')); }
+function closeNotifs() { $('notifModal').classList.remove('open'); setTimeout(() => $('notifBg').style.display = 'none', 200); unread = 0; renderBellBadge(); }
+
 // ============================================================
 // THEME (themable) — registry + apply. data-theme drives color only.
 // ============================================================
@@ -423,8 +485,14 @@ const THEMES = [
 ];
 const LIGHT_THEMES = new Set(['light', 'aubergine']);
 const themeBtn = $('themeBtn');
+// Tokens a custom theme can override inline (on top of a chosen base theme).
+const CUSTOM_PROPS = ['--accent', '--accentText', '--accentSoft', '--side-active-bg', '--blue',
+  '--bg', '--header', '--panel', '--panel2', '--bubble', '--side-bg', '--fg', '--side-fg'];
+function clearCustom() { const s = document.documentElement.style; CUSTOM_PROPS.forEach(p => s.removeProperty(p)); }
+const hex6 = (c) => { c = (c || '').trim(); const m = /^#([0-9a-fA-F]{3})$/.exec(c); return m ? '#' + m[1].split('').map(x => x + x).join('') : c; };
 function applyTheme(id) {
   if (!THEMES.some(t => t.id === id)) id = 'dark';
+  clearCustom();
   document.documentElement.dataset.theme = id;
   localStorage.setItem('agentbbs.theme', id);
   const light = LIGHT_THEMES.has(id);
@@ -432,10 +500,35 @@ function applyTheme(id) {
   if (meta) meta.setAttribute('content', light ? '#ffffff' : '#000000');
   if (themeBtn) themeBtn.textContent = light ? '☀️' : '🌙';
 }
+// Custom theme: a base theme + a few user-chosen color tokens, applied inline.
+function defaultCustom() {
+  const cs = getComputedStyle(document.documentElement);
+  const g = (k) => hex6(cs.getPropertyValue(k).trim()) || '#888888';
+  const base = document.documentElement.dataset.theme || 'dark';
+  return { base: THEMES.some(t => t.id === base) ? base : 'dark', accent: g('--accent'), bg: g('--bg'), panel: g('--panel'), fg: g('--fg') };
+}
+function getCustom() {
+  try { const c = JSON.parse(localStorage.getItem('agentbbs.customtheme') || 'null'); if (c && c.base) return c; } catch (_) {}
+  return defaultCustom();
+}
+function applyCustom(c) {
+  clearCustom();
+  document.documentElement.dataset.theme = c.base || 'dark';
+  const s = document.documentElement.style, set = (k, v) => { if (v) s.setProperty(k, v); };
+  set('--accent', c.accent); set('--accentText', c.accent); set('--side-active-bg', c.accent); set('--blue', c.accent);
+  set('--bg', c.bg); if (c.bg) set('--header', 'linear-gradient(' + c.bg + ',' + c.bg + ')');
+  set('--panel', c.panel); set('--panel2', c.panel); set('--bubble', c.panel); set('--side-bg', c.panel); set('--accentSoft', c.panel);
+  set('--fg', c.fg); set('--side-fg', c.fg);
+  localStorage.setItem('agentbbs.theme', 'custom');
+  localStorage.setItem('agentbbs.customtheme', JSON.stringify(c));
+  const meta = document.querySelector('meta[name=theme-color]'); if (meta && c.bg) meta.setAttribute('content', c.bg);
+  if (themeBtn) themeBtn.textContent = '🎨';
+}
 (function initTheme() {
   const saved = localStorage.getItem('agentbbs.theme');
   const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
-  applyTheme(saved || (prefersLight ? 'light' : 'dark'));
+  if (saved === 'custom') applyCustom(getCustom());
+  else applyTheme(saved || (prefersLight ? 'light' : 'dark'));
 })();
 if (themeBtn) themeBtn.onclick = () => applyTheme(LIGHT_THEMES.has(document.documentElement.dataset.theme) ? 'dark' : 'light');
 
@@ -696,7 +789,7 @@ function doorMcp() {
     'Agents speak JSON-RPC 2.0 over stdio to this bridge.');
   $('mcp-copy').onclick = () => {
     if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {});
-    console.log('[door:mcp] copied command'); toast('Copied: ' + cmd);
+    console.log('[door:mcp] copied command'); notify('Copied: ' + cmd, 'door');
   };
   markActive();
 }
@@ -738,7 +831,7 @@ async function summonAgent(handle) {
   const res = await store.post(identity.seed, { board: 'general', body: txt, handle: 'you' });
   if (res.ok && !liveNode()) await store.reply('general', txt, 'you');
   await loadBoard('general'); refreshChrome();
-  toast('Looped in @' + handle);
+  notify('Looped in @' + handle + ' — replied in #general', 'agent');
 }
 
 function showFederation() {
@@ -761,6 +854,7 @@ function connectLiveNode() {
   if (url === null) return;
   setLiveNode(url.trim());
   updateModeBadge();
+  notify(url.trim() ? '🔗 Federated with ' + url.trim() : 'Disconnected from live node', 'fed');
   showFederation();
 }
 
@@ -819,7 +913,7 @@ function showConsole() {
 
 const MARKET_LABEL = { Theme: 'apply ▸', Plugin: 'run ▸', Agent: 'loop in ▸', Benchmark: 'open ▸' };
 const MARKET_ACTION = {
-  Theme: (l) => { applyTheme('terminal'); toast('Applied ' + l.title + ' (terminal theme)'); },
+  Theme: (l) => { applyTheme('terminal'); notify('Applied ' + l.title + ' (terminal theme)', 'market'); },
   Plugin: () => doorEcho(),
   Agent: () => summonAgent('graybeard'),
   Benchmark: () => VIEWS.arena(),
@@ -1007,9 +1101,12 @@ async function send(text) {
     thread.appendChild(t); thread.scrollTop = thread.scrollHeight;
     const reply = await store.reply(current, text, 'you');
     const stale = document.getElementById('thinking'); if (stale) stale.remove();
-    // Only refresh the thread if we're still viewing this board — the reply is
-    // async, and the user may have navigated to a community view meanwhile.
-    if (reply && mode === 'board' && current === currentAtPost) await loadBoard(current);
+    if (reply) {
+      // Only refresh the thread if we're still viewing this board — the reply is
+      // async, and the user may have navigated to a community view meanwhile.
+      if (mode === 'board' && current === currentAtPost) await loadBoard(current);
+      notify((reply.handle || 'agent') + ' replied in #' + currentAtPost, 'agent');
+    }
   }
   refreshChrome();
   setMe();
@@ -1044,21 +1141,52 @@ function closeSheet() { $('sheet').classList.remove('open'); setTimeout(() => $(
 
 // ---- Appearance picker (the "templable" surface: pick a theme + layout) ----
 function openAppearance() {
+  const isCustom = localStorage.getItem('agentbbs.theme') === 'custom';
   const curTheme = document.documentElement.dataset.theme;
   const curLayout = document.documentElement.dataset.layout;
   const themeHtml = THEMES.map(t =>
-    `<div class="appopt${t.id === curTheme ? ' active' : ''}" data-set-theme="${t.id}">` +
+    `<div class="appopt${!isCustom && t.id === curTheme ? ' active' : ''}" data-set-theme="${t.id}">` +
     `<span class="sw" style="background:linear-gradient(135deg, ${t.swatch[0]} 0 55%, ${t.swatch[1]} 55% 100%)"></span>` +
-    `<span>${t.label}</span></div>`).join('');
+    `<span>${t.label}</span></div>`).join('') +
+    `<div class="appopt${isCustom ? ' active' : ''}" data-custom="1">` +
+    `<span class="sw" style="background:conic-gradient(#ff5a5a,#ffb000,#34c759,#2f7bff,#7c5cff,#ff5a5a)"></span><span>🎨 Custom</span></div>`;
   const layoutHtml = [['mobile', '📱 Mobile chat'], ['desktop', '🖥 Desktop workspace']].map(([m, l]) =>
     `<div class="appopt${m === curLayout ? ' active' : ''}" data-set-layout="${m}"><span>${l}</span></div>`).join('');
+  let editor = '';
+  if (isCustom) {
+    const c = getCustom();
+    const row = (id, label, val) =>
+      `<label class="appopt" style="justify-content:space-between"><span>${label}</span><input type="color" id="${id}" value="${hex6(val)}" /></label>`;
+    editor =
+      `<div class="d" style="padding:4px 18px">CUSTOMIZE</div><div style="padding:0 14px 14px;display:flex;flex-direction:column;gap:8px">` +
+      `<label class="appopt" style="justify-content:space-between"><span>Base</span>` +
+      `<select id="cz-base" style="font:inherit;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 8px">` +
+      THEMES.map(t => `<option value="${t.id}" ${t.id === c.base ? 'selected' : ''}>${t.label}</option>`).join('') + `</select></label>` +
+      row('cz-accent', 'Accent', c.accent) + row('cz-bg', 'Background', c.bg) +
+      row('cz-panel', 'Surface', c.panel) + row('cz-fg', 'Text', c.fg) +
+      `<button class="chip" id="cz-reset">↺ Reset to base</button></div>`;
+  }
   $('appItems').innerHTML =
-    `<div class="d" style="padding:4px 18px">THEME</div><div class="appgrid">${themeHtml}</div>` +
+    `<div class="d" style="padding:4px 18px">THEME</div><div class="appgrid">${themeHtml}</div>` + editor +
     `<div class="d" style="padding:4px 18px">LAYOUT</div><div class="applayout">${layoutHtml}</div>`;
   $('appItems').querySelectorAll('[data-set-theme]').forEach(el =>
     el.onclick = () => { applyTheme(el.dataset.setTheme); openAppearance(); });
   $('appItems').querySelectorAll('[data-set-layout]').forEach(el =>
     el.onclick = () => { applyLayout(el.dataset.setLayout); openAppearance(); });
+  const customTile = $('appItems').querySelector('[data-custom]');
+  if (customTile) customTile.onclick = () => { applyCustom(getCustom()); openAppearance(); };
+  if (isCustom) {
+    const readCz = () => ({ base: $('cz-base').value, accent: $('cz-accent').value, bg: $('cz-bg').value, panel: $('cz-panel').value, fg: $('cz-fg').value });
+    ['cz-accent', 'cz-bg', 'cz-panel', 'cz-fg'].forEach(id => $(id).oninput = () => applyCustom(readCz()));
+    $('cz-base').onchange = () => applyCustom(readCz());
+    $('cz-reset').onclick = () => {
+      const base = $('cz-base').value;
+      clearCustom(); document.documentElement.dataset.theme = base;
+      const cs = getComputedStyle(document.documentElement), g = (k) => hex6(cs.getPropertyValue(k).trim());
+      applyCustom({ base, accent: g('--accent'), bg: g('--bg'), panel: g('--panel'), fg: g('--fg') });
+      openAppearance();
+    };
+  }
   $('appBg').style.display = 'block';
   requestAnimationFrame(() => $('appSheet').classList.add('open'));
 }
@@ -1075,6 +1203,11 @@ $('sheetBg').onclick = closeSheet;
 $('appBg').onclick = closeAppearance;
 $('gearBtn').onclick = openAppearance;
 $('gearBtnSide').onclick = openAppearance;
+$('bellBtn').onclick = openNotifs;
+$('notifClose').onclick = closeNotifs;
+$('notifBg').onclick = closeNotifs;
+$('notifClear').onclick = () => { NOTES.length = 0; unread = 0; renderBellBadge(); renderNotifs(); };
+$('notifRead').onclick = () => { unread = 0; renderBellBadge(); renderNotifs(); };
 
 /* @sync:modebadge-start (genesis: DEMO in-browser engine vs LIVE peer) */
 // ---- Mode badge: DEMO (in-browser model) vs LIVE (hosted model via a node) ----
@@ -1102,6 +1235,8 @@ async function boot() {
   const n = $('node'); if (n) n.textContent = st.node + ' · ' + st.total_messages + ' msgs · anon @' + me.short + ' · 🔑 in-browser';
   booted = true;
   refreshChrome();
+  renderBellBadge();
+  notify("Welcome — you're running your own anonymous node in the browser.", 'info', true);
 
   updateModeBadge('loading');
   const engine = createDemoEngine({ onStatus: (s) => updateModeBadge(s) });
@@ -1115,7 +1250,8 @@ async function boot() {
 }
 window.__genesisStore = store;       // expose for verification/debugging
 window.__dbg = DBG;                   // expose captured console/diagnostics for E2E
-window.__ui = { applyTheme, applyLayout, THEMES, VIEWS }; // expose UI controls for tests
+window.__notes = NOTES;               // expose notifications for E2E
+window.__ui = { applyTheme, applyLayout, applyCustom, getCustom, notify, THEMES, VIEWS }; // expose UI controls for tests
 boot();
 /* @sync:boot-end */
 </script>

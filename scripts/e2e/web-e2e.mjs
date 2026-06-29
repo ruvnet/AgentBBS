@@ -118,6 +118,29 @@ try {
   ok(await page.evaluate(() => document.documentElement.dataset.theme === 'terminal'), 'Marketplace: Theme listing applies the theme');
   await page.evaluate(() => window.__ui.applyTheme('dark'));
 
+  // ---- notifications: bell badge + modal ----
+  await page.evaluate(() => window.__ui.notify('e2e test notification', 'info'));
+  await page.waitForTimeout(100);
+  ok(await page.evaluate(() => !document.getElementById('bellBadge').classList.contains('hidden')), 'bell badge shows after a notification');
+  await page.click('#bellBtn');
+  await page.waitForTimeout(200);
+  ok(await page.evaluate(() => document.getElementById('notifModal').classList.contains('open')), 'notifications modal opens');
+  ok(await page.evaluate(() => /e2e test notification/.test(document.getElementById('notifBody').textContent)), 'notification appears in modal');
+  await page.click('#notifClose');
+  await page.waitForTimeout(200);
+  ok(await page.evaluate(() => document.getElementById('bellBadge').classList.contains('hidden')), 'closing modal clears the unread badge');
+
+  // ---- customizable theme ----
+  await page.evaluate(() => window.__ui.applyCustom({ base: 'dark', accent: '#ff00aa', bg: '#101418', panel: '#1a2230', fg: '#eef2ff' }));
+  await page.waitForTimeout(100);
+  ok(await page.evaluate(() => localStorage.getItem('agentbbs.theme') === 'custom'), 'custom theme persists as "custom"');
+  ok(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#ff00aa'), 'custom accent applied');
+  ok(await page.evaluate(() => getComputedStyle(document.body).backgroundColor === 'rgb(16, 20, 24)'), 'custom background applied');
+  // switching to a built-in theme clears the custom overrides
+  await page.evaluate(() => window.__ui.applyTheme('light'));
+  ok(await page.evaluate(() => !document.documentElement.style.getPropertyValue('--accent')), 'switching to a built-in theme clears custom overrides');
+  await page.evaluate(() => window.__ui.applyTheme('dark'));
+
   // ---- mobile layout + persistence ----
   await page.evaluate(() => window.__ui.applyLayout('mobile'));
   ok(await page.evaluate(() => document.documentElement.dataset.layout === 'mobile' && getComputedStyle(document.getElementById('sidebar')).display === 'none'), 'mobile layout hides sidebar');

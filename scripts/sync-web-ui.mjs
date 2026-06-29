@@ -96,6 +96,8 @@ async function boot() {
   const n = $('node'); if (n) n.textContent = st.node + ' · ' + st.total_messages + ' msgs · anon @' + me.short + ' · 🔑 in-browser';
   booted = true;
   refreshChrome();
+  renderBellBadge();
+  notify("Welcome — connected to this AgentBBS node.", 'info', true);
   updateModeBadge();
   await loadBoard('general');
   // Poll the node so the thread + chrome feel live as others post.
@@ -107,7 +109,8 @@ async function boot() {
 }
 window.__webStore = store;            // expose for verification/debugging
 window.__dbg = DBG;                   // expose captured console/diagnostics for E2E
-window.__ui = { applyTheme, applyLayout, THEMES, VIEWS }; // expose UI controls for tests
+window.__notes = NOTES;               // expose notifications for E2E
+window.__ui = { applyTheme, applyLayout, applyCustom, getCustom, notify, THEMES, VIEWS }; // expose UI controls for tests
 boot();
 /* @sync:boot-end */`;
 
