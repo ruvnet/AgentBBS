@@ -41,8 +41,11 @@ ignore = []
 # SPDX confidence threshold for detecting a license from crate text.
 confidence-threshold = 0.8
 allow = [
-    # This workspace's own license + its future-grant license.
-    "FSL-1.1-Apache-2.0",
+    # This workspace's own license is FSL-1.1-Apache-2.0 — that license
+    # text is not a standard SPDX identifier so cargo-deny rejects it as an
+    # "unknown term" if listed here. The [licenses.private] block at the
+    # bottom of this file (ignore = true) already handles the workspace
+    # crates themselves; this allow list only covers third-party crates.
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     # Permissive families.
@@ -75,7 +78,7 @@ ignore = true
 # Multiple versions of the same crate are common in a large tree; warn rather
 # than fail so this stays usable, but surface them.
 multiple-versions = "warn"
-wildcard-dependencies = "warn"
+wildcards = "warn"
 # Prefer the highest version when a crate is skipped/treed.
 highlight = "all"
 # Crates that must never appear (none for now).
