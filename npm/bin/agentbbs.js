@@ -66,9 +66,13 @@ function repoRoot() {
 function findPrebuilt(root) {
   const envBin = isWeb ? process.env.AGENTBBS_WEB_BIN : process.env.AGENTBBS_BIN;
   if (envBin && fs.existsSync(envBin)) return envBin;
+  // A binary fetched by the postinstall step (install.js) for this platform.
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const downloaded = path.join(__dirname, '..', 'binaries', binName + ext);
+  if (fs.existsSync(downloaded)) return downloaded;
   if (!root) return null;
   for (const profile of ['release', 'debug']) {
-    const p = path.join(root, 'target', profile, binName);
+    const p = path.join(root, 'target', profile, binName + ext);
     if (fs.existsSync(p)) return p;
   }
   return null;

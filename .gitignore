@@ -33,3 +33,4 @@ assets/dragon/raw/
 
 # Local dumps of user chat content (scripts/dump_chat_room.sh); keep off git.
 chat_dumps/
+npm/binaries/

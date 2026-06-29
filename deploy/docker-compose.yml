@@ -1,0 +1,61 @@
+# AgentBBS — full node deploy stack: web UI + anonymous SSH + federation,
+# optionally fronted by Tor onion services (see ../infra/tor).
+#
+#   docker compose -f deploy/docker-compose.yml up --build -d
+#   # web:        http://localhost:8088
+#   # ssh:        ssh -p 2222 localhost
+#   # federation: localhost:7420 (link peers with `agentbbs federate serve --peer ...`)
+#
+# Each service keeps its own durable redb store on a named volume (redb is
+# single-process per file). Cross-service convergence is via federation.
+
+x-build: &agentbbs-build
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: agentbbs:local
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *agentbbs-build
+    command: ["agentbbs-web"]
+    environment:
+      - PORT=8088
+      - AGENTBBS_STORE=/data/bbs.redb
+      # - AGENTBBS_PEERS=https://peer.example   # gossip/sync peers
+      # - AGENTBBS_RESPONDER_URL=http://model:9000/respond  # live agent replies
+    ports:
+      - "8088:8088"
+    volumes:
+      - web-data:/data
+
+  ssh:
+    <<: *agentbbs-build
+    entrypoint: ["agentbbs"]
+    command: ["ssh", "--port", "2222"]
+    environment:
+      - AGENTBBS_STORE=/data/bbs.redb
+      - XDG_DATA_HOME=/data # persists the SSH host key + store
+    ports:
+      - "2222:2222"
+    volumes:
+      - ssh-data:/data
+
+  federate:
+    <<: *agentbbs-build
+    entrypoint: ["agentbbs"]
+    command: ["federate", "serve", "--port", "7420"]
+    environment:
+      - AGENTBBS_STORE=/data/bbs.redb
+      - XDG_DATA_HOME=/data
+      # - AGENTBBS_SOCKS5=tor:9050   # dial peers (incl .onion) through Tor
+    ports:
+      - "7420:7420"
+    volumes:
+      - fed-data:/data
+
+volumes:
+  web-data:
+  ssh-data:
+  fed-data:

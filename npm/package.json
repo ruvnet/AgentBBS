@@ -7,8 +7,12 @@
   "bin": {
     "agentbbs": "bin/agentbbs.js"
   },
+  "scripts": {
+    "postinstall": "node bin/install.js"
+  },
   "files": [
     "bin/agentbbs.js",
+    "bin/install.js",
     "README.md"
   ],
   "engines": {

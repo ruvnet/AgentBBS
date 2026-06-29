@@ -1,0 +1,73 @@
+name: release
+
+# On a version tag, build AgentBBS binaries for the platforms the npm launcher
+# expects, attach them to the GitHub release, and publish the npm launcher.
+# The npm publish only takes effect when an NPM_TOKEN secret is configured.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: install_linux_deps
+        if: runner.os == 'Linux'
+        # mold matches .cargo/config.toml's pinned linker for the linux target.
+        run: sudo apt-get update && sudo apt-get install -y mold pkg-config libssl-dev
+
+      - name: add_target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: build
+        run: cargo build --release -p agentbbs -p agentbbs-web --target ${{ matrix.target }}
+
+      - name: stage_assets
+        shell: bash
+        run: |
+          mkdir -p dist
+          for b in agentbbs agentbbs-web; do
+            cp "target/${{ matrix.target }}/release/$b" "dist/${b}-${{ matrix.target }}"
+          done
+
+      - name: upload_to_release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+
+  npm-publish:
+    name: publish npm launcher
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: publish
+        working-directory: npm
+        # Publishes only if NPM_TOKEN is set; otherwise this is a no-op so the
+        # release still succeeds.
+        run: |
+          if [ -n "${NODE_AUTH_TOKEN}" ]; then
+            npm publish --access public
+          else
+            echo "NPM_TOKEN not configured — skipping npm publish."
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
