@@ -198,4 +198,45 @@ mod tests {
         let text = screen_text(&app, 100, 30);
         assert!(text.contains("Sysop Report"));
     }
+
+    #[test]
+    fn shared_presence_sees_other_sessions() {
+        use agentbbs_core::{MemoryStore, Presence};
+        use std::sync::Arc;
+        let presence = Arc::new(Presence::default());
+        let store: Arc<dyn agentbbs_core::Store> = Arc::new(MemoryStore::new());
+        let a = App::with_presence(store.clone(), presence.clone());
+        let b = App::with_presence(store.clone(), presence.clone());
+        let (aid, bid) = (a.session.identity.id(), b.session.identity.id());
+        let online = presence.online(10);
+        assert!(online.len() >= 2);
+        assert!(online.iter().any(|m| m.id == aid));
+        assert!(online.iter().any(|m| m.id == bid));
+        // Dropping a session leaves the registry.
+        drop(b);
+        assert!(presence.online(10).iter().all(|m| m.id != bid));
+        let _ = a; // keep a alive until here
+    }
+
+    #[test]
+    fn who_panel_renders_real_presence() {
+        let mut app = App::in_memory();
+        app.on_key(press(KeyCode::Enter));
+        app.on_key(press(KeyCode::Char('W'))); // who's online
+        let text = screen_text(&app, 110, 30);
+        assert!(text.contains("Who's Online"));
+        assert!(text.contains("(you)")); // our own session is listed
+        assert!(text.contains("online"));
+    }
+
+    #[test]
+    fn marketplace_renders_signed_listings() {
+        let mut app = App::in_memory();
+        app.on_key(press(KeyCode::Enter));
+        app.on_key(press(KeyCode::Char('K'))); // marketplace
+        assert_eq!(app.screen, Screen::Market);
+        let text = screen_text(&app, 110, 30);
+        assert!(text.contains("Marketplace"));
+        assert!(text.contains("Echo Door"));
+    }
 }

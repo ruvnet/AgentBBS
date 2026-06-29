@@ -7,6 +7,9 @@ use crate::app::{App, ComposeField, Control, Screen, MENU};
 impl App {
     /// Handle a single key event, returning whether to keep running.
     pub fn on_key(&mut self, key: KeyEvent) -> Control {
+        // Any activity refreshes our entry in the shared presence registry.
+        self.heartbeat();
+
         // Ctrl-C always quits, from anywhere.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.should_quit = true;
@@ -20,7 +23,9 @@ impl App {
             Screen::Read => self.key_read(key),
             Screen::Compose => self.key_compose(key),
             Screen::Arena => self.key_arena(key),
-            Screen::Who | Screen::Doors | Screen::Federation | Screen::Sysop => self.key_panel(key),
+            Screen::Who | Screen::Doors | Screen::Market | Screen::Federation | Screen::Sysop => {
+                self.key_panel(key)
+            }
             Screen::Goodbye => {
                 self.should_quit = true;
                 Control::Quit

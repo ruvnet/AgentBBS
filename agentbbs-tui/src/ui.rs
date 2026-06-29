@@ -34,6 +34,7 @@ impl App {
             Screen::Who => self.render_who(frame, rows[1]),
             Screen::Doors => self.render_doors(frame, rows[1]),
             Screen::Arena => self.render_arena(frame, rows[1]),
+            Screen::Market => self.render_market(frame, rows[1]),
             Screen::Federation => self.render_federation(frame, rows[1]),
             Screen::Sysop => self.render_sysop(frame, rows[1]),
             Screen::Goodbye => self.render_goodbye(frame, rows[1]),
@@ -257,29 +258,80 @@ impl App {
     }
 
     fn render_who(&self, frame: &mut Frame, area: Rect) {
-        let lines = vec![
-            Line::from(Span::styled("NODE  WHO                              IDLE  ACTION", theme::hotkey())),
-            Line::from("───────────────────────────────────────────────────────"),
-            Line::from(format!(
-                "  1   {:<32} 00:00  browsing",
-                self.session.handle
-            )),
+        let now = self.now_ms();
+        let online = self.presence.online(now);
+        let mut lines = vec![
             Line::from(Span::styled(
-                "  2   @graybeard (agent)               00:12  lurking",
-                theme::dim(),
+                "NODE  WHO                                KIND    IDLE",
+                theme::hotkey(),
             )),
-            Line::from(Span::styled(
-                "  3   claude-code (mcp)                 00:03  posting",
-                theme::dim(),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Agents connect via SSH, MCP, or federation. ESC to return.",
-                theme::chrome(),
-            )),
+            Line::from("──────────────────────────────────────────────────────────"),
         ];
+        for (i, m) in online.iter().enumerate() {
+            let me = m.id == self.session.identity.id();
+            let idle = now.saturating_sub(m.last_seen_ms) / 1000;
+            let kind = if m.agent { "agent" } else { "human" };
+            let style = if me { theme::chrome() } else { theme::dim() };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:>4}  ", i + 1), theme::hotkey()),
+                Span::styled(
+                    format!("{:<34}", if me { format!("{} (you)", m.handle) } else { m.handle.clone() }),
+                    style,
+                ),
+                Span::styled(format!("{kind:<7} "), theme::chrome()),
+                Span::styled(format!("{:02}:{:02}", idle / 60, idle % 60), theme::dim()),
+            ]));
+        }
+        if online.is_empty() {
+            lines.push(Line::from(Span::styled("  (nobody online)", theme::dim())));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} online · agents join via SSH, MCP, or federation. ESC to return.",
+                online.len()
+            ),
+            theme::chrome(),
+        )));
+        frame.render_widget(Paragraph::new(lines).block(self.framed("Who's Online")), area);
+    }
+
+    fn render_market(&self, frame: &mut Frame, area: Rect) {
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "SKU            KIND        TITLE                          PRICE",
+                theme::hotkey(),
+            )),
+            Line::from("──────────────────────────────────────────────────────────"),
+        ];
+        for l in self.market.all() {
+            let price = if l.body.price == 0 {
+                "free".to_string()
+            } else {
+                format!("{} cr", l.body.price)
+            };
+            let sig = if l.verify().is_ok() { "✓" } else { "✗" };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<14} ", l.body.sku), theme::hotkey()),
+                Span::styled(format!("{:<11} ", format!("{:?}", l.body.kind).to_lowercase()), theme::dim()),
+                Span::styled(format!("{:<30} ", l.body.title), theme::chrome()),
+                Span::styled(format!("{price:<6} "), Style::default().fg(theme::GREEN)),
+                Span::styled(sig, Style::default().fg(theme::GREEN)),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("   {}", l.body.description),
+                theme::dim(),
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Every listing is signed by its seller and verifies on each node. ESC to return.",
+            theme::chrome(),
+        )));
         frame.render_widget(
-            Paragraph::new(lines).block(self.framed("Who's Online")),
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: true })
+                .block(self.framed("Marketplace")),
             area,
         );
     }

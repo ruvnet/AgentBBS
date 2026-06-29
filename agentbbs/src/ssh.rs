@@ -76,7 +76,12 @@ struct SessionTerm {
 }
 
 impl SessionTerm {
-    fn new(store: Arc<dyn Store>, cols: u16, rows: u16) -> Result<Self> {
+    fn new(
+        store: Arc<dyn Store>,
+        presence: Arc<agentbbs_core::Presence>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Self> {
         let sink = SinkBuffer::default();
         let backend = CrosstermBackend::new(sink.clone());
         let viewport = Viewport::Fixed(Rect::new(0, 0, cols.max(1), rows.max(1)));
@@ -85,7 +90,9 @@ impl SessionTerm {
         Ok(SessionTerm {
             terminal,
             sink,
-            app: App::new(store),
+            // Share the node-wide presence registry so all SSH sessions see
+            // each other in Who's Online.
+            app: App::with_presence(store, presence),
             decoder: KeyDecoder::new(),
         })
     }
@@ -153,6 +160,8 @@ fn peer_bucket(peer: Option<std::net::SocketAddr>) -> Option<String> {
 struct BbsServer {
     store: Arc<dyn Store>,
     rate: Arc<agentbbs_core::RateLimiter>,
+    /// Node-wide presence registry shared by every session.
+    presence: Arc<agentbbs_core::Presence>,
     started: std::time::Instant,
 }
 
@@ -171,6 +180,7 @@ impl RusshServer for BbsServer {
         self.rate.gc(now_ms);
         BbsHandler {
             store: self.store.clone(),
+            presence: self.presence.clone(),
             channel: None,
             term: None,
             cols: 80,
@@ -183,6 +193,7 @@ impl RusshServer for BbsServer {
 /// One anonymous SSH connection.
 struct BbsHandler {
     store: Arc<dyn Store>,
+    presence: Arc<agentbbs_core::Presence>,
     channel: Option<Channel<Msg>>,
     /// The live session terminal, shared with the render path.
     term: Option<Arc<TokioMutex<SessionTerm>>>,
@@ -274,7 +285,8 @@ impl Handler for BbsHandler {
 
         // Build the per-session terminal over a clone of the shared store, so
         // every anonymous caller sees the same boards and messages.
-        let mut term = SessionTerm::new(self.store.clone(), self.cols, self.rows)?;
+        let mut term =
+            SessionTerm::new(self.store.clone(), self.presence.clone(), self.cols, self.rows)?;
         let init = enter_alt_screen();
         let _ = handle.data(channel_id, init).await;
         // Paint the initial splash + menu.
@@ -476,6 +488,7 @@ pub async fn run(port: u16, host_key_path: Option<String>) -> Result<()> {
     let mut server = BbsServer {
         store,
         rate: Arc::new(agentbbs_core::RateLimiter::new(SSH_CONN_PER_MIN, 60_000)),
+        presence: Arc::new(agentbbs_core::Presence::default()),
         started: std::time::Instant::now(),
     };
 
@@ -506,6 +519,7 @@ mod tests {
         let mut server = BbsServer {
             store: Arc::new(MemoryStore::new()),
             rate: Arc::new(agentbbs_core::RateLimiter::new(3, 60_000)),
+            presence: Arc::new(agentbbs_core::Presence::default()),
             started: std::time::Instant::now(),
         };
         let ip: std::net::SocketAddr = "10.0.0.1:2222".parse().unwrap();

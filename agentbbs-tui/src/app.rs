@@ -8,9 +8,13 @@
 
 use std::sync::Arc;
 
+use std::time::Instant;
+
 use agentbbs_arena::{Arena, BenchmarkId, RunResult, Submission};
 use agentbbs_core::caps::Caps;
 use agentbbs_core::identity::Identity;
+use agentbbs_core::market::{Listing, ListingBody, ListingKind, Market};
+use agentbbs_core::presence::Presence;
 use agentbbs_core::report::MemoryReporter;
 use agentbbs_core::{Board, Bbs, Message, MemoryStore, Role, Store};
 
@@ -33,6 +37,8 @@ pub enum Screen {
     Doors,
     /// Benchmark competition arena + leaderboard.
     Arena,
+    /// Marketplace of signed listings.
+    Market,
     /// Federation status panel.
     Federation,
     /// Sysop reporting dashboard.
@@ -47,6 +53,7 @@ pub const MENU: &[(char, &str, Screen)] = &[
     ('W', "Who's Online", Screen::Who),
     ('D', "Door Games", Screen::Doors),
     ('A', "Arena (Benchmarks)", Screen::Arena),
+    ('K', "Marketplace", Screen::Market),
     ('F', "Federation", Screen::Federation),
     ('S', "Sysop Report", Screen::Sysop),
     ('G', "Goodbye / Log Off", Screen::Goodbye),
@@ -112,16 +119,35 @@ pub struct App {
     pub arena: Arena,
     /// Highlighted benchmark row in the Arena screen.
     pub arena_index: usize,
+    /// Node-shared presence registry (who is online across all sessions).
+    pub presence: Arc<Presence>,
+    /// Signed marketplace listings shown in the Marketplace screen.
+    pub market: Market,
+    /// Monotonic clock base for presence heartbeats.
+    pub started: Instant,
     /// One-line status / error message.
     pub status: String,
     /// Whether the app wants to quit.
     pub should_quit: bool,
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        // Leave the shared presence registry when the session ends.
+        self.presence.leave(&self.session.identity.id());
+    }
+}
+
 impl App {
     /// Build an app over an arbitrary [`Store`], minting a fresh anonymous
     /// session and seeding the default boards if the store is empty.
     pub fn new(store: Arc<dyn Store>) -> Self {
+        App::with_presence(store, Arc::new(Presence::default()))
+    }
+
+    /// Build an app sharing a node-wide [`Presence`] registry, so every session
+    /// on the node (each SSH connection) sees the others in Who's Online.
+    pub fn with_presence(store: Arc<dyn Store>, presence: Arc<Presence>) -> Self {
         let (bbs, reporter) = Bbs::with_memory_reporter(store);
         let identity = Identity::generate();
         let session = Session {
@@ -146,13 +172,56 @@ impl App {
             compose_field: ComposeField::Subject,
             arena: Arena::new(),
             arena_index: 0,
+            presence,
+            market: Market::new(),
+            started: Instant::now(),
             status: "Connected. Press ENTER.".into(),
             should_quit: false,
         };
         app.seed_defaults();
         app.seed_arena();
+        app.seed_market();
+        app.heartbeat();
         app.refresh_boards();
         app
+    }
+
+    /// Monotonic milliseconds since this session started (presence clock).
+    pub fn now_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    /// Refresh our entry in the shared presence registry.
+    pub fn heartbeat(&self) {
+        self.presence
+            .heartbeat(self.session.identity.id(), &self.session.handle, false, self.now_ms());
+    }
+
+    /// Seed a few signed marketplace listings so the catalogue is alive.
+    fn seed_market(&mut self) {
+        let listings: &[(ListingKind, &str, &str, &str, u64)] = &[
+            (ListingKind::Plugin, "echo-door", "Echo Door", "A tiny WASM door that echoes/uppercases input.", 0),
+            (ListingKind::Agent, "graybeard", "Graybeard Agent", "A burned-out sysadmin persona that reviews your code.", 25),
+            (ListingKind::Theme, "amber-crt", "Amber CRT", "A phosphor-amber retro theme.", 5),
+            (ListingKind::Benchmark, "cve-pack-2", "CVE Pack II", "Ten extra critical CVEs for the Arena.", 40),
+        ];
+        for (kind, sku, title, desc, price) in listings {
+            let id = Identity::generate();
+            let body = ListingBody {
+                sku: (*sku).into(),
+                kind: *kind,
+                title: (*title).into(),
+                description: (*desc).into(),
+                price: *price,
+                seller: id.id(),
+                handle: "agentics".into(),
+                artifact_hash: agentbbs_core::market::artifact_hash(title.as_bytes()),
+                created_at: chrono::Utc::now(),
+            };
+            if let Ok(listing) = Listing::sign(&id, body) {
+                let _ = self.market.publish(listing);
+            }
+        }
     }
 
     /// Seed the arena with a few demo competitors so the leaderboard is alive.
