@@ -31,17 +31,39 @@ yanked = "deny"
 # Add RUSTSEC ids here (with a rationale) only when a fix is genuinely
 # unavailable and the path is unreachable.
 ignore = [
-  # Marvin Attack — RSA timing sidechannel in rsa@0.9.x and 0.10.0-rc.x.
-  # No patched version exists in the compatible range; the upstream rsa crate
-  # has not yet released a fix for either branch. Pulled in transitively via
-  # ssh-key / russh / openssh-keys. Tracking: a follow-up PR will upgrade the
-  # transitive consumers when a patched rsa releases. The vulnerable path is
-  # only reached on RSA signature verification; AgentBBS uses Ed25519 keys.
+  # Real CVE — Marvin Attack timing sidechannel in rsa@0.9.x / 0.10.0-rc.x.
+  # No patched rsa exists in the compatible range; pulled transitively via
+  # ssh-key / russh / openssh-keys. AgentBBS uses Ed25519 keys; the vulnerable
+  # RSA-signature-verify path is not reached. Follow-up PR when patched rsa
+  # releases for either branch.
   'RUSTSEC-2023-0071',
-  # rustls-pemfile is unmaintained. The replacement crate is rustls-pki-types
-  # but the consuming crates (rustls-pemfile-2.x is pulled by reqwest / hyper-rustls)
-  # have not yet migrated. No active CVE — "unmaintained" advisory only.
-  # Follow-up: bump reqwest + hyper-rustls when their next minors land.
+
+  # --- Unmaintained-advisory chain (all from gtk/glib v0.18 transitive deps) ---
+  # The Linux desktop binding stack (gtk-rs, glib-rs, atk-rs, gdk-pixbuf,
+  # cairo-rs, pango-rs, gio-rs, etc.) has migrated to gtk4 and the v0.18 crates
+  # are no longer maintained. The replacement gtk4 stack lives at
+  # gtk4-rs.github.io. Migrating consumers is its own multi-PR effort.
+  # None of these are active CVEs — all are "unmaintained" advisories only.
+  # Follow-up: bump direct consumers off gtk v0.18 to gtk4-rs.
+  'RUSTSEC-2024-0411',   # gtk
+  'RUSTSEC-2024-0412',   # atk
+  'RUSTSEC-2024-0413',   # gdk
+  'RUSTSEC-2024-0414',   # gdk-pixbuf
+  'RUSTSEC-2024-0415',   # gio
+  'RUSTSEC-2024-0416',   # glib
+  'RUSTSEC-2024-0417',   # pango
+  'RUSTSEC-2024-0418',   # cairo
+  'RUSTSEC-2024-0419',   # gtk-sys (or sibling)
+  'RUSTSEC-2024-0420',   # gtk-sys / sibling
+  'RUSTSEC-2024-0370',   # proc-macro-error (transitive via gtk macros)
+  'RUSTSEC-2025-0134',   # additional gtk/glib chain
+  'RUSTSEC-2026-0190',   # additional gtk/glib chain
+  'RUSTSEC-2021-0153',   # older unmaintained on the same chain
+
+  # rustls-pemfile is unmaintained. Replacement is rustls-pki-types. The
+  # consuming crates (rustls-pemfile-2.x is pulled by reqwest / hyper-rustls)
+  # have not yet migrated. No active CVE. Follow-up: bump reqwest + hyper-rustls
+  # when their next minors land.
   'RUSTSEC-2024-0436',
 ]
 
