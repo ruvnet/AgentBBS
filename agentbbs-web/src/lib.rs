@@ -98,6 +98,9 @@ pub struct AppState {
     /// Known federation peer base URLs, advertised via `/api/peers` for gossip
     /// discovery. Seeded from `AGENTBBS_PEERS` (comma-separated).
     peers: Vec<String>,
+    /// Produces agent loop-in reply text (scripted by default; a live model/MCP
+    /// endpoint when `AGENTBBS_RESPONDER_URL` is set). Swappable for tests.
+    responder: Arc<dyn Responder>,
 }
 
 /// Parse the `AGENTBBS_PEERS` env var (comma-separated base URLs) into a list.
@@ -111,8 +114,15 @@ fn parse_peers_env() -> Vec<String> {
 }
 
 impl AppState {
-    /// Build state over a store, seeding the default boards if empty.
+    /// Build state over a store, seeding the default boards if empty. The agent
+    /// loop-in responder is chosen from the environment.
     pub fn new(store: Arc<dyn Store>) -> Arc<Self> {
+        AppState::with_responder(store, responder_from_env())
+    }
+
+    /// Build state with an explicit loop-in [`Responder`] (used in tests to
+    /// inject a mock or a live-backend stand-in).
+    pub fn with_responder(store: Arc<dyn Store>, responder: Arc<dyn Responder>) -> Arc<Self> {
         let (bbs, reporter) = Bbs::with_memory_reporter(store);
         seed_boards(&bbs);
         Arc::new(AppState {
@@ -124,6 +134,7 @@ impl AppState {
             market: Mutex::new(seed_market()),
             agents: Mutex::new(HashMap::new()),
             peers: parse_peers_env(),
+            responder,
         })
     }
 
@@ -135,17 +146,18 @@ impl AppState {
     }
 
     /// If `text` @mentions a known agent (and the poster isn't that agent),
-    /// have the agent post a signed reply — a real "loop-in". The reply is a
-    /// scripted action-stream (no external LLM); it is the same signed
-    /// [`agentbbs_core::Message`] path a real MCP-backed agent would use, so
-    /// the responder is swappable for a live model later.
-    fn maybe_loop_in(&self, board: &str, text: &str, poster_handle: &str) {
+    /// have the agent post a signed reply — a real "loop-in". The reply *text*
+    /// comes from the pluggable [`Responder`] (scripted by default, a live
+    /// model/MCP endpoint when configured); the reply is always a signed
+    /// [`agentbbs_core::Message`] by the agent's stable identity, so the
+    /// signing seam is identical regardless of the text source.
+    async fn maybe_loop_in(&self, board: &str, text: &str, poster_handle: &str) {
         let Some(agent) = detect_mention(text) else { return };
         if agent.eq_ignore_ascii_case(poster_handle) {
             return;
         }
         let identity = self.agent_identity(&agent);
-        let (subject, body) = compose_reply(&agent, text);
+        let (subject, body) = self.responder.respond(&agent, text).await;
         let msg_body = agentbbs_core::MessageBody {
             board: board.to_string(),
             parent: None,
@@ -451,6 +463,109 @@ fn detect_mention(text: &str) -> Option<String> {
 
 /// Compose a scripted agent action-stream reply keyed off the request text.
 /// Lines beginning `✓`/`•` render as the "looped in" status stream in the UI.
+/// Produces the body of an agent's "loop-in" reply. This is the pluggable seam
+/// behind the signed agent reply: the message is always signed by the agent's
+/// stable identity (see [`AppState::maybe_loop_in`]) — only the *text* source
+/// varies. The default is offline and deterministic; a live model/MCP backend
+/// can be slotted in via configuration without touching the signing path.
+#[async_trait::async_trait]
+pub trait Responder: Send + Sync {
+    /// Return `(subject, body)` for `agent` replying to `prompt`.
+    async fn respond(&self, agent: &str, prompt: &str) -> (String, String);
+}
+
+/// The built-in, network-free responder: a scripted action-stream.
+pub struct ScriptedResponder;
+
+#[async_trait::async_trait]
+impl Responder for ScriptedResponder {
+    async fn respond(&self, agent: &str, prompt: &str) -> (String, String) {
+        compose_reply(agent, prompt)
+    }
+}
+
+/// A live responder that calls an external model/agent HTTP endpoint.
+///
+/// Contract: `POST {url}` with JSON `{ "agent", "prompt" }` (optional
+/// `Authorization: Bearer {key}`), expecting a JSON reply with a `body` (or
+/// `reply`) string and an optional `subject`. **Any** failure — unset config,
+/// network error, non-2xx, unparsable body — falls back to the scripted
+/// responder, so the loop-in never breaks.
+pub struct HttpResponder {
+    url: String,
+    key: Option<String>,
+    client: reqwest::Client,
+}
+
+impl HttpResponder {
+    /// Build a responder targeting `url` with an optional bearer `key`.
+    pub fn new(url: impl Into<String>, key: Option<String>) -> Self {
+        HttpResponder {
+            url: url.into(),
+            key,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    async fn try_respond(
+        &self,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+        let mut req = self
+            .client
+            .post(&self.url)
+            .json(&serde_json::json!({ "agent": agent, "prompt": prompt }));
+        if let Some(k) = &self.key {
+            req = req.bearer_auth(k);
+        }
+        let v: serde_json::Value = req
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let body = v
+            .get("body")
+            .or_else(|| v.get("reply"))
+            .and_then(|x| x.as_str())
+            .ok_or("responder reply missing `body`/`reply`")?
+            .to_string();
+        let subject = v
+            .get("subject")
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("looped in {agent}"));
+        Ok((subject, body))
+    }
+}
+
+#[async_trait::async_trait]
+impl Responder for HttpResponder {
+    async fn respond(&self, agent: &str, prompt: &str) -> (String, String) {
+        match self.try_respond(agent, prompt).await {
+            Ok(reply) => reply,
+            Err(e) => {
+                tracing::warn!("live responder failed ({e}); falling back to scripted");
+                compose_reply(agent, prompt)
+            }
+        }
+    }
+}
+
+/// Pick a responder from the environment: `HttpResponder` when
+/// `AGENTBBS_RESPONDER_URL` is set (with optional `AGENTBBS_RESPONDER_KEY`),
+/// else the offline [`ScriptedResponder`].
+fn responder_from_env() -> Arc<dyn Responder> {
+    match std::env::var("AGENTBBS_RESPONDER_URL") {
+        Ok(url) if !url.trim().is_empty() => Arc::new(HttpResponder::new(
+            url.trim().to_string(),
+            std::env::var("AGENTBBS_RESPONDER_KEY").ok().filter(|k| !k.is_empty()),
+        )),
+        _ => Arc::new(ScriptedResponder),
+    }
+}
+
 fn compose_reply(agent: &str, text: &str) -> (String, String) {
     let t = text.to_ascii_lowercase();
     let body = if t.contains("time") || t.contains("schedule") || t.contains("dinner") || t.contains("meet") {
@@ -629,7 +744,7 @@ async fn api_post(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     // If the human looped in an agent by @mention, the agent replies (signed).
     if !looks_like_agent(&handle) {
-        state.maybe_loop_in(&slug, &req.text, &handle);
+        state.maybe_loop_in(&slug, &req.text, &handle).await;
     }
     Ok(Json(MessageView {
         id: String::new(),
@@ -714,7 +829,7 @@ async fn api_post_signed(
         .post(Role::Agent.caps(), message)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     if human {
-        state.maybe_loop_in(&slug, &text, &view.handle);
+        state.maybe_loop_in(&slug, &text, &view.handle).await;
     }
     Ok(Json(view))
 }
@@ -1256,5 +1371,98 @@ mod tests {
         let app = router(AppState::in_memory());
         let peers = get_json(&app, "/api/peers").await;
         assert!(peers["peers"].is_array());
+    }
+
+    // A pluggable responder stand-in for a live model/MCP backend.
+    struct MockResponder(&'static str);
+    #[async_trait::async_trait]
+    impl Responder for MockResponder {
+        async fn respond(&self, agent: &str, _prompt: &str) -> (String, String) {
+            (format!("looped in {agent}"), self.0.to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_in_uses_pluggable_responder() {
+        // Inject a "live" responder; the @mention reply must use its text and
+        // still be a signed, verified agent message.
+        let state = AppState::with_responder(
+            Arc::new(MemoryStore::new()),
+            Arc::new(MockResponder("LIVE: shipping it now")),
+        );
+        let app = router(state);
+        let post = Request::post("/api/boards/general")
+            .header("content-type", "application/json")
+            .header("x-session", "human-1")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "handle": "you", "text": "@claude-agent please review the diff"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(app.clone().oneshot(post).await.unwrap().status(), StatusCode::OK);
+
+        let board = get_json(&app, "/api/boards/general").await;
+        let reply = board["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["handle"] == "claude-agent")
+            .expect("agent replied");
+        assert_eq!(reply["body"], "LIVE: shipping it now");
+        assert_eq!(reply["verified"], true); // reply is signed by the agent identity
+    }
+
+    #[tokio::test]
+    async fn http_responder_uses_live_body_on_success() {
+        // Spin a tiny local "model" endpoint and confirm the live reply is used.
+        let app = Router::new().route(
+            "/r",
+            post(|| async {
+                Json(serde_json::json!({ "body": "LIVE: deployed", "subject": "looped in claude-agent" }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let responder = HttpResponder::new(format!("http://{addr}/r"), None);
+        let (subject, body) = responder.respond("claude-agent", "ship it").await;
+        assert_eq!(body, "LIVE: deployed");
+        assert!(subject.contains("looped in"));
+    }
+
+    #[tokio::test]
+    async fn http_responder_falls_back_to_scripted_on_failure() {
+        // A dead endpoint must not break the loop-in: it falls back to scripted.
+        let responder = HttpResponder::new("http://127.0.0.1:1/never", None);
+        let (subject, body) = responder.respond("claude-agent", "fix the bug").await;
+        assert!(subject.contains("looped in"));
+        // Body is the scripted action-stream (bug/fix branch), not empty.
+        assert!(body.contains("✓"));
+        assert!(body.to_lowercase().contains("clippy") || body.contains("fix"));
+    }
+
+    #[tokio::test]
+    async fn scripted_responder_is_the_default() {
+        let app = router(AppState::in_memory());
+        let post = Request::post("/api/boards/general")
+            .header("content-type", "application/json")
+            .header("x-session", "human-2")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "handle": "you", "text": "@graybeard find time to meet"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(app.clone().oneshot(post).await.unwrap().status(), StatusCode::OK);
+        let board = get_json(&app, "/api/boards/general").await;
+        assert!(board["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["handle"] == "graybeard" && m["body"].as_str().unwrap().contains("✓")));
     }
 }
