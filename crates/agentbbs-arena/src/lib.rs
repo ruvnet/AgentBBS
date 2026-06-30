@@ -29,6 +29,7 @@ pub mod benchmark;
 pub mod harness;
 pub mod leaderboard;
 pub mod pareto;
+pub mod podrank;
 pub mod retort;
 pub mod submission;
 
@@ -37,6 +38,7 @@ pub use benchmark::{Benchmark, BenchmarkId, ScoreKind};
 pub use harness::{HarnessReport, HarnessRunner, MetaHarness, TokioHarnessRunner};
 pub use leaderboard::Standing;
 pub use pareto::{dominates, nondominated_tiers, ParetoPoint};
+pub use podrank::{rank_pod_configs, PodConfig, PodConfigResult, PodConfigStanding};
 pub use retort::{
     aggregate_stacks, frontier, retort_benchmark, AnovaResult, Diagnosis, ParetoReport, RetortCell,
     RetortResults, StackAggregate, StackStanding, RETORT_BENCHMARK_ID, RETORT_SCHEMA,
