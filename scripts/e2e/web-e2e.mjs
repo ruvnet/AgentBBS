@@ -92,6 +92,22 @@ try {
   ok(await page.evaluate(() => [...document.querySelectorAll('.row.reply')].some(r => /threaded reply/.test(r.textContent))), 'threading: reply renders indented (.row.reply) under its parent');
   ok(await page.evaluate(() => getComputedStyle(document.getElementById('replyBar')).display === 'none'), 'threading: reply bar clears after posting');
 
+  // ---- board message filter (find-in-board) ----
+  {
+    const f = await page.evaluate(() => {
+      const inp = document.getElementById('board-filter');
+      if (!inp) return { present: false };
+      const total = document.querySelectorAll('#thread .row').length;
+      inp.value = 'zzqqxx-nomatch'; inp.dispatchEvent(new Event('input', { bubbles: true }));
+      const visAfter = [...document.querySelectorAll('#thread .row')].filter(r => r.style.display !== 'none').length;
+      inp.value = ''; inp.dispatchEvent(new Event('input', { bubbles: true }));
+      const visRestored = [...document.querySelectorAll('#thread .row')].filter(r => r.style.display !== 'none').length;
+      return { present: true, total, visAfter, visRestored };
+    });
+    ok(f.present, 'board filter bar renders on a populated board');
+    ok(f.present && f.visAfter === 0 && f.visRestored === f.total, 'filter hides non-matching rows; clearing restores them');
+  }
+
   // ---- community: Arena (sidebar) ----
   await page.click('[data-nav="view:arena"]');
   await page.waitForTimeout(300);

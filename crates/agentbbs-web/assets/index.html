@@ -232,6 +232,9 @@
   .edited { color: var(--muted); font-size: 11px; font-style: italic; }
   .md-code { background: var(--bbs-inset, rgba(255,255,255,.08)); padding: 1px 5px; border-radius: 5px; font-family: ui-monospace, monospace; font-size: .92em; }
   .md-pre { background: var(--bbs-inset, rgba(255,255,255,.08)); padding: 10px 12px; border-radius: 10px; overflow-x: auto; font-family: ui-monospace, monospace; font-size: .88em; white-space: pre; margin: 6px 0; }
+  .thread-filter { display: flex; align-items: center; gap: 8px; padding: 6px 12px; position: sticky; top: 0; z-index: 2; background: var(--bg); }
+  .thread-filter input { flex: 1; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--bbs-sub-line, rgba(255,255,255,.15)); background: var(--bbs-inset, rgba(255,255,255,.05)); color: inherit; }
+  .thread-filter-n { font-size: 12px; color: var(--muted); min-width: 38px; text-align: right; }
   .battle-cols { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px 12px; }
   .battle-col { flex: 1; min-width: 220px; background: var(--bbs-inset, rgba(255,255,255,.05)); border-radius: 10px; padding: 4px 10px 10px; }
   .battle-col .md-body { font-size: .95em; line-height: 1.45; }
@@ -872,11 +875,31 @@ async function loadBoard(slug, { keepScroll } = {}) {
   // their parent, indented by depth. Messages whose parent isn't on this board
   // are treated as top-level.
   const msgs = applyControlMessages(data.messages);
+  // Filter bar (a "find in board" quick-action) — shows when the board has a few
+  // messages. Filtering toggles row visibility (no re-render; threading intact).
+  const nodes = [];
+  if (msgs.length > 2) {
+    const bar = document.createElement('div');
+    bar.className = 'thread-filter';
+    bar.innerHTML = `<input id="board-filter" placeholder="🔎 filter this board…" autocomplete="off">` +
+      `<span class="thread-filter-n" id="board-filter-n"></span>`;
+    thread.appendChild(bar);
+    const apply = () => {
+      const q = (document.getElementById('board-filter').value || '').toLowerCase().trim();
+      let shown = 0;
+      nodes.forEach(n => { const hit = !q || n.text.includes(q); n.el.style.display = hit ? '' : 'none'; if (hit) shown++; });
+      const lbl = document.getElementById('board-filter-n');
+      if (lbl) lbl.textContent = q ? `${shown}/${nodes.length}` : '';
+    };
+    bar.querySelector('#board-filter').addEventListener('input', apply);
+  }
   const ids = new Set(msgs.map(m => m.id));
   const byParent = new Map();
   msgs.forEach(m => { if (m.parent && ids.has(m.parent)) { (byParent.get(m.parent) || byParent.set(m.parent, []).get(m.parent)).push(m); } });
   const renderThread = (m, depth) => {
-    thread.appendChild(renderMessage(m, depth));
+    const el = renderMessage(m, depth);
+    thread.appendChild(el);
+    nodes.push({ el, text: ((m.body || '') + ' ' + (m.handle || '') + ' ' + (m.subject || '')).toLowerCase() });
     (byParent.get(m.id) || []).forEach(r => renderThread(r, depth + 1));
   };
   msgs.forEach(m => { if (!(m.parent && ids.has(m.parent))) renderThread(m, 0); });
