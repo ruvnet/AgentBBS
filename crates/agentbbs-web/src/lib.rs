@@ -30,6 +30,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+pub mod pods;
+
 /// Max posts allowed per session within [`RATE_WINDOW`] before a 429 is returned.
 const RATE_MAX_POSTS: u32 = 20;
 /// The fixed window length for the per-session post rate limiter.
@@ -98,11 +100,20 @@ pub struct AppState {
     /// Stable identities for built-in agents you can "loop in" by @mention,
     /// keyed by handle, so an agent always signs with the same key.
     agents: Mutex<HashMap<String, Identity>>,
+    /// The MetaHarness domain-pod control plane (ADR-0035).
+    pub pods: pods::PodController,
 }
 
 impl AppState {
-    /// Build state over a store, seeding the default boards if empty.
+    /// Build state over a store, seeding the default boards if empty. The pods
+    /// control plane is wired from the environment (live `cog_` key →
+    /// gateway-backed; otherwise a planned dry-run fallback).
     pub fn new(store: Arc<dyn Store>) -> Arc<Self> {
+        Self::build(store, pods::PodController::from_env())
+    }
+
+    /// Build state over a store and an explicit pods controller.
+    fn build(store: Arc<dyn Store>, pods: pods::PodController) -> Arc<Self> {
         let (bbs, reporter) = Bbs::with_memory_reporter(store);
         seed_boards(&bbs);
         Arc::new(AppState {
@@ -113,7 +124,38 @@ impl AppState {
             reporter,
             market: Mutex::new(seed_market()),
             agents: Mutex::new(HashMap::new()),
+            pods,
         })
+    }
+
+    /// In-memory state with an explicit pods transport (test/embedding hook).
+    pub fn in_memory_with_pods(
+        transport: Arc<dyn pods::PodTransport>,
+        account: impl Into<String>,
+    ) -> Arc<Self> {
+        Self::build(
+            Arc::new(MemoryStore::new()),
+            pods::PodController::new(transport, account.into()),
+        )
+    }
+
+    /// The tenant-isolation key for a request: the caller's anonymous identity
+    /// (resolved from `x-session`). Pods are owned by, and only controllable by,
+    /// this identity (ADR-0035 §6).
+    fn tenant_owner(&self, headers: &HeaderMap) -> String {
+        self.identity_for(&session_token(headers)).to_hex()
+    }
+
+    /// Ensure a board exists for a pod's `registered_room`, creating it if
+    /// missing so signed step-results (ADR-0003) have a home (ADR-0035 §4b).
+    fn ensure_board(&self, slug: &str) {
+        if self.bbs.store().get_board(slug).ok().flatten().is_some() {
+            return;
+        }
+        let sys = Identity::generate();
+        let mut b = Board::new(slug, slug, sys.id());
+        b.description = format!("Pod room — signed step-results for pods registered to #{slug}.");
+        let _ = self.bbs.create_board(Role::Sysop.caps(), b);
     }
 
     /// The stable identity for a built-in agent handle (minted on first use).
@@ -321,6 +363,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/boards/{slug}/signed", post(api_post_signed))
         .route("/api/arena", get(api_arena))
         .route("/api/arena/retort", get(api_arena_retort))
+        // MetaHarness domain-pod control plane (ADR-0035).
+        .route(
+            "/api/pods",
+            get(pods::api_pods_list).post(pods::api_pods_spawn),
+        )
+        .route("/api/pods/templates", get(pods::api_pods_templates))
+        .route("/api/pods/{id}", get(pods::api_pods_get))
+        .route("/api/pods/{id}/evaluate", post(pods::api_pods_evaluate))
+        .route("/api/pods/{id}/stop", post(pods::api_pods_stop))
         .route("/api/whoami", post(api_whoami))
         .route("/api/online", get(api_online))
         .route("/api/doors", get(api_doors))
