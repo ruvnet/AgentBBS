@@ -25,7 +25,7 @@ v0-hardening.
 | G3 | **Bridge inbound (Teams: Azure Bot + RSC)** | not built | 0025 (Phase 2) | P2 |
 | G4 | **UI threading** — `MessageBody.parent` exists; the web UI renders flat | ✓ shipped — reply-in-thread + indented render (ADR-0027) | 0013/0024 | **P1** |
 | G5 | **Federation auto-sync** — peer discovery, signed board snapshots for bootstrap, CRDT/gossip convergence (today: manual node URL) | manual only | 0007/0017 | P2 |
-| G6 | **RVF ANN index** — search is brute-force O(n·dim); not byte-compatible with RuVector | v0 brute force | 0006 | P2 |
+| G6 | **RVF ANN index** — search is brute-force O(n·dim); not byte-compatible with RuVector | ✓ shipped — `LshIndex` (sign-RP LSH prune + exact rerank, ADR-0028) | 0006 | P2 |
 | G7 | **Marketplace real install/credits** — listings act cosmetically; no purchase/credit ledger or arbitrary-plugin install | illustrative | 0011/0009 | P3 |
 | G8 | **Genesis live mode** — the static demo has no live-LLM path (server has one) | by design; optional | 0019/0021 | P3 |
 | G9 | **agentbbs-web parity of federation/mode-badge semantics** vs genesis | simplified | 0024 | P3 |

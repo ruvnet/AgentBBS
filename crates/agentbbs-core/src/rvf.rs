@@ -182,6 +182,123 @@ impl RvfStore {
     }
 }
 
+/// An approximate-nearest-neighbour index over an [`RvfStore`] (G6 / ADR-0028).
+///
+/// Sign random-projection LSH: each vector gets a 64-bit signature from its sign
+/// against 64 deterministic random hyperplanes. A query prunes to the
+/// `max_candidates` records with the smallest Hamming distance to the query
+/// signature, then those candidates are **exact-cosine re-ranked** — so results
+/// are correct for the returned set and degrade gracefully:
+/// `max_candidates >= len` is identical to the exact brute-force scan, and a
+/// query equal to a stored vector always finds it (Hamming 0). This trades the
+/// O(n·dim) scan for O(n) Hamming + O(max_candidates·dim) rerank.
+#[derive(Clone, Debug)]
+pub struct LshIndex {
+    planes: Vec<Vec<f32>>, // BITS hyperplanes, each `dim` long
+    sigs: Vec<u64>,        // one signature per store record (build-time order)
+    dim: usize,
+}
+
+impl LshIndex {
+    /// Number of LSH bits (hyperplanes). One u64 signature per record.
+    pub const BITS: usize = 64;
+
+    /// Build the index over a store's current records (O(n·BITS·dim) once).
+    pub fn build(store: &RvfStore) -> Self {
+        let planes = lsh_planes(store.dim, Self::BITS, 0xA9E5_2026_C0FF_EE01);
+        let sigs = store
+            .records
+            .iter()
+            .map(|r| lsh_sig(&planes, &r.vector))
+            .collect();
+        Self {
+            planes,
+            sigs,
+            dim: store.dim,
+        }
+    }
+
+    /// Approximate cosine `top_k` over `store`, considering at most
+    /// `max_candidates` LSH-nearest records before exact re-ranking. Falls back
+    /// to the exact scan if the index is stale (store mutated since `build`).
+    pub fn search(
+        &self,
+        store: &RvfStore,
+        query: &[f32],
+        top_k: usize,
+        max_candidates: usize,
+    ) -> Result<Vec<Hit>> {
+        if query.len() != self.dim {
+            return Err(Error::malformed(
+                "query",
+                format!("expected dim {}, got {}", self.dim, query.len()),
+            ));
+        }
+        if self.sigs.len() != store.records.len() {
+            return store.search(query, top_k); // stale index — be correct, not fast
+        }
+        let qsig = lsh_sig(&self.planes, query);
+        let mut idx: Vec<usize> = (0..store.records.len()).collect();
+        idx.sort_by_key(|&i| (self.sigs[i] ^ qsig).count_ones());
+        idx.truncate(max_candidates.max(top_k));
+        let qn = norm(query);
+        let mut hits: Vec<Hit> = idx
+            .iter()
+            .map(|&i| {
+                let r = &store.records[i];
+                Hit {
+                    id: r.id.clone(),
+                    score: cosine(query, qn, &r.vector),
+                    meta: r.meta.clone(),
+                }
+            })
+            .collect();
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        hits.truncate(top_k);
+        Ok(hits)
+    }
+}
+
+/// `bits` deterministic hyperplanes of length `dim`, components uniform in
+/// [-1, 1) from a splitmix64 stream (no RNG dependency; reproducible).
+fn lsh_planes(dim: usize, bits: usize, seed: u64) -> Vec<Vec<f32>> {
+    let mut s = seed;
+    (0..bits)
+        .map(|_| {
+            (0..dim)
+                .map(|_| {
+                    let u = (splitmix64(&mut s) >> 11) as f32 / ((1u64 << 53) as f32); // [0,1)
+                    u * 2.0 - 1.0
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Sign random-projection signature: bit i = (v · plane_i >= 0).
+fn lsh_sig(planes: &[Vec<f32>], v: &[f32]) -> u64 {
+    let mut sig = 0u64;
+    for (i, p) in planes.iter().enumerate() {
+        let dot: f32 = p.iter().zip(v).map(|(a, b)| a * b).sum();
+        if dot >= 0.0 {
+            sig |= 1u64 << i;
+        }
+    }
+    sig
+}
+
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 /// A tiny bounds-checked byte cursor.
 struct Cursor<'a> {
     buf: &'a [u8],
@@ -229,6 +346,67 @@ mod tests {
             vector: v,
             meta: serde_json::json!({ "k": id }),
         }
+    }
+
+    #[test]
+    fn lsh_full_budget_matches_exact() {
+        let mut s = RvfStore::new(3);
+        s.upsert(rec("a", vec![1.0, 0.0, 0.0])).unwrap();
+        s.upsert(rec("b", vec![0.0, 1.0, 0.0])).unwrap();
+        s.upsert(rec("c", vec![0.9, 0.1, 0.0])).unwrap();
+        s.upsert(rec("d", vec![0.0, 0.0, 1.0])).unwrap();
+        let idx = LshIndex::build(&s);
+        // With the candidate budget >= len, approx reranks the same full set with
+        // exact cosine. The unambiguous top-2 (a, then c) must match exactly; the
+        // two zero-score tails (b, d) tie and may order differently.
+        let exact = s.search(&[1.0, 0.0, 0.0], 2).unwrap();
+        let approx = idx.search(&s, &[1.0, 0.0, 0.0], 2, s.len()).unwrap();
+        assert_eq!(
+            exact.iter().map(|h| h.id.clone()).collect::<Vec<_>>(),
+            approx.iter().map(|h| h.id.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(approx[0].id, "a");
+        assert_eq!(approx[1].id, "c");
+        // approx considers the whole set, so it returns all 4 when asked.
+        assert_eq!(
+            idx.search(&s, &[1.0, 0.0, 0.0], 4, s.len()).unwrap().len(),
+            4
+        );
+    }
+
+    #[test]
+    fn lsh_finds_exact_vector_query_with_tiny_budget() {
+        let mut s = RvfStore::new(4);
+        for (i, id) in ["a", "b", "c", "d", "e"].iter().enumerate() {
+            let mut v = vec![0.0; 4];
+            v[i % 4] = 1.0 + i as f32 * 0.01;
+            s.upsert(rec(id, v)).unwrap();
+        }
+        let idx = LshIndex::build(&s);
+        // Querying with a stored vector → its signature matches (Hamming 0) → it
+        // is always a candidate, even with budget 1.
+        let q = s.records[2].vector.clone();
+        let hits = idx.search(&s, &q, 1, 1).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "c");
+    }
+
+    #[test]
+    fn lsh_dim_mismatch_errors() {
+        let s = RvfStore::new(3);
+        let idx = LshIndex::build(&s);
+        assert!(idx.search(&s, &[1.0, 0.0], 1, 4).is_err());
+    }
+
+    #[test]
+    fn lsh_stale_index_falls_back_to_exact() {
+        let mut s = RvfStore::new(2);
+        s.upsert(rec("a", vec![1.0, 0.0])).unwrap();
+        let idx = LshIndex::build(&s);
+        s.upsert(rec("b", vec![0.0, 1.0])).unwrap(); // mutate after build → stale
+                                                     // Falls back to exact scan, still returns the correct neighbour.
+        let hits = idx.search(&s, &[0.0, 1.0], 1, 1).unwrap();
+        assert_eq!(hits[0].id, "b");
     }
 
     #[test]

@@ -43,7 +43,7 @@ pub use market::{Listing, ListingBody, ListingKind, Market};
 pub use presence::{Member, Presence};
 pub use ratelimit::RateLimiter;
 pub use report::{Event, EventKind, MemoryReporter, NullReporter, Reporter, Severity};
-pub use rvf::{Hit, Record, RvfStore};
+pub use rvf::{Hit, LshIndex, Record, RvfStore};
 pub use service::Bbs;
 pub use store::{MemoryStore, Store};
 
