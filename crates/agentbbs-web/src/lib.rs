@@ -22,8 +22,8 @@ use agentbbs_core::identity::Identity;
 use agentbbs_core::market::{Listing, ListingBody, ListingKind, Market};
 use agentbbs_core::report::MemoryReporter;
 use agentbbs_core::{
-    ActionProposal, ApprovalGate, Bbs, Board, MaxTier, MemoryStore, PodSpec, PodStatus, Role,
-    SignedDecision, Store,
+    ActionProposal, ApprovalGate, Bbs, Board, MaxTier, MemoryStore, OutcomeRecord, PodSpec,
+    PodStatus, ReputationLedger, Role, SignedDecision, Store,
 };
 
 use axum::extract::{Path, State};
@@ -108,6 +108,8 @@ pub struct AppState {
     proposals: Mutex<Vec<ActionProposal>>,
     /// The signed-decision approval gate (ADR-0038).
     gate: Mutex<ApprovalGate>,
+    /// Agent reputation ledger (ADR-0039); fed by terminal pod outcomes.
+    reputation: Mutex<ReputationLedger>,
 }
 
 impl AppState {
@@ -126,6 +128,7 @@ impl AppState {
             pods: Mutex::new(Vec::new()),
             proposals: Mutex::new(Vec::new()),
             gate: Mutex::new(ApprovalGate::new()),
+            reputation: Mutex::new(ReputationLedger::new()),
         })
     }
 
@@ -349,6 +352,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(api_approvals_list).post(api_approvals_propose),
         )
         .route("/api/approvals/decision", post(api_approvals_decide))
+        .route("/api/reputation", get(api_reputation))
         // Permissive CORS so a static genesis node (e.g. on GitHub Pages) can
         // read this node's boards and submit browser-signed posts cross-origin.
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -1269,6 +1273,16 @@ async fn api_pods_result(
         .post(Role::Agent.caps(), msg)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("post failed: {e}")))?;
 
+    // A terminal outcome feeds the pod's reputation (ADR-0039).
+    if result.status.is_terminal() {
+        state.reputation.lock().unwrap().record(OutcomeRecord {
+            agent: identity.id(),
+            success: result.status == PodStatus::Completed,
+            weight: 1.0,
+            source: "pod".into(),
+        });
+    }
+
     // Commit the lifecycle transition and return the updated pod.
     let mut pods = state.pods.lock().unwrap();
     let pod = pods
@@ -1277,6 +1291,13 @@ async fn api_pods_result(
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "pod not found"))?;
     pod.status = result.status;
     Ok(Json(pod.clone()))
+}
+
+/// `GET /api/reputation` — agents ranked by their confidence-adjusted track
+/// record (ADR-0039), fed by terminal pod outcomes (and, later, Arena/approval).
+async fn api_reputation(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let ranking = state.reputation.lock().unwrap().ranking();
+    Json(serde_json::json!({ "ranking": ranking }))
 }
 
 /// Request to propose a side-effectful action (ADR-0038).
@@ -1670,6 +1691,17 @@ mod tests {
             post_result("executing", "nope").await.status(),
             StatusCode::BAD_REQUEST
         );
+
+        // The completed pod now has a reputation entry with a success (ADR-0039).
+        let resp = app
+            .oneshot(Request::get("/api/reputation").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let rep = body_json(resp).await;
+        let ranking = rep["ranking"].as_array().unwrap();
+        assert_eq!(ranking.len(), 1);
+        assert_eq!(ranking[0]["successes"], 1.0);
+        assert!(ranking[0]["score"].as_f64().unwrap() > 0.0);
     }
 
     // ADR-0035 slice 7: the pod-monitor endpoint serves ranked configs + pods.
