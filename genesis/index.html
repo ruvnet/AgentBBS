@@ -694,7 +694,9 @@ function renderMessage(m, depth = 0) {
   const av = mine ? '' : `<span class="avatar">${initials(m.handle)}</span>`;
   const subj = m.subject && m.subject !== '(msg)' && !agent ? `<span class="subject">${esc(m.subject)}</span>\n` : '';
   const canEdit = me && m.author === me.id && store && typeof store.retract === 'function';
-  const acts = canEdit ? `<button class="msg-act msg-edit" title="Edit">✎</button><button class="msg-act msg-del" title="Delete">🗑</button>` : '';
+  const canDraft = store && typeof store.draftReply === 'function';
+  const acts = (canEdit ? `<button class="msg-act msg-edit" title="Edit">✎</button><button class="msg-act msg-del" title="Delete">🗑</button>` : '') +
+    (canDraft ? `<button class="msg-act msg-draft" title="Draft a reply with an agent (ADR-0049)">✍️</button>` : '');
   const editedTag = m.edited ? ` <span class="edited">(edited)</span>` : '';
   row.innerHTML =
     `<div class="meta">${av}<span>${who}</span>${sig}${acts}</div>` +
@@ -703,6 +705,7 @@ function renderMessage(m, depth = 0) {
   row.onclick = () => showDetails(m);
   const delBtn = row.querySelector('.msg-del'); if (delBtn) delBtn.onclick = (e) => { e.stopPropagation(); deleteMessage(m); };
   const edBtn = row.querySelector('.msg-edit'); if (edBtn) edBtn.onclick = (e) => { e.stopPropagation(); editMessage(m); };
+  const drBtn = row.querySelector('.msg-draft'); if (drBtn) drBtn.onclick = (e) => { e.stopPropagation(); draftReplyToMessage(m); };
   threadify(row);
   return row;
 }
@@ -1688,9 +1691,12 @@ function renderRightbar() {
     ];
     list.innerHTML = `<div class="rb-detail"><div class="rb-quote">${esc((m.body || '').slice(0, 280))}</div>` +
       kv.map(([k, v]) => `<div class="rb-kv"><span class="rb-k">${k}</span><span class="rb-v">${v}</span></div>`).join('') +
-      `<div style="margin-top:12px"><button class="chip" id="rb-reply">↳ Reply in thread</button></div></div>`;
+      `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">` +
+      `<button class="chip" id="rb-reply">↳ Reply in thread</button>` +
+      `<button class="chip" id="rb-draft">✍️ Draft with agent</button></div></div>`;
     $('rb-back').onclick = rbBackToOnline;
     $('rb-reply').onclick = () => startReply(m);
+    $('rb-draft').onclick = () => draftReplyToMessage(m);
     return;
   }
   const d = store.online(me ? me.short : '');
@@ -1755,6 +1761,23 @@ function startReply(m) {
   replyTo = { id: m.id, handle: m.handle || '?' };
   updateReplyBar();
   const i = $('input'); if (i) i.focus();
+}
+// Agent Inbox (ADR-0049): draft a reply to THIS specific message, threaded
+// (in_reply_to set) — the agent's tool layer never posts; a human reviews/
+// edits/sends from the Agent Drafts view. Reachable from both layouts: the
+// inline ✍️ on every message bubble, and "Draft with agent" in the desktop
+// details rail.
+async function draftReplyToMessage(m) {
+  const agent = (prompt('Draft a reply from which agent? (e.g. claude, codex, graybeard, gpt)', 'claude') || '').trim();
+  if (!agent) return;
+  const target = m.board || current;
+  const r = await store.draftReply(target, agent, m.body, m.id);
+  if (r && r.ok) {
+    agentNotify(`✍️ @${agent} drafted a reply to @${m.handle || '?'} in #${target}`, 'drafts');
+    VIEWS.drafts();
+  } else {
+    notify((r && r.error) || 'draft failed', 'agent');
+  }
 }
 function clearReply() { replyTo = null; updateReplyBar(); }
 function updateReplyBar() {
@@ -2028,7 +2051,7 @@ async function boot() {
 window.__genesisStore = store;       // expose for verification/debugging
 window.__dbg = DBG;                   // expose captured console/diagnostics for E2E
 window.__notes = NOTES;               // expose notifications for E2E
-window.__ui = { applyTheme, applyLayout, applyCustom, getCustom, notify, THEMES, VIEWS }; // expose UI controls for tests
+window.__ui = { applyTheme, applyLayout, applyCustom, getCustom, notify, THEMES, VIEWS, loadBoard, currentBoard: () => current }; // expose UI controls for tests
 window.__applyControl = applyControlMessages; // expose edit/delete filter for E2E
 window.__md = mdToHtml; // expose markdown renderer for E2E
 window.__agentNotify = agentNotify; // expose for E2E

@@ -31,6 +31,10 @@ const consoleErrors = [];
 const BENIGN = /favicon|net::ERR|cdn\.jsdelivr|transformers|huggingface|CORS|Access to fetch|resolve\/main/i;
 page.on('console', m => { if (m.type() === 'error' && !BENIGN.test(m.text())) consoleErrors.push(m.text()); });
 page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
+// "Draft with agent" (ADR-0049) is the only prompt()-driven UI flow in this
+// suite — Playwright auto-dismisses native dialogs unless handled, so accept
+// with a fixed agent name whenever one appears.
+page.on('dialog', (d) => d.accept('claude').catch(() => {}));
 
 try {
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
@@ -454,6 +458,61 @@ try {
       return refused.ok === false;
     });
     ok(refusedOk, 'drafting from malicious inbound content is refused');
+
+    // ---- Draft FROM a specific message (✍️ inline + rail), properly threaded ----
+    // Explicitly land on #general — by this point in the suite `current` may
+    // be a DM thread or another board from an earlier check, and the
+    // composer posts to whatever board is currently active.
+    await page.evaluate(() => { window.__ui.loadBoard('general'); });
+    await page.waitForFunction(() => window.__ui.currentBoard() === 'general', { timeout: 5000 }).catch(() => {});
+    await page.fill('#input', 'e2e-draft-source-' + Date.now());
+    await page.click('#send');
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('.row.me .bubble')].some((b) => /e2e-draft-source-/.test(b.textContent)),
+      { timeout: 10000 },
+    );
+    // Poll the STORE (not just the DOM) for the message to land — the bubble
+    // can render a beat before the underlying write settles. Optional-
+    // chained and defaulted so a miss fails one assertion instead of
+    // throwing and aborting the rest of the suite (a real crash this caused
+    // once while writing this check).
+    await page.waitForFunction(
+      async () => {
+        const board = await window.__genesisStore.board('general');
+        return board.messages.some((m) => /e2e-draft-source-/.test(m.body));
+      },
+      { timeout: 5000 },
+    ).catch(() => {});
+    const sourceId = await page.evaluate(async () => {
+      const board = await window.__genesisStore.board('general');
+      return board.messages.find((m) => /e2e-draft-source-/.test(m.body))?.id ?? null;
+    });
+    ok(!!sourceId, 'the source message for the threaded-draft check landed in the store');
+    const inlineOk = await page.evaluate(() => !!document.querySelector('.row.me .msg-draft'));
+    ok(inlineOk, 'every message bubble has an inline ✍️ draft action');
+    if (sourceId) {
+      // Click the LAST .row.me .msg-draft, not the first — by this point in
+      // the suite many earlier messages have accumulated in #general, and
+      // `page.click(selector)` targets the first DOM match, which is an
+      // older message, not the one just posted for this check.
+      await page.evaluate(() => {
+        const btns = document.querySelectorAll('.row.me .msg-draft');
+        btns[btns.length - 1].click();
+      });
+      // The dialog handler (registered at the top of the suite) accepts "claude".
+      await page.waitForFunction(
+        (id) => window.__genesisStore.pendingDrafts().some((d) => d.in_reply_to === id),
+        sourceId,
+        { timeout: 25000 },
+      ).catch(() => {});
+      const threaded = await page.evaluate(
+        (id) => window.__genesisStore.pendingDrafts().some((d) => d.in_reply_to === id && d.target === 'general'),
+        sourceId,
+      );
+      ok(threaded, 'drafting from a message threads in_reply_to to that message');
+    } else {
+      ok(false, 'drafting from a message threads in_reply_to to that message (skipped: no source id)');
+    }
   }
 
   // ---- desktop Who's-online → click to DM ----

@@ -101,9 +101,11 @@ const store = {
   // Agent Inbox (ADR-0049): agent-composed reply drafts awaiting human review.
   // POST /api/drafts composes server-side (live meta-llm under the daily cap,
   // else scripted) and scans-before-drafting; nothing is posted until Send.
-  draftReply: async (target, agent, context) => {
+  draftReply: async (target, agent, context, inReplyTo = null) => {
     try {
-      const r = await fetch('/api/drafts', { method: 'POST', headers: H, body: JSON.stringify({ target, agent, context }) });
+      const body = { target, agent, context };
+      if (inReplyTo) body.in_reply_to = inReplyTo;
+      const r = await fetch('/api/drafts', { method: 'POST', headers: H, body: JSON.stringify(body) });
       if (r.ok) { const draft = await r.json(); return { ok: true, draft }; }
       const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'draft failed' };
     } catch (_) { return { ok: false, error: 'draft failed' }; }
