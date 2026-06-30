@@ -44,6 +44,7 @@ pub mod rotation;
 pub mod rvf;
 pub mod service;
 pub mod store;
+pub mod tools;
 pub mod wallet;
 
 pub use approval::{ActionProposal, ApprovalGate, SignedDecision, Verdict};

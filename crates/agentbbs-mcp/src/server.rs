@@ -16,12 +16,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use agentbbs_core::board::{Message, MessageBody};
-use agentbbs_core::caps::{require, Caps};
+use agentbbs_core::caps::Caps;
 use agentbbs_core::identity::Identity;
 use agentbbs_core::report::{Event, EventKind, Reporter};
 use agentbbs_core::rvf::{Record, RvfStore};
 use agentbbs_core::service::Bbs;
+use agentbbs_core::tools;
 use serde_json::{json, Value};
 
 use crate::jsonrpc::{codes, Request, Response, RpcError};
@@ -229,17 +229,14 @@ impl McpServer {
             .map_err(domain_error_to_rpc)
     }
 
+    // Thin wrappers over the shared agent tool layer (ADR-0050): argument
+    // parsing/validation stays here (it's specific to the MCP wire shape), but
+    // the actual board-read/post/search logic lives once in
+    // `agentbbs_core::tools` so the MCP bridge and other agent surfaces (the
+    // live loop-in path, pod runners) can never silently diverge.
+
     fn tool_list_boards(&self) -> agentbbs_core::error::Result<String> {
-        let boards = self.bbs.list_boards(self.caps)?;
-        let lines: Vec<String> = boards
-            .iter()
-            .map(|b| format!("{} — {}", b.slug, b.title))
-            .collect();
-        Ok(if lines.is_empty() {
-            "(no boards)".to_string()
-        } else {
-            lines.join("\n")
-        })
+        tools::list_boards(&self.bbs, self.caps)
     }
 
     fn tool_read_board(&self, args: &Value) -> agentbbs_core::error::Result<String> {
@@ -248,8 +245,7 @@ impl McpServer {
             .and_then(Value::as_str)
             .ok_or_else(|| agentbbs_core::error::Error::malformed("arguments", "missing board"))?;
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
-        let msgs = self.bbs.read_board(self.caps, slug, limit)?;
-        Ok(render_messages(slug, &msgs))
+        tools::read_board(&self.bbs, self.caps, slug, limit)
     }
 
     fn tool_post_message(&self, args: &Value) -> agentbbs_core::error::Result<String> {
@@ -261,27 +257,8 @@ impl McpServer {
             .get("text")
             .and_then(Value::as_str)
             .ok_or_else(|| agentbbs_core::error::Error::malformed("arguments", "missing text"))?;
-        let subject = args
-            .get("subject")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-
-        // Enforce POST capability up front so denial reports/errors cleanly.
-        require(self.caps, Caps::POST, "POST")?;
-
-        let body = MessageBody {
-            board: board.to_string(),
-            parent: None,
-            subject,
-            body: text.to_string(),
-            author: self.identity.id(),
-            handle: String::new(),
-            created_at: chrono::Utc::now(),
-        };
-        let message = Message::sign(&self.identity, body)?;
-        let id = self.bbs.post(self.caps, message)?;
-        Ok(format!("posted to {board} as {}", id.0))
+        let subject = args.get("subject").and_then(Value::as_str).unwrap_or("");
+        tools::post_message(&self.bbs, self.caps, &self.identity, board, subject, text)
     }
 
     fn tool_search_memory(&self, args: &Value) -> agentbbs_core::error::Result<String> {
@@ -296,15 +273,8 @@ impl McpServer {
                 agentbbs_core::error::Error::malformed("query", "non-numeric element")
             })?;
         let top_k = args.get("top_k").and_then(Value::as_u64).unwrap_or(5) as usize;
-        let hits = self.memory.lock().unwrap().search(&query, top_k)?;
-        if hits.is_empty() {
-            return Ok("(no memory hits)".to_string());
-        }
-        let lines: Vec<String> = hits
-            .iter()
-            .map(|h| format!("{} (score {:.4}) {}", h.id, h.score, h.meta))
-            .collect();
-        Ok(lines.join("\n"))
+        let guard = self.memory.lock().unwrap();
+        tools::search_memory(&guard, &query, top_k)
     }
 
     fn resources_list(&self) -> Result<Value, RpcError> {
@@ -338,7 +308,7 @@ impl McpServer {
             .bbs
             .read_board(self.caps, slug, 20)
             .map_err(domain_error_to_rpc)?;
-        let text = render_messages(slug, &msgs);
+        let text = tools::render_messages(slug, &msgs);
         Ok(json!({
             "contents": [
                 {
@@ -357,29 +327,6 @@ impl McpServer {
         // Reporting must never break the call.
         let _ = self.reporter.report(event);
     }
-}
-
-/// Render a board's messages as a human-readable text block.
-fn render_messages(slug: &str, msgs: &[Message]) -> String {
-    if msgs.is_empty() {
-        return format!("Board '{slug}': (no messages)");
-    }
-    let mut out = format!("Board '{slug}' — {} message(s):\n", msgs.len());
-    for m in msgs {
-        let subject = if m.body.subject.is_empty() {
-            "(no subject)"
-        } else {
-            &m.body.subject
-        };
-        out.push_str(&format!(
-            "\n[{}] {} by {}\n{}\n",
-            m.id.short(),
-            subject,
-            m.body.author.short(),
-            m.body.body
-        ));
-    }
-    out
 }
 
 /// Map a core domain error into a JSON-RPC application error.

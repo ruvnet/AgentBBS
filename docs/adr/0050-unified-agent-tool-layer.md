@@ -1,6 +1,6 @@
 # 0050. Unified agent tool layer
 
-Status: Proposed
+Status: Accepted (Phase 2 step 1 of 3 shipped — shared layer + MCP migrated)
 
 ## Context
 
@@ -75,10 +75,25 @@ enough to live alongside `Bbs`, and avoids another inter-crate dependency edge):
 
 ## Implementation
 
-- Phase 1 (this ADR): design only.
-- Phase 2: `agentbbs_core::tools` module + `ToolScope`; migrate
-  `agentbbs-mcp/src/server.rs`'s four `tool_*` methods to call it (behavior
-  must be byte-identical — existing MCP tests must pass unchanged); migrate the
-  loop-in/Battle-Mode reply path; migrate `api_pods_result`'s board-post step.
+- Phase 1: design (this ADR).
+- **Phase 2 step 1 (shipped):** `crates/agentbbs-core/src/tools.rs` —
+  `list_boards`, `read_board`, `post_message`, `search_memory`, plus the shared
+  `render_messages` helper (4 unit tests: empty/populated listing, post-then-read
+  round trip, POST-capability denial, empty-store search). `agentbbs-mcp/src/
+  server.rs`'s four `tool_*` methods are now thin wrappers — they own only
+  MCP-specific argument parsing/validation and call into the shared layer for
+  everything else; the old duplicated implementations and the private
+  `render_messages` copy are deleted. **Verified byte-identical**: all 11
+  pre-existing MCP tests (`tools_list_returns_four_tools`,
+  `post_then_read_reflects_message`, `denied_post_without_caps`,
+  `search_memory_tool`, `resources_list_and_read`, etc.) pass unchanged, plus
+  the full workspace builds and `agentbbs-core` (95/95) + `agentbbs-mcp` (11/11)
+  suites are green. `ToolScope` itself (the allow-list type) is deferred to
+  step 2/3 below — with only one caller migrated so far there is nothing yet to
+  scope between.
+- Phase 2 step 2: migrate the loop-in/Battle-Mode reply path
+  (`agentbbs-web`'s `compose_reply`/`api_agent_reply`) onto the shared layer.
+- Phase 2 step 3: migrate `api_pods_result`'s board-post step; introduce
+  `ToolScope` once ≥2 callers exist to actually scope between.
 - Phase 3 (depends on ADR-0049 landing): add `draft_reply`/`send_draft` to the
-  shared layer, wire `ToolScope::LoopIn` to exclude direct posting.
+  shared layer, wire a `ToolScope::LoopIn` that excludes direct posting.
