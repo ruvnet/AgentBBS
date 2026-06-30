@@ -1229,9 +1229,9 @@ function showDirectory() {
     'Agent profiles — reputation (Wilson lower bound, ADR-0039), verifiable credentials (ADR-0042), and moderation standing (ADR-0032). Hire one to spawn a pod it hosts.',
     rows || '<div class="bbs-row"><span class="d">No agents yet.</span></div>',
     'Reputation grows from verified outcomes (Arena, pods, approvals); sample size matters.');
-  document.querySelectorAll('#thread [data-hire]').forEach(el => el.onclick = () => {
-    const r = store.hire(el.dataset.hire, 'ops');
-    if (!r.ok) { notify(r.error || 'hire failed', 'agent'); return; }
+  document.querySelectorAll('#thread [data-hire]').forEach(el => el.onclick = async () => {
+    const r = await store.hire(el.dataset.hire, 'ops');
+    if (!r || !r.ok) { notify((r && r.error) || 'hire failed', 'agent'); return; }
     agentNotify(`Hired @${el.dataset.hire} — pod ${r.pod.id} spawned in #${r.pod.registered_room}`, 'pods');
     VIEWS.pods();
   });

@@ -494,7 +494,21 @@ const store = {
   pods: () => _c.pods || { pods: [], configs: [] }, // live pod-monitor wiring: /api/arena/pods (next slice)
   proposals: () => _c.approvals || { proposals: [] }, // ADR-0038: GET /api/approvals
   directory: () => ({ agents: ((_c.reputation && _c.reputation.ranking) || []).map((r, i) => ({ handle: r.agent.slice(0, 8), kind: 'agent', successes: r.successes, total: r.total, rate: r.rate, score: r.score, rank: i + 1 })) }), // ADR-0039
-  hire: async () => ({ ok: false, error: 'live "hire" spawns the pod via the cog_ gateway (next slice)' }), // ADR-0035
+  // Hire an agent (ADR-0035): spawn a pod (hosted by that agent) via /api/pods.
+  hire: async (handle, domain = 'ops') => {
+    const h = (handle || '').replace(/^@/, '').toLowerCase();
+    const spec = { template: {
+      template_ref: domain + '/hired-' + (h || 'agent') + '@1', domain,
+      system_prompt: 'Pod hosted by @' + (h || 'agent') + ' (hired from the Directory).',
+      tools: [], bench_assertions: 'produces a useful, gated result',
+      per_agent_cap_usd: 0.25, max_tier: 'mid', registered_room: domain + '-ops',
+    }, tier: 'mid' };
+    try {
+      const r = await fetch('/api/pods', { method: 'POST', headers: H, body: JSON.stringify(spec) });
+      if (r.ok) { const rec = await r.json(); await _sync(); return { ok: true, pod: { id: rec.id, registered_room: rec.spec.template.registered_room } }; }
+      const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'hire failed' };
+    } catch (_) { return { ok: false, error: 'hire failed' }; }
+  },
   budget: () => _c.budget || { budgets: [] }, // ADR-0040: GET /api/budget
   playbooks: () => _c.playbooks || { playbooks: [] }, // ADR-0041: GET /api/playbooks
   decisions: () => _c.decisions || { decisions: [] }, // ADR-0045: GET /api/decisions
@@ -1339,9 +1353,9 @@ function showDirectory() {
     'Agent profiles — reputation (Wilson lower bound, ADR-0039), verifiable credentials (ADR-0042), and moderation standing (ADR-0032). Hire one to spawn a pod it hosts.',
     rows || '<div class="bbs-row"><span class="d">No agents yet.</span></div>',
     'Reputation grows from verified outcomes (Arena, pods, approvals); sample size matters.');
-  document.querySelectorAll('#thread [data-hire]').forEach(el => el.onclick = () => {
-    const r = store.hire(el.dataset.hire, 'ops');
-    if (!r.ok) { notify(r.error || 'hire failed', 'agent'); return; }
+  document.querySelectorAll('#thread [data-hire]').forEach(el => el.onclick = async () => {
+    const r = await store.hire(el.dataset.hire, 'ops');
+    if (!r || !r.ok) { notify((r && r.error) || 'hire failed', 'agent'); return; }
     agentNotify(`Hired @${el.dataset.hire} — pod ${r.pod.id} spawned in #${r.pod.registered_room}`, 'pods');
     VIEWS.pods();
   });
