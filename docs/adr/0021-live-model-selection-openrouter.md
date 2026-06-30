@@ -8,6 +8,12 @@ when `OPENROUTER_API_KEY` is set (model from `AGENTBBS_MODEL`), falling back to
 the scripted / in-browser path otherwise (ADR-0020). Resolves the ADR-0026 G10
 status lag.
 
+**Amended by [ADR-0034](0034-meta-llm-inference-gateway.md):** the endpoint, key,
+and model are now configurable (`AGENTBBS_LLM_BASE_URL` / `AGENTBBS_LLM_KEY_ENV`
+/ `AGENTBBS_MODEL`), so the same call targets OpenRouter (default) or the
+**meta-llm** Cognitum tiered/metered gateway — realizing this ADR's "swap any
+OpenAI-compatible endpoint" intent. OpenRouter remains the default.
+
 ## Context
 
 The live `agentbbs-web` server currently uses the same scripted `compose_reply()`
