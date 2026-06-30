@@ -70,6 +70,7 @@ jobs:
         env:
           E2E_URL: http://localhost:8211/
           E2E_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+          E2E_GENESIS: '1'
         run: node web-e2e.mjs
 
   e2e-web:
