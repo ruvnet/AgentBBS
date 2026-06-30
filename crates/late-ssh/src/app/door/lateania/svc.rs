@@ -6442,17 +6442,27 @@ mod tests {
         s.players.get_mut(&uid(1)).unwrap().pet = Some(super::super::pets::Pet::new(species, 0));
         let before = s.mobs[&mob_id].hp;
         s.tick();
-        let after = s.mobs[&mob_id].hp;
+        // Assert on the companion's *logged* bite (deterministic for a given pet
+        // vs mob armor) rather than reconstructing hp math, which also folds in
+        // the player's own variable strike roll — that made this flaky: the pet's
+        // armor-reduced bite can be < base_attack, so the old assertion depended
+        // on the player's RNG strike covering the gap.
+        let pet_dealt: i32 = s.players[&uid(1)]
+            .log
+            .iter()
+            .find(|l| l.text.contains("tears into"))
+            .and_then(|l| l.text.rsplit("for ").next())
+            .and_then(|t| t.trim_end_matches('.').trim().parse().ok())
+            .unwrap_or(0);
         assert!(
-            after <= before - species.base_attack,
+            pet_dealt > 0,
             "the companion's bite adds to the damage dealt"
         );
         assert!(
-            s.players[&uid(1)]
-                .log
-                .iter()
-                .any(|l| l.text.contains("tears into")),
-            "the companion's attack is logged"
+            s.mobs
+                .get(&mob_id)
+                .map_or(true, |m| m.hp <= before - pet_dealt),
+            "the mob's hp reflects the companion's bite",
         );
     }
 
