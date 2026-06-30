@@ -365,6 +365,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/reputation", get(api_reputation))
         .route("/api/budget", get(api_budget))
         .route("/api/playbooks", get(api_playbooks))
+        .route("/api/decisions", get(api_decisions))
         .route("/api/playbooks/run", post(api_playbook_run))
         .route("/api/runs", get(api_runs_list))
         .route("/api/runs/{id}/advance", post(api_run_advance))
@@ -1438,6 +1439,36 @@ async fn api_moderation_list(State(state): State<Arc<AppState>>) -> impl IntoRes
         })
         .collect();
     Json(serde_json::json!({ "moderated": entries }))
+}
+
+/// `GET /api/decisions` — the org's signed decision records (ADR-0045).
+async fn api_decisions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    use agentbbs_core::DecisionRecord;
+    let org = state.agent_identity("org-governance");
+    let t = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    let recs = vec![
+        DecisionRecord::new(
+            &org,
+            "Adopt the meta-llm gateway",
+            "Route live inference through cognitum-auto (ADR-0034)",
+            "tier routing + metering + budget caps; OpenRouter stays the default",
+            "agents.dev",
+            t("2026-06-30T03:00:00Z"),
+        ),
+        DecisionRecord::new(
+            &org,
+            "Human approval for spend",
+            "All side-effectful spend requires a signed approval (ADR-0038)",
+            "fail-closed governance is required to trust the autopilot",
+            "general",
+            t("2026-06-30T04:00:00Z"),
+        ),
+    ];
+    Json(serde_json::json!({ "decisions": recs }))
 }
 
 /// `GET /api/playbooks` — the org's versioned workflow definitions (ADR-0041):

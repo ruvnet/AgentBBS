@@ -254,6 +254,11 @@ try {
     ok(await page.evaluate(() => /✓ completed/.test(document.getElementById('thread').textContent)), 'approving the gate completes the run');
   }
 
+  // ---- decision records (ADR-0045) ----
+  await page.evaluate(() => window.__ui.VIEWS.decisions());
+  await page.waitForTimeout(80);
+  ok(await page.evaluate(() => /Decision Records/.test(document.getElementById('thread').textContent) && /why:/.test(document.getElementById('thread').textContent)), 'Decision Records view renders signed decisions');
+
   // ---- daily digest ----
   await page.evaluate(() => window.__ui.VIEWS.digest());
   await page.waitForTimeout(80);

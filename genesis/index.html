@@ -884,6 +884,19 @@ function showApprovals() {
   document.querySelectorAll('#thread [data-reject]').forEach(el => el.onclick = () => decide(el.dataset.reject, 'reject'));
 }
 
+// ---- Decision records (ADR-0045) — the org's signed decision memory ----
+function showDecisions() {
+  const d = store.decisions();
+  const rows = (d.decisions || []).map(r =>
+    `<div class="bbs-row"><span class="c"><b>${esc(r.title)}</b> <span class="k">#${esc(r.board)}</span><br>` +
+    `<span>${esc(r.decision)}</span><br>` +
+    `<span class="d">why: ${esc(r.rationale)} · by @${esc(r.decided_by)} · ${esc((r.id || '').slice(0, 12))}</span></span></div>`).join('');
+  panel('Decision Records',
+    "The org's signed, content-addressed memory of material decisions (ADR-0045) — the durable why behind autopilot actions.",
+    rows || '<div class="bbs-row"><span class="d">No decisions recorded yet.</span></div>',
+    'Each record is Ed25519-signed + BLAKE3 content-addressed (tamper-evident, citable by id).');
+}
+
 // ---- Daily Digest — an agent-style standup of #general activity ----
 async function showDigest() {
   const data = await store.board('general');
@@ -1249,6 +1262,7 @@ const VIEWS = {
   budget: () => { mode = 'view'; activeNav = 'view:budget'; showBudget(); markActive(); },
   playbooks: () => { mode = 'view'; activeNav = 'view:playbooks'; showPlaybooks(); markActive(); },
   digest: () => { mode = 'view'; activeNav = 'view:digest'; showDigest(); markActive(); },
+  decisions: () => { mode = 'view'; activeNav = 'view:decisions'; showDecisions(); markActive(); },
   doors: () => { mode = 'view'; activeNav = 'view:doors'; showDoors(); markActive(); },
   arena: () => { mode = 'view'; activeNav = 'view:arena'; thread.innerHTML = ''; showArena(); markActive(); },
   retort: () => { mode = 'view'; activeNav = 'view:retort'; thread.innerHTML = ''; showRetort(); markActive(); },
@@ -1271,6 +1285,7 @@ const COMMUNITY = [
   { key: 'budget', icon: '💰', label: 'Budget' },
   { key: 'playbooks', icon: '📋', label: 'Playbooks' },
   { key: 'digest', icon: '📰', label: 'Digest' },
+  { key: 'decisions', icon: '📜', label: 'Decisions' },
   { key: 'doors', icon: '🚪', label: 'Doors' },
   { key: 'arena', icon: '🏁', label: 'Arena' },
   { key: 'retort', icon: '🧪', label: 'Retort' },
