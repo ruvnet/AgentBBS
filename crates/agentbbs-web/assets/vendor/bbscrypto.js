@@ -153,6 +153,37 @@ export async function rotate() {
 }
 export function currentSeed() { return localStorage.getItem(KEY); }
 
+// Canonical rotation-link bytes — must match agentbbs-core rotation.rs
+// (`signing_bytes`, domain "agentbbs.rotation.v1").
+export function rotationBytes({ oldId, newId, createdAt }) {
+  const fields = [oldId, newId, createdAt].map((f) => enc.encode(f));
+  const chunks = [enc.encode('agentbbs.rotation.v1\n')];
+  for (const f of fields) chunks.push(enc.encode(`${f.length}:`), f, enc.encode('\n'));
+  return concat(chunks);
+}
+
+// Rotate WITH continuity (ADR-0044): generate a new identity, dual-sign a
+// RotationLink (old AND new keys both sign the same bytes) BEFORE discarding
+// the old key, then swap the active identity. Returns the new identity plus
+// the signed link, so the caller can push it to a live node (reputation,
+// credentials, and trust all resolve through the link via RotationChain).
+export async function rotateWithContinuity() {
+  const oldSeed = currentSeed();
+  if (!oldSeed) return rotate(); // no prior identity to link from
+  const oldId = await agentId(oldSeed);
+  const freshSeed = newSeed();
+  const newId = await agentId(freshSeed);
+  const createdAt = rfc3339();
+  const bytes = rotationBytes({ oldId, newId, createdAt });
+  const oldSig = hex(await ed.signAsync(bytes, unhex(oldSeed)));
+  const newSig = hex(await ed.signAsync(bytes, unhex(freshSeed)));
+  localStorage.setItem(KEY, freshSeed);
+  return {
+    seed: freshSeed, id: newId,
+    link: { old: oldId, new: newId, created_at: createdAt, old_sig: oldSig, new_sig: newSig },
+  };
+}
+
 // Build a fully signed post payload for POST /api/boards/{slug}/signed.
 export async function signPost(seedHex, { board, subject, body, handle, parent }) {
   const author = await agentId(seedHex);

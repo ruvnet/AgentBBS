@@ -121,6 +121,9 @@ pub struct AppState {
     decisions: Mutex<DecisionLog>,
     /// Verifiable credentials issued by any connected agent/human (ADR-0042).
     credentials: Mutex<agentbbs_core::CredentialStore>,
+    /// Dual-signed key-rotation links, so a rotated key's reputation/
+    /// credentials/trust resolve through to its successor (ADR-0044).
+    rotation: Mutex<agentbbs_core::RotationChain>,
     /// Daily live-LLM call budget guard (UTC-date, count) — caps aggregate cog_
     /// spend from anonymous public (Pages) traffic. Env `AGENTBBS_LLM_DAILY_MAX`.
     llm_day: Mutex<(String, u32)>,
@@ -148,6 +151,7 @@ impl AppState {
             runs: Mutex::new(Vec::new()),
             decisions: Mutex::new(DecisionLog::new()),
             credentials: Mutex::new(agentbbs_core::CredentialStore::new()),
+            rotation: Mutex::new(agentbbs_core::RotationChain::new()),
             llm_day: Mutex::new((String::new(), 0)),
         })
     }
@@ -408,6 +412,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/credentials",
             get(api_credentials_list).post(api_credentials_issue),
         )
+        .route("/api/rotation", post(api_rotation_link))
+        .route("/api/rotation/{id}", get(api_rotation_resolve))
         .route("/api/postguard", post(api_postguard))
         .route("/api/agent-reply", post(api_agent_reply))
         .route("/api/playbooks/run", post(api_playbook_run))
@@ -1826,6 +1832,36 @@ async fn api_credentials_issue(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// `POST /api/rotation` — record a dual-signed `RotationLink` (ADR-0044): both
+/// the retired and successor keys must sign, so neither alone can forge a link.
+async fn api_rotation_link(
+    State(state): State<Arc<AppState>>,
+    Json(link): Json<agentbbs_core::RotationLink>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    state
+        .rotation
+        .lock()
+        .unwrap()
+        .add(link)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "rotation link invalid"))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// `GET /api/rotation/{id}` — resolve a (possibly retired) key to its current
+/// successor by following the dual-signed chain (ADR-0044). A key that was
+/// never rotated resolves to itself.
+async fn api_rotation_resolve(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let agent = agentbbs_core::AgentId::from_hex(&id)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("id: {e}")))?;
+    let resolved = state.rotation.lock().unwrap().resolve(&agent);
+    Ok(Json(
+        serde_json::json!({ "id": agent.to_hex(), "resolved": resolved.to_hex(), "rotated": resolved != agent }),
+    ))
+}
+
 /// `POST /api/decisions` — record a client-signed `DecisionRecord` (ADR-0045).
 /// The record is verified (content hash + signature) on ingest; a forged or
 /// tampered record is rejected `422`.
@@ -2762,8 +2798,79 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    // ADR-0042: a signed credential is verified, listed while valid, rejected
-    // when forged, and dropped from the listing once expired.
+    // ADR-0044: a dual-signed rotation link is verified and resolves the old
+    // key to its successor; an un-rotated key resolves to itself; a forged
+    // (single-signature) link is rejected.
+    #[tokio::test]
+    async fn rotation_link_verifies_and_resolves() {
+        let app = router(AppState::in_memory());
+        let old = agentbbs_core::Identity::generate();
+        let new = agentbbs_core::Identity::generate();
+        let link = agentbbs_core::RotationLink::link(&old, &new, chrono::Utc::now());
+
+        // A dual-signed link is accepted.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/rotation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&link).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The old key resolves through to the new one.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/rotation/{}", old.id().to_hex()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let d = body_json(resp).await;
+        assert_eq!(d["resolved"], new.id().to_hex());
+        assert_eq!(d["rotated"], true);
+
+        // A never-rotated key resolves to itself.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/rotation/{}", new.id().to_hex()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let d = body_json(resp).await;
+        assert_eq!(d["resolved"], new.id().to_hex());
+        assert_eq!(d["rotated"], false);
+
+        // A single-signature (forged) link is rejected.
+        let attacker = agentbbs_core::Identity::generate();
+        let bytes_target = agentbbs_core::Identity::generate().id();
+        let forged = agentbbs_core::RotationLink {
+            old: attacker.id(),
+            new: bytes_target,
+            created_at: chrono::Utc::now(),
+            old_sig: attacker.sign(b"wrong bytes"),
+            new_sig: attacker.sign(b"wrong bytes"),
+        };
+        let resp = app
+            .oneshot(
+                Request::post("/api/rotation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&forged).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn credential_issue_verifies_lists_and_expires() {
         let app = router(AppState::in_memory());

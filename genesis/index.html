@@ -468,7 +468,7 @@
 <script type="module">
 /* @sync:adapter-start (genesis: localStorage store + in-browser demo engine) */
 import * as BBS from './vendor/bbscrypto.js';
-import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-21';
+import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-22';
 import { createDemoEngine } from './vendor/demo-engine.js';
 /* @sync:adapter-end */
 
@@ -1504,8 +1504,11 @@ function showPassport() {
     catch (e) { alert(e.message); }
   };
   $('pp-rotate').onclick = async () => {
-    if (!confirm('Generate a NEW anonymous identity? Export your current seed first if you want to keep it.')) return;
-    identity = await BBS.rotate(); setMe(); showPassport();
+    if (!confirm('Generate a NEW anonymous identity? Export your current seed first if you want to keep it.\n\nA dual-signed continuity link will be recorded (ADR-0044) so your reputation, credentials, and trust carry over to the new key.')) return;
+    const r = await store.rotateIdentity();
+    identity = { seed: r.seed, id: r.id }; setMe();
+    notify(r.continuity ? '♻ New identity — continuity link recorded (ADR-0044)' : '♻ New identity', 'agent');
+    showPassport();
   };
   $('pp-node').onclick = connectLiveNode;
   $('pp-creator').onclick = () => {

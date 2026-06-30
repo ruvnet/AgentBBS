@@ -1,6 +1,6 @@
 # 0044. Key-rotation continuity
 
-Status: Accepted (Phase 1 — core primitive shipped)
+Status: Accepted (Phase 1 + 2 shipped — core primitive, server API, and the Passport continuity flow)
 
 ## Context
 
@@ -33,12 +33,12 @@ verifiable, owner-attested chain from a retired key to its successor.
 - **Positive:** rotation no longer loses reputation/credentials/trust; dual-signed
   so it can't be forged in either direction; offline-verifiable on the existing
   Ed25519 stack (no new deps); composes with ADR-0039/0042/0043 via `resolve`.
-- **Negative / future:** Phase 1 is the link type + chain resolver; wiring
-  `resolve` into the reputation/credential/web-of-trust lookups, a Passport
-  "rotate-with-continuity" flow that emits a link, gossiping links over
-  federation, and **revocation** of a compromised key (vs. simple rotation) are
-  follow-ups. A leaked old key can co-sign a malicious link until revoked — out
-  of scope for Phase 1.
+- **Negative / future:** wiring `resolve` into the LIVE reputation/credential/
+  web-of-trust *lookups* (so a rotated key's standing is automatically credited
+  to the new key in the rendered Directory/Arena, not just resolvable via the
+  API), gossiping links over federation, and **revocation** of a compromised key
+  (vs. simple rotation) remain follow-ups. A leaked old key can co-sign a
+  malicious link until revoked — out of scope still.
 
 ## Implementation
 
@@ -46,5 +46,12 @@ verifiable, owner-attested chain from a retired key to its successor.
   Ed25519), `RotationChain` (add/resolve, cycle + depth guard). Exported from the
   crate root. Tests: dual-sign + verify, single-sig/tamper rejected, multi-hop
   resolve, cycle safety.
-- Phase 2: `resolve`-aware reputation/credentials/trust; Passport continuity flow;
-  link gossip; revocation.
+- **Phase 2 (shipped):** `POST /api/rotation` (verify + record) and
+  `GET /api/rotation/{id}` (resolve) on `agentbbs-web`. The Passport "♻ New
+  identity" flow no longer does a bare reset — `BBS.rotateWithContinuity()`
+  generates the new key, **dual-signs** the link with both the old and new
+  private keys (`rotationBytes`/domain `agentbbs.rotation.v1` in `bbscrypto.js`,
+  proven JS↔Rust byte-parity) *before* discarding the old key, swaps the active
+  identity, and pushes the link to the live node. Shared render → genesis +
+  agentbbs-web. `resolve`-aware lookups in the rendered Directory/Arena, link
+  gossip, and revocation remain follow-ups.

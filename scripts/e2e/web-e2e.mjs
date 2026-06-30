@@ -527,6 +527,20 @@ try {
   await page.waitForTimeout(60);
   ok(await page.evaluate(() => getComputedStyle(document.getElementById('cmdpBg')).display === 'none'), 'selecting a command closes the palette');
 
+  // ---- key-rotation continuity (ADR-0044) — LAST functional check: rotating
+  // swaps the active identity, which would break any earlier test asserting
+  // ownership of a message posted under the original key.
+  if (GENESIS) {
+    const r = await page.evaluate(async () => {
+      const before = localStorage.getItem('agentbbs.seed');
+      const result = await window.__genesisStore.rotateIdentity();
+      const after = localStorage.getItem('agentbbs.seed');
+      return { rotated: before !== after && after === result.seed, continuity: result.continuity === true };
+    });
+    ok(r.rotated, 'rotateIdentity swaps the active seed');
+    ok(r.continuity, 'rotation produces a dual-signed continuity link (not a bare reset)');
+  }
+
   // ---- mobile layout + persistence ----
   await page.evaluate(() => window.__ui.applyLayout('mobile'));
   ok(await page.evaluate(() => document.documentElement.dataset.layout === 'mobile' && getComputedStyle(document.getElementById('sidebar')).display === 'none'), 'mobile layout hides sidebar');

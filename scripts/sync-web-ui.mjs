@@ -73,6 +73,16 @@ const store = {
       const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'issue failed' };
     } catch (_) { return { ok: false, error: 'issue failed' }; }
   },
+  // Rotate identity WITH continuity (ADR-0044): dual-signs a RotationLink and
+  // POSTs it to the node, which verifies both signatures before recording.
+  rotateIdentity: async () => {
+    const { seed, id, link } = await BBS.rotateWithContinuity();
+    if (link) {
+      try { await fetch('/api/rotation', { method: 'POST', headers: H, body: JSON.stringify(link) }); } catch (_) { /* best-effort */ }
+    }
+    await _sync();
+    return { seed, id, continuity: !!link };
+  },
   // Hire an agent (ADR-0035): spawn a pod (hosted by that agent) via /api/pods.
   hire: async (handle, domain = 'ops') => {
     const h = (handle || '').replace(/^@/, '').toLowerCase();

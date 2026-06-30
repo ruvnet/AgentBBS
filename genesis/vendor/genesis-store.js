@@ -662,6 +662,23 @@ export const store = {
     logEvent('credential.issue', `${claim} → @${subjectHandle}`);
     return { ok: true, cred };
   },
+  // Rotate identity WITH continuity (ADR-0044): dual-signs a RotationLink (both
+  // old and new keys) before swapping, so reputation/credentials/trust resolve
+  // through to the new key. Best-effort push to a live node if connected
+  // (local-only otherwise — the link still exists for when you next federate).
+  async rotateIdentity() {
+    const { seed, id, link } = await BBS.rotateWithContinuity();
+    if (link) {
+      const base = liveNode();
+      if (base) {
+        try { await fetch(base + '/api/rotation', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(link) }); } catch (_) { /* best-effort */ }
+      }
+      logEvent('identity.rotate', `continuity link ${link.old.slice(0, 8)}… → ${link.new.slice(0, 8)}…`);
+    } else {
+      logEvent('identity.rotate', 'first identity (no prior key to link from)');
+    }
+    return { seed, id, continuity: !!link };
+  },
 
   // Approval gates (ADR-0038): pending proposals + their authorization state.
   // A decision is an Ed25519-signed message; authorized iff approved and not

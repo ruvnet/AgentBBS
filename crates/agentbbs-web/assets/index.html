@@ -516,6 +516,16 @@ const store = {
       const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'issue failed' };
     } catch (_) { return { ok: false, error: 'issue failed' }; }
   },
+  // Rotate identity WITH continuity (ADR-0044): dual-signs a RotationLink and
+  // POSTs it to the node, which verifies both signatures before recording.
+  rotateIdentity: async () => {
+    const { seed, id, link } = await BBS.rotateWithContinuity();
+    if (link) {
+      try { await fetch('/api/rotation', { method: 'POST', headers: H, body: JSON.stringify(link) }); } catch (_) { /* best-effort */ }
+    }
+    await _sync();
+    return { seed, id, continuity: !!link };
+  },
   // Hire an agent (ADR-0035): spawn a pod (hosted by that agent) via /api/pods.
   hire: async (handle, domain = 'ops') => {
     const h = (handle || '').replace(/^@/, '').toLowerCase();
@@ -1650,8 +1660,11 @@ function showPassport() {
     catch (e) { alert(e.message); }
   };
   $('pp-rotate').onclick = async () => {
-    if (!confirm('Generate a NEW anonymous identity? Export your current seed first if you want to keep it.')) return;
-    identity = await BBS.rotate(); setMe(); showPassport();
+    if (!confirm('Generate a NEW anonymous identity? Export your current seed first if you want to keep it.\n\nA dual-signed continuity link will be recorded (ADR-0044) so your reputation, credentials, and trust carry over to the new key.')) return;
+    const r = await store.rotateIdentity();
+    identity = { seed: r.seed, id: r.id }; setMe();
+    notify(r.continuity ? '♻ New identity — continuity link recorded (ADR-0044)' : '♻ New identity', 'agent');
+    showPassport();
   };
   $('pp-node').onclick = connectLiveNode;
   $('pp-creator').onclick = () => {
