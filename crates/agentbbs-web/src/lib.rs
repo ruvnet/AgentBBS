@@ -368,7 +368,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/reputation", get(api_reputation))
         .route("/api/budget", get(api_budget))
         .route("/api/playbooks", get(api_playbooks))
-        .route("/api/decisions", get(api_decisions))
+        .route(
+            "/api/decisions",
+            get(api_decisions).post(api_decision_create),
+        )
         .route("/api/playbooks/run", post(api_playbook_run))
         .route("/api/runs", get(api_runs_list))
         .route("/api/runs/{id}/advance", post(api_run_advance))
@@ -1538,6 +1541,27 @@ async fn api_decisions(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     Json(serde_json::json!({ "decisions": recs }))
 }
 
+/// `POST /api/decisions` — record a client-signed `DecisionRecord` (ADR-0045).
+/// The record is verified (content hash + signature) on ingest; a forged or
+/// tampered record is rejected `422`.
+async fn api_decision_create(
+    State(state): State<Arc<AppState>>,
+    Json(rec): Json<DecisionRecord>,
+) -> Result<Json<DecisionRecord>, (StatusCode, Json<serde_json::Value>)> {
+    state
+        .decisions
+        .lock()
+        .unwrap()
+        .add(rec.clone())
+        .map_err(|e| {
+            api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("invalid decision: {e}"),
+            )
+        })?;
+    Ok(Json(rec))
+}
+
 /// `GET /api/playbooks` — the org's versioned workflow definitions (ADR-0041):
 /// content-addressed playbooks composing agent tasks, approval gates, and tools.
 async fn api_playbooks() -> impl IntoResponse {
@@ -2173,6 +2197,59 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // ADR-0045: POST /api/decisions records a client-signed decision; forged → 422.
+    #[tokio::test]
+    async fn decision_create_verifies_and_lists() {
+        let app = router(AppState::in_memory());
+        let id = agentbbs_core::Identity::generate();
+        let rec = DecisionRecord::new(
+            &id,
+            "Pick vendor X",
+            "go with vendor X for hosting",
+            "best price/SLA after the bench",
+            "ops",
+            chrono::DateTime::parse_from_rfc3339("2026-06-30T05:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        );
+        // A valid signed record is accepted (200) and then listed.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/decisions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&rec).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let listed = app
+            .clone()
+            .oneshot(Request::get("/api/decisions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let d = body_json(listed).await;
+        assert!(d["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["title"] == "Pick vendor X"));
+        // A tampered record is rejected 422.
+        let mut forged = rec.clone();
+        forged.decision = "go with vendor Y".into();
+        let resp = app
+            .oneshot(
+                Request::post("/api/decisions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&forged).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     // G9: /api/federation exposes the same shape as genesis incl. an explicit mode.
