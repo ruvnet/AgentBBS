@@ -142,6 +142,26 @@ impl CredentialStore {
                 && (trusted_issuers.is_empty() || trusted_issuers.contains(&c.issuer))
         })
     }
+
+    /// Like [`has_claim`](Self::has_claim) but **rotation-aware** (ADR-0044): a
+    /// credential issued to a predecessor key still counts for the current key,
+    /// since both resolve to the same identity through `chain`.
+    pub fn has_claim_via(
+        &self,
+        subject: &AgentId,
+        claim: &str,
+        now: DateTime<Utc>,
+        trusted_issuers: &[AgentId],
+        chain: &crate::rotation::RotationChain,
+    ) -> bool {
+        let resolved = chain.resolve(subject);
+        self.creds.iter().any(|c| {
+            chain.resolve(&c.subject) == resolved
+                && c.claim == claim
+                && c.is_valid(now)
+                && (trusted_issuers.is_empty() || trusted_issuers.contains(&c.issuer))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -200,6 +220,35 @@ mod tests {
         assert!(!store.has_claim(&subject, "org:acme", now, &[other.id()])); // wrong issuer
         assert!(!store.has_claim(&subject, "skill:go", now, &[])); // no such claim
         assert_eq!(store.valid_for(&subject, now).len(), 1);
+    }
+
+    #[test]
+    fn credentials_follow_key_rotation() {
+        use crate::rotation::{RotationChain, RotationLink};
+        let issuer = Identity::generate();
+        let k1 = Identity::generate();
+        let k2 = Identity::generate();
+        let now = at("2026-06-30T05:00:00Z");
+        let mut store = CredentialStore::new();
+        store
+            .add(Credential::issue(&issuer, k1.id(), "skill:rust", now, None))
+            .unwrap();
+        let mut chain = RotationChain::new();
+        chain.add(RotationLink::link(&k1, &k2, now)).unwrap(); // k1 → k2
+
+        // Without the chain, the new key has no credential.
+        assert!(!store.has_claim(&k2.id(), "skill:rust", now, &[]));
+        // Rotation-aware, the credential carries over to k2.
+        assert!(store.has_claim_via(&k2.id(), "skill:rust", now, &[], &chain));
+        // …still scoped to the trusted issuer.
+        assert!(store.has_claim_via(&k2.id(), "skill:rust", now, &[issuer.id()], &chain));
+        assert!(!store.has_claim_via(
+            &k2.id(),
+            "skill:rust",
+            now,
+            &[Identity::generate().id()],
+            &chain
+        ));
     }
 
     #[test]
