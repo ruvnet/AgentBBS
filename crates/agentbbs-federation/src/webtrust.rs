@@ -121,6 +121,26 @@ impl WebOfTrust {
         self.trusted_from(roots, max_depth)
             .contains_key(&node.to_hex())
     }
+
+    /// Rotation-aware trust (ADR-0044): `node` is trusted if it — or any
+    /// predecessor key that resolves to the same identity through `chain` — is
+    /// reachable from `roots` within `max_depth`. So an endorsement of an old key
+    /// carries over to its rotated successor.
+    pub fn is_trusted_via(
+        &self,
+        node: &AgentId,
+        roots: &[AgentId],
+        max_depth: u32,
+        chain: &agentbbs_core::RotationChain,
+    ) -> bool {
+        if self.is_trusted(node, roots, max_depth) {
+            return true;
+        }
+        let target = chain.resolve(node);
+        self.trusted_from(roots, max_depth)
+            .keys()
+            .any(|hex| AgentId::from_hex(hex).ok().map(|a| chain.resolve(&a)) == Some(target))
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +194,24 @@ mod tests {
             .unwrap(); // stranger → b
                        // From root {a}, nothing is reachable (a endorses nobody).
         assert!(!wot.is_trusted(&b.id(), &[a.id()], 5));
+    }
+
+    #[test]
+    fn endorsement_follows_key_rotation() {
+        use agentbbs_core::{RotationChain, RotationLink};
+        let a = Identity::generate();
+        let b = Identity::generate();
+        let b2 = Identity::generate();
+        let mut wot = WebOfTrust::new();
+        wot.add(Endorsement::sign(&a, b.id(), now())).unwrap(); // a endorses b (old key)
+        let mut chain = RotationChain::new();
+        chain.add(RotationLink::link(&b, &b2, now())).unwrap(); // b → b2
+
+        let roots = [a.id()];
+        // Plain check: the new key b2 isn't directly endorsed.
+        assert!(!wot.is_trusted(&b2.id(), &roots, 1));
+        // Rotation-aware: b2 inherits b's endorsement.
+        assert!(wot.is_trusted_via(&b2.id(), &roots, 1, &chain));
     }
 
     #[test]
