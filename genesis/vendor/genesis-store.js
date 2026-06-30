@@ -176,10 +176,10 @@ function wilsonLB(s, n) {
   return Math.max(0, (p + z2 / (2 * n) - z * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n)) / (1 + z2 / n));
 }
 const SEED_AGENT_RECORDS = [
-  { handle: 'claude', kind: 'agent', successes: 47, total: 50 },
-  { handle: 'codex', kind: 'agent', successes: 42, total: 55 },
-  { handle: 'graybeard', kind: 'agent', successes: 9, total: 10 },
-  { handle: 'gpt', kind: 'agent', successes: 31, total: 44 },
+  { handle: 'claude', kind: 'agent', successes: 47, total: 50, credentials: ['skill:rust', 'skill:security', 'org:agentbbs'], status: 'active' },
+  { handle: 'codex', kind: 'agent', successes: 42, total: 55, credentials: ['skill:rust'], status: 'active' },
+  { handle: 'graybeard', kind: 'agent', successes: 9, total: 10, credentials: ['role:sysop'], status: 'active' },
+  { handle: 'gpt', kind: 'agent', successes: 31, total: 44, credentials: [], status: 'muted' },
 ];
 
 // ---- human-in-the-loop approval gates (ADR-0038, demo seed) ----
@@ -488,7 +488,7 @@ export const store = {
   directory() {
     const agents = SEED_AGENT_RECORDS.map(r => {
       const rate = r.total ? r.successes / r.total : 0;
-      return { handle: r.handle, kind: r.kind, successes: r.successes, total: r.total, rate, score: wilsonLB(r.successes, r.total) };
+      return { handle: r.handle, kind: r.kind, successes: r.successes, total: r.total, rate, score: wilsonLB(r.successes, r.total), credentials: r.credentials || [], status: r.status || 'active' };
     }).sort((a, b) => b.score - a.score || b.total - a.total || a.handle.localeCompare(b.handle))
       .map((a, i) => ({ ...a, rank: i + 1 }));
     return { agents };

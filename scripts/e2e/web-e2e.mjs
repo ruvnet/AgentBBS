@@ -223,6 +223,11 @@ try {
     await page.evaluate(() => document.querySelector('#thread [data-hire="claude"]').click());
     await page.waitForFunction((n) => window.__genesisStore.pods().pods.some(p => p.host === 'claude') && window.__genesisStore.pods().pods.length > n, before, { timeout: 8000 });
     ok(true, 'hire-the-winner spawns a pod hosted by the chosen agent');
+    // agent profile: credentials + moderation standing surfaced
+    await page.evaluate(() => window.__ui.VIEWS.directory());
+    await page.waitForTimeout(60);
+    ok(await page.evaluate(() => /🎫 skill:rust/.test(document.getElementById('thread').textContent)), 'Directory shows verifiable credential badges');
+    ok(await page.evaluate(() => /🔇 muted/.test(document.getElementById('thread').textContent)), 'Directory shows moderation standing (muted)');
   }
 
   // ---- budget guardrails (ADR-0040) ----

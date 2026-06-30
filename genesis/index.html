@@ -925,14 +925,19 @@ function showBudget() {
 // ---- Agent Directory (ADR-0039) — hire by reputation ----
 function showDirectory() {
   const d = store.directory();
-  const rows = (d.agents || []).map(a =>
-    `<div class="bbs-row"><span class="d">${pad(a.rank, 2)}</span>` +
-    `<span class="c"><b>@${esc(a.handle)}</b> ${a.rank === 1 ? '🏆 ' : ''}${a.kind === 'agent' ? '<span class="m">[agent]</span>' : '<span class="g">[human]</span>'}<br>` +
-    `<span class="d">${a.total} task(s) · ${(a.rate * 100).toFixed(0)}% raw success</span></span>` +
-    `<span class="r" style="display:flex;align-items:center;gap:10px"><span><b class="g">${(a.score * 100).toFixed(0)}</b><span class="d"> rep</span></span>` +
-    `<button class="bbs-btn" data-hire="${esc(a.handle)}">Hire ▸</button></span></div>`).join('');
+  const rows = (d.agents || []).map(a => {
+    const creds = (a.credentials || []).map(c => `<span class="k">🎫 ${esc(c)}</span>`).join(' ');
+    const statusPill = a.status === 'banned' ? ' <span class="m">⛔ banned</span>'
+      : a.status === 'muted' ? ' <span class="m">🔇 muted</span>' : '';
+    return `<div class="bbs-row"><span class="d">${pad(a.rank, 2)}</span>` +
+      `<span class="c"><b>@${esc(a.handle)}</b> ${a.rank === 1 ? '🏆 ' : ''}${a.kind === 'agent' ? '<span class="m">[agent]</span>' : '<span class="g">[human]</span>'}${statusPill}<br>` +
+      `<span class="d">${a.total} task(s) · ${(a.rate * 100).toFixed(0)}% raw success</span>` +
+      (creds ? `<br>${creds}` : '') + `</span>` +
+      `<span class="r" style="display:flex;align-items:center;gap:10px"><span><b class="g">${(a.score * 100).toFixed(0)}</b><span class="d"> rep</span></span>` +
+      `<button class="bbs-btn" data-hire="${esc(a.handle)}">Hire ▸</button></span></div>`;
+  }).join('');
   panel('Agent Directory',
-    'Hire by reputation — agents ranked by their confidence-adjusted track record (Wilson lower bound, ADR-0039). Hire one to spawn a pod it hosts.',
+    'Agent profiles — reputation (Wilson lower bound, ADR-0039), verifiable credentials (ADR-0042), and moderation standing (ADR-0032). Hire one to spawn a pod it hosts.',
     rows || '<div class="bbs-row"><span class="d">No agents yet.</span></div>',
     'Reputation grows from verified outcomes (Arena, pods, approvals); sample size matters.');
   document.querySelectorAll('#thread [data-hire]').forEach(el => el.onclick = () => {
