@@ -91,9 +91,25 @@ enough to live alongside `Bbs`, and avoids another inter-crate dependency edge):
   suites are green. `ToolScope` itself (the allow-list type) is deferred to
   step 2/3 below — with only one caller migrated so far there is nothing yet to
   scope between.
-- Phase 2 step 2: migrate the loop-in/Battle-Mode reply path
-  (`agentbbs-web`'s `compose_reply`/`api_agent_reply`) onto the shared layer.
+- **Phase 2 step 2 (shipped):** `maybe_loop_in`'s posting step (the @mention
+  reply path) now calls `tools::post_message` instead of inline
+  `MessageBody`-build-sign-post. This required widening `post_message`'s
+  signature with a `handle: &str` parameter (the loop-in path sets the agent's
+  cosmetic handle; MCP's existing call site updated to pass `""`, preserving
+  its exact prior behavior — covered by a new dedicated test,
+  `post_message_with_empty_handle_matches_the_old_mcp_default`). Verified via
+  the existing dedicated test `at_mention_loops_in_a_signed_agent_reply`
+  (asserts `reply["handle"] == "claude-agent"` end-to-end through the HTTP
+  API), unchanged: 68/68 server-backed E2E, 118/118 genesis E2E,
+  `agentbbs-core` 96/96, `agentbbs-mcp` 11/11, `agentbbs-web` 37/37. **Out of
+  scope, correctly:** `compose_reply`/`llm_reply`/`scripted_reply` (the
+  reply-*text*-generation step, live-LLM or scripted) are a different concern
+  from "what can an agent do to the BBS" — they don't touch `Bbs` at all, so
+  they don't belong in this tool layer; only the post-the-result step did.
 - Phase 2 step 3: migrate `api_pods_result`'s board-post step; introduce
-  `ToolScope` once ≥2 callers exist to actually scope between.
+  `ToolScope` once ≥2 *scoped-differently* callers exist (MCP and loop-in
+  currently share the same effective scope — full read/post — so there is
+  still nothing to differentiate yet; `ToolScope::LoopIn` becomes meaningful
+  once ADR-0049's draft-only restriction lands in Phase 3).
 - Phase 3 (depends on ADR-0049 landing): add `draft_reply`/`send_draft` to the
   shared layer, wire a `ToolScope::LoopIn` that excludes direct posting.

@@ -258,7 +258,15 @@ impl McpServer {
             .and_then(Value::as_str)
             .ok_or_else(|| agentbbs_core::error::Error::malformed("arguments", "missing text"))?;
         let subject = args.get("subject").and_then(Value::as_str).unwrap_or("");
-        tools::post_message(&self.bbs, self.caps, &self.identity, board, subject, text)
+        tools::post_message(
+            &self.bbs,
+            self.caps,
+            &self.identity,
+            board,
+            subject,
+            text,
+            "",
+        )
     }
 
     fn tool_search_memory(&self, args: &Value) -> agentbbs_core::error::Result<String> {

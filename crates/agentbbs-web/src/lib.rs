@@ -204,18 +204,18 @@ impl AppState {
         // otherwise fall back to the scripted reply (no cog_ spend).
         let live_allowed = self.llm_quota_ok();
         let (subject, body) = compose_reply(&agent, text, live_allowed).await;
-        let msg_body = agentbbs_core::MessageBody {
-            board: board.to_string(),
-            parent: None,
-            subject,
-            body,
-            author: identity.id(),
-            handle: agent,
-            created_at: chrono::Utc::now(),
-        };
-        if let Ok(msg) = agentbbs_core::Message::sign(&identity, msg_body) {
-            let _ = self.bbs.post(Role::Agent.caps(), msg);
-        }
+        // Shared agent tool layer (ADR-0050) — same post path MCP/other agent
+        // surfaces use; errors (sign or post) are fire-and-forget here, same as
+        // before migration.
+        let _ = agentbbs_core::tools::post_message(
+            &self.bbs,
+            Role::Agent.caps(),
+            &identity,
+            board,
+            &subject,
+            &body,
+            &agent,
+        );
     }
 
     /// In-memory convenience constructor.

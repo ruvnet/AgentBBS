@@ -38,8 +38,10 @@ pub fn read_board(bbs: &Bbs, caps: Caps, board: &str, limit: usize) -> Result<St
     Ok(render_messages(board, &msgs))
 }
 
-/// Sign and post a message to `board` under `identity`. Returns a short
-/// confirmation string naming the new message's content-addressed id.
+/// Sign and post a message to `board` under `identity`, with `handle` as the
+/// cosmetic display name (empty string if the caller has none — e.g. the MCP
+/// tool, which never set one). Returns a short confirmation string naming the
+/// new message's content-addressed id.
 pub fn post_message(
     bbs: &Bbs,
     caps: Caps,
@@ -47,6 +49,7 @@ pub fn post_message(
     board: &str,
     subject: &str,
     text: &str,
+    handle: &str,
 ) -> Result<String> {
     // Enforce POST capability up front so denial reports/errors cleanly.
     require(caps, Caps::POST, "POST")?;
@@ -56,7 +59,7 @@ pub fn post_message(
         subject: subject.to_string(),
         body: text.to_string(),
         author: identity.id(),
-        handle: String::new(),
+        handle: handle.to_string(),
         created_at: chrono::Utc::now(),
     };
     let message = Message::sign(identity, body)?;
@@ -140,12 +143,39 @@ mod tests {
         .unwrap();
         let poster = Identity::generate();
         let caps = Caps::READ | Caps::POST;
-        let confirmation =
-            post_message(&bbs, caps, &poster, "general", "hi", "hello world").unwrap();
+        let confirmation = post_message(
+            &bbs,
+            caps,
+            &poster,
+            "general",
+            "hi",
+            "hello world",
+            "poster",
+        )
+        .unwrap();
         assert!(confirmation.contains("posted to general"));
         let rendered = read_board(&bbs, caps, "general", 10).unwrap();
         assert!(rendered.contains("hello world"));
         assert!(rendered.contains("hi"));
+        // The cosmetic handle lands on the stored message (not just rendered text).
+        let msgs = bbs.read_board(caps, "general", 10).unwrap();
+        assert_eq!(msgs[0].body.handle, "poster");
+    }
+
+    #[test]
+    fn post_message_with_empty_handle_matches_the_old_mcp_default() {
+        let bbs = bbs();
+        let founder = Identity::generate();
+        bbs.create_board(
+            Caps::all(),
+            crate::board::Board::new("general", "General", founder.id()),
+        )
+        .unwrap();
+        let poster = Identity::generate();
+        let caps = Caps::READ | Caps::POST;
+        post_message(&bbs, caps, &poster, "general", "", "via mcp", "").unwrap();
+        let msgs = bbs.read_board(caps, "general", 10).unwrap();
+        assert_eq!(msgs[0].body.handle, "");
     }
 
     #[test]
@@ -158,7 +188,7 @@ mod tests {
         )
         .unwrap();
         let poster = Identity::generate();
-        let err = post_message(&bbs, Caps::READ, &poster, "general", "", "nope").unwrap_err();
+        let err = post_message(&bbs, Caps::READ, &poster, "general", "", "nope", "").unwrap_err();
         assert!(matches!(err, crate::error::Error::PermissionDenied(_)));
     }
 
