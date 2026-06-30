@@ -1,8 +1,16 @@
 # 32. Moderation engine on the capability model (late-ssh moderation)
 
-Status: Proposed
+Status: Accepted (Phase 1 — core engine shipped)
 
 Closes ADR-0029 **L3**. Builds on ADR-0004 (capability-based authorization).
+
+**Phase 1 (shipped):** `agentbbs_core::moderation` — `Sanction`
+(Mute/Ban/Timeout/Lift), Ed25519-signed `ModAction` (verified on record;
+forged/tampered rejected), and `ModerationLog` (latest verified action per target
+decides `status`; `can_post` enforces it, timeouts expire). Built natively on
+AgentBBS's own `Caps` (`MODERATE` checked at the call site) rather than depending
+on `late-ssh` directly — same model, no extra deps. Phase 2: wire into the post
+path (`Bbs::post` rejects when `!can_post`), a moderation UI, per-board scope.
 
 ## Context
 
