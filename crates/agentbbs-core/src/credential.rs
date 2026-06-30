@@ -118,6 +118,12 @@ impl CredentialStore {
         Ok(())
     }
 
+    /// Every credential on file, regardless of subject or validity (callers
+    /// filter by `is_valid` themselves — e.g. a directory listing).
+    pub fn all(&self) -> &[Credential] {
+        &self.creds
+    }
+
     /// All currently-valid credentials for `subject` at `now`.
     pub fn valid_for(&self, subject: &AgentId, now: DateTime<Utc>) -> Vec<&Credential> {
         self.creds

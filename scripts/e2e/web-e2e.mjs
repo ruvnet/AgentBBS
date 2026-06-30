@@ -251,6 +251,16 @@ try {
     await page.waitForTimeout(60);
     ok(await page.evaluate(() => /🎫 skill:rust/.test(document.getElementById('thread').textContent)), 'Directory shows verifiable credential badges');
     ok(await page.evaluate(() => /🔇 muted/.test(document.getElementById('thread').textContent)), 'Directory shows moderation standing (muted)');
+    // Issue a real, signed credential (ADR-0042) and confirm the badge appears.
+    const hasIssueForm = await page.evaluate(() => !!document.getElementById('cred-issue'));
+    ok(hasIssueForm, 'Directory has a credential-issue form');
+    await page.evaluate(() => {
+      document.getElementById('cred-agent').value = 'claude';
+      document.getElementById('cred-claim').value = 'org:e2e-test';
+      document.getElementById('cred-issue').click();
+    });
+    await page.waitForFunction(() => /org:e2e-test ✓/.test(document.getElementById('thread').textContent), { timeout: 8000 }).catch(() => {});
+    ok(await page.evaluate(() => /org:e2e-test ✓/.test(document.getElementById('thread').textContent)), 'issuing a credential adds a verified (✓) badge');
   }
 
   // ---- budget guardrails (ADR-0040) ----

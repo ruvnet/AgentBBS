@@ -100,6 +100,29 @@ export async function signApprovalDecision(seedHex, { actionId, verdict, reason 
   return { action_id: actionId, verdict: v, reason: reason || '', decider, created_at: at, signature: hex(sig) };
 }
 
+// Canonical credential bytes — must match agentbbs-core credential.rs
+// (`signing_bytes`, domain "agentbbs.credential.v1"; expiry is the RFC3339
+// string or the literal "never").
+export function credentialBytes({ subject, claim, issuer, issuedAt, expiresAt }) {
+  const exp = expiresAt || 'never';
+  const fields = [subject, claim, issuer, issuedAt, exp].map((f) => enc.encode(f || ''));
+  const chunks = [enc.encode('agentbbs.credential.v1\n')];
+  for (const f of fields) chunks.push(enc.encode(`${f.length}:`), f, enc.encode('\n'));
+  return concat(chunks);
+}
+
+// Issue (sign) a verifiable Credential (ADR-0042) for POST /api/credentials —
+// Ed25519 over the canonical bytes, which the store verifies before accepting.
+export async function signCredential(seedHex, { subject, claim, expiresAt }) {
+  const issuer = await agentId(seedHex);
+  const issuedAt = rfc3339();
+  const bytes = credentialBytes({ subject, claim, issuer, issuedAt, expiresAt });
+  const sig = await ed.signAsync(bytes, unhex(seedHex));
+  const out = { subject, claim, issuer, issued_at: issuedAt, signature: hex(sig) };
+  if (expiresAt) out.expires_at = expiresAt;
+  return out;
+}
+
 // ---- identity / key management ----
 
 export function newSeed() {

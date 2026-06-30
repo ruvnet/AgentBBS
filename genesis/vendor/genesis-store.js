@@ -32,6 +32,7 @@ const LS = {
   node: 'agentbbs.genesis.node', // live-node base URL (optional)
   approvalDecisions: 'agentbbs.genesis.approval-decisions', // ADR-0038
   spawnedPods: 'agentbbs.genesis.spawned-pods', // ADR-0035 "hire the winner"
+  credentials: 'agentbbs.genesis.credentials', // ADR-0042 — signed locally; local-only like DMs
 };
 
 function readJSON(key, fallback) {
@@ -633,13 +634,33 @@ export const store = {
   },
 
   // Agent directory (ADR-0039): agents ranked by confidence-adjusted reputation.
+  // Credential badges (ADR-0042) merge the seed demo claims with any you've
+  // issued yourself (signed in-browser, local-only — like DMs, ADR-0037).
   directory() {
+    const issued = readJSON(LS.credentials, []); // [{ cred, subjectHandle }]
+    const now = Date.now();
     const agents = SEED_AGENT_RECORDS.map(r => {
       const rate = r.total ? r.successes / r.total : 0;
-      return { handle: r.handle, kind: r.kind, successes: r.successes, total: r.total, rate, score: wilsonLB(r.successes, r.total), credentials: r.credentials || [], status: r.status || 'active' };
+      const mine = issued
+        .filter(x => x.subjectHandle === r.handle && (!x.cred.expires_at || Date.parse(x.cred.expires_at) > now))
+        .map(x => x.cred.claim + ' ✓');
+      return { handle: r.handle, kind: r.kind, successes: r.successes, total: r.total, rate, score: wilsonLB(r.successes, r.total), credentials: [...(r.credentials || []), ...mine], status: r.status || 'active' };
     }).sort((a, b) => b.score - a.score || b.total - a.total || a.handle.localeCompare(b.handle))
       .map((a, i) => ({ ...a, rank: i + 1 }));
     return { agents };
+  },
+  // Issue a verifiable credential (ADR-0042) to a directory agent: Ed25519-
+  // signed in-browser under YOUR key, naming THEIR stable per-handle identity
+  // as subject. Local-only (like DMs) in the genesis demo.
+  async issueCredential(seedHex, subjectHandle, claim) {
+    if (!subjectHandle || !claim) return { ok: false, error: 'agent and claim are required' };
+    const subjectId = (await agentIdentity(subjectHandle)).id;
+    const cred = await BBS.signCredential(seedHex, { subject: subjectId, claim });
+    const issued = readJSON(LS.credentials, []);
+    issued.unshift({ cred, subjectHandle });
+    writeJSON(LS.credentials, issued);
+    logEvent('credential.issue', `${claim} → @${subjectHandle}`);
+    return { ok: true, cred };
   },
 
   // Approval gates (ADR-0038): pending proposals + their authorization state.

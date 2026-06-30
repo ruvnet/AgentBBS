@@ -119,6 +119,8 @@ pub struct AppState {
     runs: Mutex<Vec<(String, PlaybookRun)>>,
     /// Decision records emitted by completed runs (ADR-0045).
     decisions: Mutex<DecisionLog>,
+    /// Verifiable credentials issued by any connected agent/human (ADR-0042).
+    credentials: Mutex<agentbbs_core::CredentialStore>,
     /// Daily live-LLM call budget guard (UTC-date, count) — caps aggregate cog_
     /// spend from anonymous public (Pages) traffic. Env `AGENTBBS_LLM_DAILY_MAX`.
     llm_day: Mutex<(String, u32)>,
@@ -145,6 +147,7 @@ impl AppState {
             moderation: Mutex::new(ModerationLog::new()),
             runs: Mutex::new(Vec::new()),
             decisions: Mutex::new(DecisionLog::new()),
+            credentials: Mutex::new(agentbbs_core::CredentialStore::new()),
             llm_day: Mutex::new((String::new(), 0)),
         })
     }
@@ -400,6 +403,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/api/decisions",
             get(api_decisions).post(api_decision_create),
+        )
+        .route(
+            "/api/credentials",
+            get(api_credentials_list).post(api_credentials_issue),
         )
         .route("/api/postguard", post(api_postguard))
         .route("/api/agent-reply", post(api_agent_reply))
@@ -1780,6 +1787,45 @@ struct ScanReq {
     content: String,
 }
 
+/// `GET /api/credentials` — every currently-valid signed credential on file
+/// (ADR-0042): `skill:rust`, `org:acme`, `role:moderator`, etc. Expired or
+/// unverifiable entries are never stored (rejected on issue).
+async fn api_credentials_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let now = chrono::Utc::now();
+    let store = state.credentials.lock().unwrap();
+    let creds: Vec<serde_json::Value> = store
+        .all()
+        .iter()
+        .filter(|c| c.is_valid(now))
+        .map(|c| {
+            serde_json::json!({
+                "subject": c.subject.to_hex(),
+                "claim": c.claim,
+                "issuer": c.issuer.to_hex(),
+                "issued_at": c.issued_at,
+                "expires_at": c.expires_at,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "credentials": creds }))
+}
+
+/// `POST /api/credentials` — issue a client-signed `Credential` (ADR-0042). Any
+/// connected identity may issue; whose issuers you *trust* is a policy left to
+/// the caller/reader (the same model as the core library).
+async fn api_credentials_issue(
+    State(state): State<Arc<AppState>>,
+    Json(cred): Json<agentbbs_core::Credential>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    state
+        .credentials
+        .lock()
+        .unwrap()
+        .add(cred)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "credential signature invalid"))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 /// `POST /api/decisions` — record a client-signed `DecisionRecord` (ADR-0045).
 /// The record is verified (content hash + signature) on ingest; a forged or
 /// tampered record is rejected `422`.
@@ -2714,6 +2760,95 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // ADR-0042: a signed credential is verified, listed while valid, rejected
+    // when forged, and dropped from the listing once expired.
+    #[tokio::test]
+    async fn credential_issue_verifies_lists_and_expires() {
+        let app = router(AppState::in_memory());
+        let issuer = agentbbs_core::Identity::generate();
+        let subject = agentbbs_core::Identity::generate().id();
+        let now = chrono::Utc::now();
+        let cred = agentbbs_core::Credential::issue(&issuer, subject, "skill:rust", now, None);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/credentials")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&cred).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::get("/api/credentials")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let d = body_json(listed).await;
+        assert!(d["credentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["claim"] == "skill:rust" && c["subject"] == subject.to_hex()));
+
+        // Tampered claim -> signature no longer verifies -> 400.
+        let mut forged = cred.clone();
+        forged.claim = "role:sysop".into();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/credentials")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&forged).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // An already-expired credential is accepted (it verifies) but never
+        // shows up in the valid-only listing.
+        let expired = agentbbs_core::Credential::issue(
+            &issuer,
+            subject,
+            "org:acme",
+            now - chrono::Duration::days(2),
+            Some(now - chrono::Duration::days(1)),
+        );
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/credentials")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&expired).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let listed = app
+            .oneshot(
+                Request::get("/api/credentials")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let d = body_json(listed).await;
+        assert!(!d["credentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["claim"] == "org:acme"));
     }
 
     // G9: /api/federation exposes the same shape as genesis incl. an explicit mode.

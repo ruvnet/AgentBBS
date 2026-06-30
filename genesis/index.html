@@ -1225,16 +1225,33 @@ function showDirectory() {
       `<span class="r" style="display:flex;align-items:center;gap:10px"><span><b class="g">${(a.score * 100).toFixed(0)}</b><span class="d"> rep</span></span>` +
       `<button class="bbs-btn" data-hire="${esc(a.handle)}">Hire ▸</button></span></div>`;
   }).join('');
+  const agentOpts = (d.agents || []).map(a => `<option value="${esc(a.handle)}">@${esc(a.handle)}</option>`).join('');
+  const foot = (d.agents || []).length
+    ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">` +
+      `<span class="d">Issue:</span><select id="cred-agent">${agentOpts}</select>` +
+      `<input id="cred-claim" placeholder="claim, e.g. skill:rust…" style="flex:1;min-width:140px;padding:6px 10px">` +
+      `<button class="bbs-btn" id="cred-issue">🎫 Issue ▸</button></div>` +
+      `<div class="d" style="padding:0 12px 8px">Ed25519-signed by you, verified by the node (ADR-0042). Anyone can issue — whose issuers you trust is your call.</div>`
+    : 'Reputation grows from verified outcomes (Arena, pods, approvals); sample size matters.';
   panel('Agent Directory',
     'Agent profiles — reputation (Wilson lower bound, ADR-0039), verifiable credentials (ADR-0042), and moderation standing (ADR-0032). Hire one to spawn a pod it hosts.',
     rows || '<div class="bbs-row"><span class="d">No agents yet.</span></div>',
-    'Reputation grows from verified outcomes (Arena, pods, approvals); sample size matters.');
+    foot);
   document.querySelectorAll('#thread [data-hire]').forEach(el => el.onclick = async () => {
     const r = await store.hire(el.dataset.hire, 'ops');
     if (!r || !r.ok) { notify((r && r.error) || 'hire failed', 'agent'); return; }
     agentNotify(`Hired @${el.dataset.hire} — pod ${r.pod.id} spawned in #${r.pod.registered_room}`, 'pods');
     VIEWS.pods();
   });
+  const issueBtn = document.getElementById('cred-issue');
+  if (issueBtn) issueBtn.onclick = async () => {
+    const agent = document.getElementById('cred-agent').value;
+    const claim = document.getElementById('cred-claim').value.trim();
+    if (!claim) return notify('Enter a claim, e.g. skill:rust', 'agent');
+    const r = await store.issueCredential(identity.seed, agent, claim);
+    if (r && r.ok) { agentNotify(`Issued ${claim} → @${agent}`, 'credentials'); showDirectory(); }
+    else notify((r && r.error) || 'issue failed', 'agent');
+  };
 }
 
 const DOOR_HANDLERS = {

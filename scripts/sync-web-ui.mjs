@@ -39,8 +39,8 @@ async function _sync() {
       _get('/api/state'), _get('/api/arena'), _get('/api/arena/retort'), _get('/api/online'),
       _get('/api/doors'), _get('/api/federation'), _get('/api/report'), _get('/api/market'), _get('/api/arena/pods'), _get('/api/approvals'),
     ]);
-    const [repu, bud, pb, dec] = await Promise.all([_get('/api/reputation'), _get('/api/budget'), _get('/api/playbooks'), _get('/api/decisions')]);
-    Object.assign(_c, { state: s, arena: a, retort: r, online: o, doors: d, federation: f, report: rep, market: m, pods: p, approvals: ap, reputation: repu, budget: bud, playbooks: pb, decisions: dec });
+    const [repu, bud, pb, dec, cred] = await Promise.all([_get('/api/reputation'), _get('/api/budget'), _get('/api/playbooks'), _get('/api/decisions'), _get('/api/credentials')]);
+    Object.assign(_c, { state: s, arena: a, retort: r, online: o, doors: d, federation: f, report: rep, market: m, pods: p, approvals: ap, reputation: repu, budget: bud, playbooks: pb, decisions: dec, credentials: cred });
   } catch (e) { console.error('[agentbbs] /api sync failed', e); }
 }
 const store = {
@@ -50,7 +50,29 @@ const store = {
   arena: () => _c.arena, arenaLive: async () => _c.arena, retort: () => _c.retort, online: () => _c.online,
   pods: () => _c.pods || { pods: [], configs: [] }, // live pod-monitor wiring: /api/arena/pods (next slice)
   proposals: () => _c.approvals || { proposals: [] }, // ADR-0038: GET /api/approvals
-  directory: () => ({ agents: ((_c.reputation && _c.reputation.ranking) || []).map((r, i) => ({ handle: r.agent.slice(0, 8), kind: 'agent', successes: r.successes, total: r.total, rate: r.rate, score: r.score, rank: i + 1 })) }), // ADR-0039
+  // ADR-0039 reputation + ADR-0042 credential badges (real, server-verified —
+  // GET /api/credentials, matched by the agent's full pubkey).
+  directory: () => ({
+    agents: ((_c.reputation && _c.reputation.ranking) || []).map((r, i) => ({
+      handle: r.agent.slice(0, 8), id: r.agent, kind: 'agent', successes: r.successes, total: r.total, rate: r.rate, score: r.score, rank: i + 1,
+      credentials: ((_c.credentials && _c.credentials.credentials) || []).filter(c => c.subject === r.agent).map(c => c.claim + ' ✓'),
+    })),
+  }),
+  // Issue a verifiable credential (ADR-0042) to a directory agent — by its short
+  // handle, like genesis; resolved here to the full pubkey via the reputation
+  // ranking. Signed in-browser, POSTed to the federated, server-verified log.
+  issueCredential: async (seed, subjectHandle, claim) => {
+    if (!subjectHandle || !claim) return { ok: false, error: 'agent and claim are required' };
+    const ranking = (_c.reputation && _c.reputation.ranking) || [];
+    const subjectId = (ranking.find(r => r.agent.slice(0, 8) === subjectHandle) || {}).agent;
+    if (!subjectId) return { ok: false, error: 'unknown agent' };
+    try {
+      const cred = await BBS.signCredential(seed, { subject: subjectId, claim });
+      const r = await fetch('/api/credentials', { method: 'POST', headers: H, body: JSON.stringify(cred) });
+      if (r.ok) { await _sync(); return { ok: true, cred }; }
+      const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'issue failed' };
+    } catch (_) { return { ok: false, error: 'issue failed' }; }
+  },
   // Hire an agent (ADR-0035): spawn a pod (hosted by that agent) via /api/pods.
   hire: async (handle, domain = 'ops') => {
     const h = (handle || '').replace(/^@/, '').toLowerCase();
