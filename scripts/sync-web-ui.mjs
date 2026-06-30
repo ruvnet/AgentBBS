@@ -16,9 +16,23 @@ import { dirname, resolve } from 'node:path';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = resolve(ROOT, 'genesis/index.html');
 const DST = resolve(ROOT, 'crates/agentbbs-web/assets/index.html');
-const VENDOR = ['bbscrypto.js', 'noble-ed25519.js', 'blake3.js'];
+// bbscrypto/noble-ed25519/blake3 are actually served by agentbbs-web
+// (/vendor/*.js routes). genesis-store.js is NOT served there (the server
+// frontend inlines its own adapter, never imports the genesis module) — it's
+// included here purely so the cache-bust guard below has a tracked snapshot
+// to diff against; it's the single most-changed file requiring a cache-bust
+// bump, and was previously invisible to the guard (a real gap: the guard only
+// covered the three files genesis-store.js itself imports, not itself).
+const VENDOR = ['bbscrypto.js', 'noble-ed25519.js', 'blake3.js', 'genesis-store.js'];
 
 let html = readFileSync(SRC, 'utf8');
+// Captured BEFORE the @sync region-swap loop below: the cache-bust token
+// lives inside the @sync:adapter-start/end region, which gets entirely
+// replaced by the server-variant ADAPTER body (no genesis-store.js import at
+// all) — so it must be read from the pristine genesis source, not from `html`
+// after the swap (an earlier version of this guard read it post-swap and so
+// always saw `null`, never actually catching anything).
+const genesisCacheToken = (html.match(/genesis-store\.js\?v=([\w.-]+)/) || [])[1] || null;
 
 // --- the four web (/api-backed) variants of the marked regions ---
 const TITLE = `<!-- @sync:title -->
@@ -82,6 +96,47 @@ const store = {
     }
     await _sync();
     return { seed, id, continuity: !!link };
+  },
+
+  // Agent Inbox (ADR-0049): agent-composed reply drafts awaiting human review.
+  // POST /api/drafts composes server-side (live meta-llm under the daily cap,
+  // else scripted) and scans-before-drafting; nothing is posted until Send.
+  draftReply: async (target, agent, context) => {
+    try {
+      const r = await fetch('/api/drafts', { method: 'POST', headers: H, body: JSON.stringify({ target, agent, context }) });
+      if (r.ok) { const draft = await r.json(); return { ok: true, draft }; }
+      const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'draft failed' };
+    } catch (_) { return { ok: false, error: 'draft failed' }; }
+  },
+  pendingDrafts: async () => {
+    try { const j = await _get('/api/drafts'); return j.drafts || []; } catch (_) { return []; }
+  },
+  editDraft: async (id, body) => {
+    try {
+      const r = await fetch('/api/drafts/' + encodeURIComponent(id) + '/edit', { method: 'POST', headers: H, body: JSON.stringify({ body }) });
+      return r.ok ? { ok: true } : { ok: false, error: 'edit failed' };
+    } catch (_) { return { ok: false, error: 'edit failed' }; }
+  },
+  // Send: look up the draft's target/agent/in_reply_to from the server's
+  // pending list, sign client-side under YOUR key (never the agent's, ADR-
+  // 0016) via the normal post path (the existing postguard gate there is the
+  // pre-send "verifier" pass), then mark the draft Sent (bookkeeping only —
+  // the server never signs on a human's behalf).
+  sendDraft: async (seed, id, bodyOverride = null) => {
+    const pending = await store.pendingDrafts();
+    const d = pending.find((x) => x.id === id);
+    if (!d) return { ok: false, error: 'draft not found or already decided' };
+    const body = bodyOverride !== null ? bodyOverride : d.body;
+    const r = await store.post(seed, { board: d.target, body, handle: d.agent, parent: d.in_reply_to });
+    if (!r.ok) return r;
+    try { await fetch('/api/drafts/' + encodeURIComponent(id) + '/sent', { method: 'POST', headers: H }); } catch (_) { /* best-effort bookkeeping */ }
+    return { ok: true };
+  },
+  discardDraft: async (id) => {
+    try {
+      const r = await fetch('/api/drafts/' + encodeURIComponent(id), { method: 'DELETE', headers: H });
+      return r.ok ? { ok: true } : { ok: false, error: 'discard failed' };
+    } catch (_) { return { ok: false, error: 'discard failed' }; }
   },
   // Hire an agent (ADR-0035): spawn a pod (hosted by that agent) via /api/pods.
   hire: async (handle, domain = 'ops') => {
@@ -291,6 +346,15 @@ if (missing.length) {
 // being caught: each one bumped `sed`-style from an assumed prior version that
 // had itself silently failed to bump, so the token never actually moved while
 // vendor content kept changing underneath it.
+// The token is tracked in its OWN sidecar file rather than diffed against
+// `crates/agentbbs-web/assets/index.html` — that file never actually contains
+// the `genesis-store.js?v=...` string at all (the agentbbs-web adapter swaps
+// out and inlines its own store, never importing the genesis module), so an
+// earlier version of this guard compared against a file that could never
+// match and silently never fired. Found while validating the guard itself —
+// it had never actually triggered in practice.
+const TOKEN_FILE = resolve(ROOT, 'crates/agentbbs-web/assets/vendor/.genesis-cache-token');
+const newToken = genesisCacheToken;
 {
   let vendorChanged = false;
   for (const f of VENDOR) {
@@ -300,19 +364,14 @@ if (missing.length) {
     try { oldContent = readFileSync(oldPath, 'utf8'); } catch (_) { /* first sync */ }
     if (oldContent !== null && oldContent !== newContent) vendorChanged = true;
   }
-  if (vendorChanged) {
-    let oldHtml = null;
-    try { oldHtml = readFileSync(DST, 'utf8'); } catch (_) { /* first sync */ }
-    const tokenOf = (s) => (s && (s.match(/genesis-store\.js\?v=([\w.-]+)/) || [])[1]) || null;
-    const oldToken = tokenOf(oldHtml);
-    const newToken = tokenOf(html);
-    if (oldHtml !== null && oldToken !== null && oldToken === newToken) {
-      console.error(
-        `sync-web-ui: genesis/vendor/*.js content changed but the cache-bust token (?v=${newToken}) in genesis/index.html did NOT. ` +
-        `Bump it (e.g. ?v=live-${(parseInt((newToken || '').replace(/\D/g, ''), 10) || 0) + 1}) so browsers fetch the new code instead of a stale cached copy.`,
-      );
-      process.exit(4);
-    }
+  let oldToken = null;
+  try { oldToken = readFileSync(TOKEN_FILE, 'utf8').trim(); } catch (_) { /* first run */ }
+  if (vendorChanged && oldToken !== null && oldToken === newToken) {
+    console.error(
+      `sync-web-ui: genesis/vendor/*.js content changed but the cache-bust token (?v=${newToken}) in genesis/index.html did NOT. ` +
+      `Bump it (e.g. ?v=live-${(parseInt((newToken || '').replace(/\D/g, ''), 10) || 0) + 1}) so browsers fetch the new code instead of a stale cached copy.`,
+    );
+    process.exit(4);
   }
 }
 
@@ -322,5 +381,6 @@ writeFileSync(DST, header + html);
 for (const f of VENDOR) {
   copyFileSync(resolve(ROOT, 'genesis/vendor', f), resolve(ROOT, 'crates/agentbbs-web/assets/vendor', f));
 }
+writeFileSync(TOKEN_FILE, newToken || '');
 
 console.log(`sync-web-ui: wrote ${DST} and ${VENDOR.length} vendor file(s) from genesis (single source of truth).`);

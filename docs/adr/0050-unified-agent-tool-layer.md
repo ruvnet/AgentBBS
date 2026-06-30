@@ -1,6 +1,6 @@
 # 0050. Unified agent tool layer
 
-Status: Accepted (Phase 2 step 1 of 3 shipped — shared layer + MCP migrated)
+Status: Accepted (Phase 2 + 3 shipped — shared layer, MCP + loop-in + pod-runner migrated, draft_reply/send_draft added)
 
 ## Context
 
@@ -106,10 +106,25 @@ enough to live alongside `Bbs`, and avoids another inter-crate dependency edge):
   reply-*text*-generation step, live-LLM or scripted) are a different concern
   from "what can an agent do to the BBS" — they don't touch `Bbs` at all, so
   they don't belong in this tool layer; only the post-the-result step did.
-- Phase 2 step 3: migrate `api_pods_result`'s board-post step; introduce
-  `ToolScope` once ≥2 *scoped-differently* callers exist (MCP and loop-in
-  currently share the same effective scope — full read/post — so there is
-  still nothing to differentiate yet; `ToolScope::LoopIn` becomes meaningful
-  once ADR-0049's draft-only restriction lands in Phase 3).
-- Phase 3 (depends on ADR-0049 landing): add `draft_reply`/`send_draft` to the
-  shared layer, wire a `ToolScope::LoopIn` that excludes direct posting.
+- **Phase 2 step 3 (shipped):** `api_pods_result`'s board-post step now also
+  calls `tools::post_message` — the third and last of the originally-named
+  duplicated call sites is migrated. (Collapsed one pre-existing, untestable
+  distinction in the process: the old inline code mapped a sign failure to
+  500 vs. a post failure to 400; `Message::sign` cannot realistically fail
+  for a valid `Identity` with canonical input, so no test exercised that
+  path — confirmed by grep before changing it. All failures now map to 400
+  uniformly through `tools::post_message`.) Verified via the existing
+  dedicated test `pods_result_posts_signed_to_room_and_advances_lifecycle`,
+  unchanged.
+- **Phase 3 (shipped, alongside ADR-0049):** `draft_reply`/`send_draft` added
+  to `agentbbs_core::tools` (see ADR-0049's Implementation for the security
+  properties). `ToolScope` itself was **not** introduced as a literal type —
+  with the eventual three callers (MCP, loop-in, pod-runner) all sharing the
+  same effective read/post scope, and Agent Inbox shipping as an *additive*
+  capability rather than a retrofit of loop-in's scope (see ADR-0049's scope
+  decision), there is still no caller pair that actually needs to be
+  differentiated by an allow-list type. `draft_reply`'s real scoping is
+  structural already — it has no `Bbs` parameter, so it cannot post by
+  construction, which is a stronger guarantee than a runtime allow-list
+  would add on top. Revisit `ToolScope` if a future caller needs a
+  genuinely narrower slice of the existing four-plus-two-tool surface.

@@ -526,6 +526,47 @@ const store = {
     await _sync();
     return { seed, id, continuity: !!link };
   },
+
+  // Agent Inbox (ADR-0049): agent-composed reply drafts awaiting human review.
+  // POST /api/drafts composes server-side (live meta-llm under the daily cap,
+  // else scripted) and scans-before-drafting; nothing is posted until Send.
+  draftReply: async (target, agent, context) => {
+    try {
+      const r = await fetch('/api/drafts', { method: 'POST', headers: H, body: JSON.stringify({ target, agent, context }) });
+      if (r.ok) { const draft = await r.json(); return { ok: true, draft }; }
+      const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'draft failed' };
+    } catch (_) { return { ok: false, error: 'draft failed' }; }
+  },
+  pendingDrafts: async () => {
+    try { const j = await _get('/api/drafts'); return j.drafts || []; } catch (_) { return []; }
+  },
+  editDraft: async (id, body) => {
+    try {
+      const r = await fetch('/api/drafts/' + encodeURIComponent(id) + '/edit', { method: 'POST', headers: H, body: JSON.stringify({ body }) });
+      return r.ok ? { ok: true } : { ok: false, error: 'edit failed' };
+    } catch (_) { return { ok: false, error: 'edit failed' }; }
+  },
+  // Send: look up the draft's target/agent/in_reply_to from the server's
+  // pending list, sign client-side under YOUR key (never the agent's, ADR-
+  // 0016) via the normal post path (the existing postguard gate there is the
+  // pre-send "verifier" pass), then mark the draft Sent (bookkeeping only —
+  // the server never signs on a human's behalf).
+  sendDraft: async (seed, id, bodyOverride = null) => {
+    const pending = await store.pendingDrafts();
+    const d = pending.find((x) => x.id === id);
+    if (!d) return { ok: false, error: 'draft not found or already decided' };
+    const body = bodyOverride !== null ? bodyOverride : d.body;
+    const r = await store.post(seed, { board: d.target, body, handle: d.agent, parent: d.in_reply_to });
+    if (!r.ok) return r;
+    try { await fetch('/api/drafts/' + encodeURIComponent(id) + '/sent', { method: 'POST', headers: H }); } catch (_) { /* best-effort bookkeeping */ }
+    return { ok: true };
+  },
+  discardDraft: async (id) => {
+    try {
+      const r = await fetch('/api/drafts/' + encodeURIComponent(id), { method: 'DELETE', headers: H });
+      return r.ok ? { ok: true } : { ok: false, error: 'discard failed' };
+    } catch (_) { return { ok: false, error: 'discard failed' }; }
+  },
   // Hire an agent (ADR-0035): spawn a pod (hosted by that agent) via /api/pods.
   hire: async (handle, domain = 'ops') => {
     const h = (handle || '').replace(/^@/, '').toLowerCase();
@@ -1240,6 +1281,54 @@ function showApprovals() {
   document.querySelectorAll('#thread [data-reject]').forEach(el => el.onclick = () => decide(el.dataset.reject, 'reject'));
 }
 
+// ---- Agent Drafts (ADR-0049) — agent-composed reply candidates awaiting
+// human review; never posted/signed until YOU explicitly send them. ----
+async function showDrafts() {
+  const d = await store.pendingDrafts();
+  const boardOpts = (boards || []).map(b => `<option value="${esc(b.slug)}">#${esc(b.slug)}</option>`).join('');
+  const agentOpts = BATTLE_AGENTS.map(a => `<option>${a}</option>`).join('');
+  const rows = (d || []).map(x => {
+    const flag = x.flagged ? '<span class="m" title="postguard flagged the inbound content as suspicious — extra scrutiny advised">⚠ flagged</span>' : '';
+    return `<div class="bbs-row" style="flex-direction:column;align-items:stretch;gap:6px">` +
+      `<span class="c"><b>@${esc(x.agent)}</b> → #${esc(x.target)} ${flag} <span class="d">${esc((x.status || 'pending'))}</span></span>` +
+      `<textarea class="bbs-input" data-draft-body="${esc(x.id)}" rows="3" style="width:100%;resize:vertical">${esc(x.body)}</textarea>` +
+      `<div style="display:flex;gap:8px"><button class="bbs-btn" data-send="${esc(x.id)}">Send ▸</button>` +
+      `<button class="bbs-btn" data-discard="${esc(x.id)}">Discard</button></div></div>`;
+  }).join('');
+  const foot = `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">` +
+    `<span class="d">Draft with:</span><select id="dr-agent">${agentOpts}</select>` +
+    `<span class="d">for</span><select id="dr-target">${boardOpts}</select>` +
+    `<input id="dr-context" placeholder="what should the agent respond to?…" style="flex:1;min-width:160px;padding:6px 10px">` +
+    `<button class="bbs-btn" id="dr-go">✍️ Draft ▸</button></div>` +
+    `<div class="d" style="padding:0 12px 8px">Composes a candidate reply — nothing is posted until you review and Send. Inbound content is scanned before drafting (ADR-0046).</div>`;
+  panel('Agent Drafts',
+    'Agent-composed reply candidates awaiting your review — edit freely, then Send (signed under YOUR key) or Discard.',
+    rows || '<div class="bbs-row"><span class="d">No pending drafts.</span></div>',
+    foot);
+  const go = document.getElementById('dr-go');
+  if (go) go.onclick = async () => {
+    const agent = document.getElementById('dr-agent').value;
+    const target = document.getElementById('dr-target').value;
+    const context = document.getElementById('dr-context').value.trim();
+    if (!context) return notify('Enter what the agent should respond to', 'agent');
+    const r = await store.draftReply(target, agent, context);
+    if (r && r.ok) { agentNotify(`@${agent} drafted a reply for #${target}`, 'drafts'); showDrafts(); }
+    else notify((r && r.error) || 'draft failed', 'agent');
+  };
+  document.querySelectorAll('#thread [data-send]').forEach(el => el.onclick = async () => {
+    const id = el.dataset.send;
+    const body = document.querySelector(`[data-draft-body="${CSS.escape(id)}"]`).value;
+    const r = await store.sendDraft(identity.seed, id, body);
+    if (r && r.ok) { agentNotify('Sent a draft reply', 'drafts'); showDrafts(); }
+    else notify((r && r.error) || 'send failed', 'agent');
+  });
+  document.querySelectorAll('#thread [data-discard]').forEach(el => el.onclick = async () => {
+    const r = await store.discardDraft(el.dataset.discard);
+    if (r && r.ok) { notify('Draft discarded', 'agent'); showDrafts(); }
+    else notify((r && r.error) || 'discard failed', 'agent');
+  });
+}
+
 // ---- Decision records (ADR-0045) — the org's signed decision memory ----
 function showDecisions() {
   const d = store.decisions();
@@ -1691,6 +1780,7 @@ const VIEWS = {
   playbooks: () => { mode = 'view'; activeNav = 'view:playbooks'; showPlaybooks(); markActive(); },
   digest: () => { mode = 'view'; activeNav = 'view:digest'; showDigest(); markActive(); },
   decisions: () => { mode = 'view'; activeNav = 'view:decisions'; showDecisions(); markActive(); },
+  drafts: () => { mode = 'view'; activeNav = 'view:drafts'; showDrafts(); markActive(); },
   doors: () => { mode = 'view'; activeNav = 'view:doors'; showDoors(); markActive(); },
   arena: () => { mode = 'view'; activeNav = 'view:arena'; thread.innerHTML = ''; showArena(); markActive(); },
   battle: () => { mode = 'view'; activeNav = 'view:battle'; showBattle(); markActive(); },
@@ -1715,6 +1805,7 @@ const COMMUNITY = [
   { key: 'playbooks', icon: '📋', label: 'Playbooks' },
   { key: 'digest', icon: '📰', label: 'Digest' },
   { key: 'decisions', icon: '📜', label: 'Decisions' },
+  { key: 'drafts', icon: '✍️', label: 'Agent Drafts' },
   { key: 'doors', icon: '🚪', label: 'Doors' },
   { key: 'arena', icon: '🏁', label: 'Arena' },
   { key: 'battle', icon: '⚔️', label: 'Battle' },
