@@ -28,6 +28,48 @@ pub enum MaxTier {
     High,
 }
 
+/// The lifecycle state of a spawned pod, mirroring the meta-llm Darwin Loop
+/// (ADR-0035): `Spawned → Executing → Evaluating → {Escalating → Executing |
+/// Completed | Failed}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PodStatus {
+    /// Created, not yet running.
+    Spawned,
+    /// Running a loop step.
+    Executing,
+    /// Checking the behavioral gate (`bench_assertions`).
+    Evaluating,
+    /// Bumping the tier after an ambiguous/failed cheap pass.
+    Escalating,
+    /// Finished successfully (gate passed / goal met).
+    Completed,
+    /// Finished unsuccessfully (gate failed / budget exhausted / error).
+    Failed,
+}
+
+impl PodStatus {
+    /// Whether this is a terminal state (no further transitions).
+    pub fn is_terminal(self) -> bool {
+        matches!(self, PodStatus::Completed | PodStatus::Failed)
+    }
+
+    /// Whether `self → next` is a legal lifecycle transition.
+    pub fn can_transition_to(self, next: PodStatus) -> bool {
+        use PodStatus::*;
+        matches!(
+            (self, next),
+            (Spawned, Executing)
+                | (Executing, Evaluating)
+                | (Evaluating, Escalating)
+                | (Evaluating, Completed)
+                | (Evaluating, Failed)
+                | (Escalating, Executing)
+                | (Executing, Failed)
+        )
+    }
+}
+
 /// The declarative definition of a domain agent pod (ADR-0035 `template_ref`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PodTemplate {
@@ -95,6 +137,46 @@ impl PodTemplate {
             }
         }
         Ok(())
+    }
+}
+
+/// A spawn request for a pod (the AgentBBS-side shape behind `/v1/pods/spawn`,
+/// ADR-0035): the template plus an optional tier override (bounded by the
+/// template's `max_tier`) and an idempotency key to dedupe spawns. Per-tenant
+/// attribution is the gateway's job (via the `cog_` key → accountId), so it is
+/// deliberately not carried here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PodSpec {
+    /// The pod definition.
+    pub template: PodTemplate,
+    /// Requested starting tier; must be `<= template.max_tier`. `None` = the
+    /// gateway's auto dial up to `max_tier`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<MaxTier>,
+    /// Optional client key to make a spawn idempotent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+impl PodSpec {
+    /// Validate the template and that any requested `tier` respects the
+    /// template's `max_tier` ceiling.
+    pub fn validate(&self) -> Result<()> {
+        self.template.validate()?;
+        if let Some(tier) = self.tier {
+            if tier > self.template.max_tier {
+                return Err(Error::malformed(
+                    "pod",
+                    "requested tier exceeds the template max_tier",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The tier the pod starts at: the requested override, else `max_tier`.
+    pub fn effective_tier(&self) -> MaxTier {
+        self.tier.unwrap_or(self.template.max_tier)
     }
 }
 
@@ -177,5 +259,46 @@ mod tests {
     #[test]
     fn tier_ordering() {
         assert!(MaxTier::Low < MaxTier::Mid && MaxTier::Mid < MaxTier::High);
+    }
+
+    #[test]
+    fn pod_status_lifecycle() {
+        use PodStatus::*;
+        assert!(Spawned.can_transition_to(Executing));
+        assert!(Executing.can_transition_to(Evaluating));
+        assert!(Evaluating.can_transition_to(Escalating));
+        assert!(Escalating.can_transition_to(Executing));
+        assert!(Evaluating.can_transition_to(Completed));
+        assert!(Executing.can_transition_to(Failed));
+        // Illegal jumps.
+        assert!(!Spawned.can_transition_to(Completed));
+        assert!(!Completed.can_transition_to(Executing));
+        assert!(Completed.is_terminal() && Failed.is_terminal());
+        assert!(!Executing.is_terminal());
+        assert_eq!(serde_json::to_value(Escalating).unwrap(), "escalating");
+    }
+
+    #[test]
+    fn pod_spec_tier_ceiling() {
+        let mut spec = PodSpec {
+            template: research_pod(), // max_tier = Mid
+            tier: Some(MaxTier::Low),
+            idempotency_key: Some("k1".into()),
+        };
+        assert!(spec.validate().is_ok());
+        assert_eq!(spec.effective_tier(), MaxTier::Low);
+
+        // Requested tier above the ceiling is rejected.
+        spec.tier = Some(MaxTier::High);
+        assert!(spec.validate().is_err());
+
+        // No override → effective tier is the template ceiling.
+        spec.tier = None;
+        assert!(spec.validate().is_ok());
+        assert_eq!(spec.effective_tier(), MaxTier::Mid);
+
+        // An invalid template propagates.
+        spec.template.per_agent_cap_usd = 0.0;
+        assert!(spec.validate().is_err());
     }
 }
