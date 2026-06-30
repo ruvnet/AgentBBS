@@ -200,6 +200,11 @@ impl PlaybookRun {
         self.status
     }
 
+    /// The playbook this run is executing.
+    pub fn playbook(&self) -> &Playbook {
+        &self.playbook
+    }
+
     /// The step at the cursor, if any.
     pub fn current(&self) -> Option<&PlaybookStep> {
         self.playbook.steps.get(self.cursor)

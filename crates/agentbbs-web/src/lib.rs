@@ -22,9 +22,9 @@ use agentbbs_core::identity::Identity;
 use agentbbs_core::market::{Listing, ListingBody, ListingKind, Market};
 use agentbbs_core::report::MemoryReporter;
 use agentbbs_core::{
-    ActionProposal, ApprovalGate, Bbs, Board, BudgetLedger, MaxTier, MemoryStore, ModAction,
-    ModerationLog, OutcomeRecord, Playbook, PlaybookRun, PodSpec, PodStatus, ReputationLedger,
-    Role, RunStatus, SignedDecision, Store,
+    ActionProposal, ApprovalGate, Bbs, Board, BudgetLedger, DecisionLog, DecisionRecord, MaxTier,
+    MemoryStore, ModAction, ModerationLog, OutcomeRecord, Playbook, PlaybookRun, PodSpec,
+    PodStatus, ReputationLedger, Role, RunStatus, SignedDecision, Store,
 };
 
 use axum::extract::{Path, State};
@@ -117,6 +117,8 @@ pub struct AppState {
     moderation: Mutex<ModerationLog>,
     /// Active playbook runs (ADR-0041 Phase 3), keyed by run id.
     runs: Mutex<Vec<(String, PlaybookRun)>>,
+    /// Decision records emitted by completed runs (ADR-0045).
+    decisions: Mutex<DecisionLog>,
 }
 
 impl AppState {
@@ -139,6 +141,7 @@ impl AppState {
             budget: Mutex::new(BudgetLedger::new()),
             moderation: Mutex::new(ModerationLog::new()),
             runs: Mutex::new(Vec::new()),
+            decisions: Mutex::new(DecisionLog::new()),
         })
     }
 
@@ -1368,6 +1371,9 @@ async fn api_playbook_run(
     let mut run = PlaybookRun::start(playbook)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid playbook: {e}")))?;
     drive_run(&mut run, &state.gate.lock().unwrap());
+    if run.status() == RunStatus::Completed {
+        record_run_completion(&state, &run);
+    }
     let mut runs = state.runs.lock().unwrap();
     let id = format!("run-{:04}", runs.len());
     let view = run_view(&id, &run);
@@ -1387,8 +1393,40 @@ async fn api_run_advance(
         .iter_mut()
         .find(|(rid, _)| *rid == id)
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "run not found"))?;
+    let was = entry.1.status();
     drive_run(&mut entry.1, &gate);
-    Ok(Json(run_view(&entry.0, &entry.1)))
+    let completed_now = was != RunStatus::Completed && entry.1.status() == RunStatus::Completed;
+    let view = run_view(&entry.0, &entry.1);
+    let finished = if completed_now {
+        Some(entry.1.clone())
+    } else {
+        None
+    };
+    drop(runs);
+    drop(gate);
+    if let Some(run) = finished {
+        record_run_completion(&state, &run);
+    }
+    Ok(Json(view))
+}
+
+/// Emit a signed [`DecisionRecord`] when a playbook run completes (ADR-0041 ×
+/// ADR-0045), so the org keeps a durable, citable record of what ran.
+fn record_run_completion(state: &AppState, run: &PlaybookRun) {
+    let pb = run.playbook();
+    let org = state.agent_identity("org-governance");
+    let rec = DecisionRecord::new(
+        &org,
+        format!("Playbook '{}' completed", pb.name),
+        "All steps executed and approval gates signed off",
+        format!(
+            "playbook {}@{} ran to completion via the autopilot",
+            pb.name, pb.version
+        ),
+        "general",
+        chrono::Utc::now(),
+    );
+    let _ = state.decisions.lock().unwrap().add(rec);
 }
 
 /// `GET /api/runs` — all playbook runs and their state.
@@ -1450,7 +1488,7 @@ async fn api_decisions(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             .unwrap()
             .with_timezone(&chrono::Utc)
     };
-    let recs = vec![
+    let mut recs = vec![
         DecisionRecord::new(
             &org,
             "Adopt the meta-llm gateway",
@@ -1468,6 +1506,16 @@ async fn api_decisions(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             t("2026-06-30T04:00:00Z"),
         ),
     ];
+    // Plus any records emitted by completed playbook runs (ADR-0041 × 0045).
+    let dynamic: Vec<DecisionRecord> = state
+        .decisions
+        .lock()
+        .unwrap()
+        .all()
+        .into_iter()
+        .cloned()
+        .collect();
+    recs.extend(dynamic);
     Json(serde_json::json!({ "decisions": recs }))
 }
 
@@ -2049,6 +2097,54 @@ mod tests {
         );
         assert_eq!(act(lift).await.status(), StatusCode::OK);
         assert_eq!(post(signed_post("back")).await.status(), StatusCode::OK);
+    }
+
+    // ADR-0041 × 0045: a completed playbook run emits a decision record.
+    #[tokio::test]
+    async fn completed_run_emits_a_decision_record() {
+        use agentbbs_core::{Playbook, PlaybookStep, StepKind};
+        let app = router(AppState::in_memory());
+        let pb = Playbook::new(
+            "nightly-ship",
+            "1",
+            "cron",
+            vec![
+                PlaybookStep {
+                    id: "a".into(),
+                    kind: StepKind::AgentTask {
+                        agent: "claude".into(),
+                        instruction: "x".into(),
+                    },
+                },
+                PlaybookStep {
+                    id: "b".into(),
+                    kind: StepKind::Tool {
+                        tool: "deploy".into(),
+                    },
+                },
+            ],
+        );
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/playbooks/run")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&pb).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(resp).await["status"], "completed");
+        let resp = app
+            .oneshot(Request::get("/api/decisions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let d = body_json(resp).await;
+        assert!(d["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["title"].as_str().unwrap().contains("nightly-ship")));
     }
 
     // ADR-0041: /api/playbooks serves content-addressed workflow definitions.
