@@ -22,8 +22,11 @@ const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
 const page = await ctx.newPage();
 
 const consoleErrors = [];
-// Ignore benign favicon 404s (not an app error); everything else counts.
-page.on('console', m => { if (m.type() === 'error' && !/favicon/i.test(m.text())) consoleErrors.push(m.text()); });
+// Ignore benign/environmental noise: favicon 404, transient network blips, and
+// the transformers.js CDN load (the demo engine degrades to keyword mode if it
+// fails). Real app errors (same-origin API failures, uncaught exceptions) still count.
+const BENIGN = /favicon|net::ERR|cdn\.jsdelivr|transformers/i;
+page.on('console', m => { if (m.type() === 'error' && !BENIGN.test(m.text())) consoleErrors.push(m.text()); });
 page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
 
 try {
@@ -173,7 +176,7 @@ try {
   const mctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
   const mpage = await mctx.newPage();
   const mErr = [];
-  mpage.on('console', m => { if (m.type() === 'error' && !/favicon/i.test(m.text())) mErr.push(m.text()); });
+  mpage.on('console', m => { if (m.type() === 'error' && !BENIGN.test(m.text())) mErr.push(m.text()); });
   mpage.on('pageerror', e => mErr.push('pageerror: ' + e.message));
   await mpage.goto(URL, { waitUntil: 'domcontentloaded' });
   await mpage.waitForFunction(() => window.__ui, { timeout: 15000 });

@@ -630,6 +630,10 @@ function applyLayout(modeName) {
 let current = 'general';
 let mode = 'board'; // 'board' | 'view'
 let activeNav = 'board:general'; // sidebar highlight
+// Navigation generation: bumped on every board load and every view render so an
+// in-flight async loadBoard can bail instead of clobbering a view the user
+// navigated to mid-fetch (fixes the Arena-clobber race on the server PWA).
+let navGen = 0;
 let me = null;
 let identity = null; // { seed, id } — your anonymous key, held in this browser
 let boards = [];
@@ -697,11 +701,13 @@ function arenaCard(a) {
 }
 
 async function loadBoard(slug, { keepScroll } = {}) {
+  const myGen = ++navGen;
   current = slug;
   mode = 'board';
   activeNav = 'board:' + slug;
   if (!keepScroll) { rbMode = 'online'; rbDetail = null; }
   const data = await store.board(slug);
+  if (myGen !== navGen) return; // navigated away during the async fetch — don't clobber
   setHeading('# ' + slug, data.description || '');
   thread.innerHTML = '';
   const day = document.createElement('div');
@@ -731,6 +737,7 @@ async function loadBoard(slug, { keepScroll } = {}) {
 }
 
 function showArena() {
+  navGen++;
   setHeading('🏁 Arena', 'CVE-Bench leaderboard');
   const a = store.arena();
   thread.appendChild(arenaCard(a));
@@ -793,6 +800,7 @@ function retortCard(a) {
 }
 
 function showRetort() {
+  navGen++;
   setHeading('🧪 Retort', 'DoE/ANOVA stack leaderboard');
   const a = store.retort();
   thread.appendChild(retortCard(a));
@@ -803,7 +811,7 @@ function showRetort() {
 
 // ---- TUI-parity community views, rendered in retro BBS style ----
 function panel(title, sub, rowsHtml, footHtml) {
-  mode = 'view';
+  mode = 'view'; navGen++;
   setHeading(title, sub || '');
   thread.innerHTML = '';
   const card = document.createElement('div');
