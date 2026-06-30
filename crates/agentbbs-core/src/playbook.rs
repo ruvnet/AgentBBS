@@ -8,7 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::approval::ApprovalGate;
 use crate::error::{Error, Result};
+use crate::identity::AgentId;
 
 /// What a playbook step does.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +157,97 @@ impl Playbook {
     }
 }
 
+/// The state of a [`PlaybookRun`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    /// Ready to advance the current step.
+    Running,
+    /// The current step is an approval gate awaiting a human sign-off.
+    AwaitingApproval,
+    /// All steps done.
+    Completed,
+    /// Aborted.
+    Failed,
+}
+
+/// A stateful walk through a [`Playbook`]. `advance` processes the current step
+/// and moves to the next; an `ApprovalGate` step only advances when the
+/// [`ApprovalGate`] authorizes its action (otherwise the run parks in
+/// [`RunStatus::AwaitingApproval`] — fail-closed). Dispatching the actual work
+/// (spawning a pod, running a tool) is the caller's job; this is the state
+/// machine that sequences and gates it.
+#[derive(Clone, Debug)]
+pub struct PlaybookRun {
+    playbook: Playbook,
+    cursor: usize,
+    status: RunStatus,
+}
+
+impl PlaybookRun {
+    /// Start a run over a validated playbook.
+    pub fn start(playbook: Playbook) -> Result<Self> {
+        playbook.validate()?;
+        Ok(PlaybookRun {
+            playbook,
+            cursor: 0,
+            status: RunStatus::Running,
+        })
+    }
+
+    /// The current status.
+    pub fn status(&self) -> RunStatus {
+        self.status
+    }
+
+    /// The step at the cursor, if any.
+    pub fn current(&self) -> Option<&PlaybookStep> {
+        self.playbook.steps.get(self.cursor)
+    }
+
+    /// The deterministic approval action-id for the current `ApprovalGate` step
+    /// (what a human signs a decision over), or `None` if the current step is
+    /// not a gate.
+    pub fn gate_action_id(&self) -> Option<String> {
+        match self.current()?.kind {
+            StepKind::ApprovalGate { .. } => Some(format!(
+                "playbook:{}:{}",
+                self.playbook.playbook_id,
+                self.current()?.id
+            )),
+            _ => None,
+        }
+    }
+
+    /// Process the current step and advance. `AgentTask`/`Tool` steps advance
+    /// unconditionally (the caller has run them); an `ApprovalGate` advances only
+    /// if `gate` authorizes its action for an `allowed` decider — otherwise the
+    /// run parks in `AwaitingApproval` and the cursor does not move.
+    pub fn advance(&mut self, gate: &ApprovalGate, allowed: &[AgentId]) -> RunStatus {
+        if matches!(self.status, RunStatus::Completed | RunStatus::Failed) {
+            return self.status;
+        }
+        let is_gate = matches!(
+            self.current().map(|s| &s.kind),
+            Some(StepKind::ApprovalGate { .. })
+        );
+        if is_gate {
+            let aid = self.gate_action_id().unwrap();
+            if !gate.is_authorized(&aid, allowed) {
+                self.status = RunStatus::AwaitingApproval;
+                return self.status;
+            }
+        }
+        self.cursor += 1;
+        self.status = if self.cursor >= self.playbook.steps.len() {
+            RunStatus::Completed
+        } else {
+            RunStatus::Running
+        };
+        self.status
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +307,52 @@ mod tests {
         });
         let p2 = Playbook::new("triage-inbound-lead", "1", "event:lead.created", steps);
         assert_ne!(p.playbook_id, p2.playbook_id);
+    }
+
+    #[test]
+    fn run_blocks_at_gate_until_approved() {
+        use crate::approval::{ApprovalGate, SignedDecision, Verdict};
+        use crate::identity::Identity;
+        let human = Identity::generate();
+        let mut run = PlaybookRun::start(sample()).unwrap();
+        let mut gate = ApprovalGate::new();
+        let empty: Vec<crate::identity::AgentId> = vec![];
+
+        // Step 0 (AgentTask) advances unconditionally → now at the gate.
+        assert_eq!(run.advance(&gate, &empty), RunStatus::Running);
+        assert!(matches!(
+            run.current().unwrap().kind,
+            StepKind::ApprovalGate { .. }
+        ));
+
+        // Without an approval, the run parks (cursor unchanged).
+        assert_eq!(
+            run.advance(&gate, &[human.id()]),
+            RunStatus::AwaitingApproval
+        );
+        assert!(matches!(
+            run.current().unwrap().kind,
+            StepKind::ApprovalGate { .. }
+        ));
+
+        // Human signs an Approve over the gate's action id → it advances.
+        let aid = run.gate_action_id().unwrap();
+        let when = chrono::DateTime::parse_from_rfc3339("2026-06-30T05:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        gate.record(SignedDecision::sign(
+            &human,
+            aid,
+            Verdict::Approve,
+            "ok",
+            when,
+        ))
+        .unwrap();
+        assert_eq!(run.advance(&gate, &[human.id()]), RunStatus::Running); // past the gate → at Tool
+
+        // Final Tool step completes the run.
+        assert_eq!(run.advance(&gate, &[human.id()]), RunStatus::Completed);
+        assert!(run.current().is_none());
     }
 
     #[test]

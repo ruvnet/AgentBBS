@@ -47,7 +47,7 @@ pub use caps::{Caps, Role};
 pub use error::{Error, Result};
 pub use identity::{AgentId, Identity, SignatureBytes};
 pub use market::{Listing, ListingBody, ListingKind, Market};
-pub use playbook::{Playbook, PlaybookStep, StepKind};
+pub use playbook::{Playbook, PlaybookRun, PlaybookStep, RunStatus, StepKind};
 pub use pod::{MaxTier, PodSpec, PodStatus, PodTemplate};
 pub use presence::{Member, Presence};
 pub use ratelimit::RateLimiter;
