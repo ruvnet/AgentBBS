@@ -153,6 +153,70 @@ mod tests {
         assert_eq!(store.message_count().unwrap(), 1);
     }
 
+    // G5: a signed board snapshot bootstraps a fresh node in one shot, and a
+    // snapshot containing a forged message is rejected wholesale.
+    #[test]
+    fn board_snapshot_bootstraps_and_rejects_forgery() {
+        use agentbbs_core::Board;
+        let node = Identity::generate();
+        let author = Identity::generate();
+        // Source node with a populated board.
+        let src: Arc<dyn Store> = Arc::new(agentbbs_core::MemoryStore::new());
+        src.put_board(&Board::new("general", "General", node.id()))
+            .unwrap();
+        src.put_message(&signed_message(&author, "general", "one"))
+            .unwrap();
+        src.put_message(&signed_message(&author, "general", "two"))
+            .unwrap();
+        let src_fed = Federator::new(
+            Identity::generate(),
+            src.clone(),
+            Arc::new(NullReporter),
+            Arc::new(LoopbackTransport::new()),
+            PeerBook::new(),
+        );
+        let snap = src_fed.make_snapshot("general", 100).unwrap();
+
+        // Fresh node ingests the snapshot → board + both messages appear.
+        let dst: Arc<dyn Store> = Arc::new(agentbbs_core::MemoryStore::new());
+        let dst_fed = Federator::new(
+            Identity::generate(),
+            dst.clone(),
+            Arc::new(NullReporter),
+            Arc::new(LoopbackTransport::new()),
+            PeerBook::new(),
+        );
+        dst_fed.ingest(&snap.to_bytes().unwrap()).unwrap();
+        assert!(dst.get_board("general").unwrap().is_some());
+        assert_eq!(dst.message_count().unwrap(), 2);
+        // Idempotent re-ingest.
+        dst_fed.ingest(&snap.to_bytes().unwrap()).unwrap();
+        assert_eq!(dst.message_count().unwrap(), 2);
+
+        // A snapshot with a tampered message body is rejected wholesale.
+        let mut forged = signed_message(&author, "general", "real");
+        forged.body.body = "tampered".into();
+        let bad = FederationEnvelope::seal(
+            &node,
+            FederationPayload::BoardSnapshot {
+                board: Board::new("evil", "Evil", node.id()),
+                messages: vec![forged],
+            },
+            1,
+        )
+        .unwrap();
+        let dst2: Arc<dyn Store> = Arc::new(agentbbs_core::MemoryStore::new());
+        let dst2_fed = Federator::new(
+            Identity::generate(),
+            dst2.clone(),
+            Arc::new(NullReporter),
+            Arc::new(LoopbackTransport::new()),
+            PeerBook::new(),
+        );
+        assert!(dst2_fed.ingest(&bad.to_bytes().unwrap()).is_err());
+        assert_eq!(dst2.message_count().unwrap(), 0); // fail-closed: nothing stored
+    }
+
     // 4b. Ingest rejects a replicated message whose author signature is forged.
     #[test]
     fn ingest_rejects_unauthentic_message() {

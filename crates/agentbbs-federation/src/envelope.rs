@@ -22,6 +22,16 @@ pub enum FederationPayload {
     AnnounceBoard(Board),
     /// "Here is a verified, content-addressed message; store it idempotently."
     ReplicateMessage(Message),
+    /// A signed bootstrap snapshot of a board: its metadata plus a batch of its
+    /// messages, so a fresh node can join a board in one shot (ADR-0026 G5).
+    /// The envelope's node signature vouches it's a faithful relay; each
+    /// contained message is still verified on its own signature on ingest.
+    BoardSnapshot {
+        /// The board metadata.
+        board: Board,
+        /// The board's messages (each independently signed/content-addressed).
+        messages: Vec<Message>,
+    },
     /// A peer introducing itself on link-up.
     PeerHello {
         /// The greeting node's identity.

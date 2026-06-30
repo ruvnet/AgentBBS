@@ -107,6 +107,24 @@ impl Federator {
             .await
     }
 
+    /// Build a signed bootstrap snapshot of a board (metadata + up to `limit`
+    /// messages), sealed under this node's identity, for a peer to ingest in one
+    /// shot (ADR-0026 G5). Errors if the board is unknown. The board description
+    /// is PII-scrubbed for egress, like [`announce_board`](Self::announce_board).
+    pub fn make_snapshot(&self, slug: &str, limit: usize) -> Result<FederationEnvelope> {
+        let mut board = self.store.get_board(slug)?.ok_or_else(|| {
+            agentbbs_core::Error::malformed("board", format!("unknown board: {slug}"))
+        })?;
+        let mut desc = json!({ "description": board.description });
+        strip_pii(&mut desc);
+        if let Some(d) = desc.get("description").and_then(|v| v.as_str()) {
+            board.description = d.to_string();
+        }
+        let messages = self.store.list_messages(slug, limit)?;
+        let payload = FederationPayload::BoardSnapshot { board, messages };
+        FederationEnvelope::seal(&self.identity, payload, self.next_seq())
+    }
+
     /// Open, verify, and apply an inbound envelope.
     ///
     /// 1. Parse bytes into an envelope (malformed → error).
@@ -153,6 +171,22 @@ impl Federator {
                     Event::now(EventKind::FederationReceive, board.slug.clone())
                         .by(envelope.node)
                         .with(json!({ "kind": "board" })),
+                );
+            }
+            FederationPayload::BoardSnapshot { board, messages } => {
+                // Fail closed: verify EVERY contained message before storing any,
+                // so a snapshot with one forged post is rejected wholesale.
+                for m in messages {
+                    m.verify()?;
+                }
+                self.store.put_board(board)?;
+                for m in messages {
+                    self.store.put_message(m)?;
+                }
+                self.emit(
+                    Event::now(EventKind::FederationReceive, board.slug.clone())
+                        .by(envelope.node)
+                        .with(json!({ "kind": "snapshot", "messages": messages.len() })),
                 );
             }
             FederationPayload::PeerHello { node, protocol } => {

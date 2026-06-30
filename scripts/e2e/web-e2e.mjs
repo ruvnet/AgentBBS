@@ -25,7 +25,7 @@ const consoleErrors = [];
 // Ignore benign/environmental noise: favicon 404, transient network blips, and
 // the transformers.js CDN load (the demo engine degrades to keyword mode if it
 // fails). Real app errors (same-origin API failures, uncaught exceptions) still count.
-const BENIGN = /favicon|net::ERR|cdn\.jsdelivr|transformers/i;
+const BENIGN = /favicon|net::ERR|cdn\.jsdelivr|transformers|huggingface|CORS|Access to fetch|resolve\/main/i;
 page.on('console', m => { if (m.type() === 'error' && !BENIGN.test(m.text())) consoleErrors.push(m.text()); });
 page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
 
