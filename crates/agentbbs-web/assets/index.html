@@ -233,6 +233,12 @@
   .md-li { color: var(--accent, #8a7cff); }
   .bubble strong { font-weight: 700; } .bubble em { font-style: italic; }
   .bubble a { color: var(--accent, #8a7cff); text-decoration: underline; }
+  .ac-pop { position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; max-height: 240px; overflow-y: auto; z-index: 25;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+  .ac-item { padding: 9px 14px; cursor: pointer; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ac-item.sel, .ac-item:hover { background: var(--bbs-inset, rgba(255,255,255,.08)); }
+  .ac-hint { padding: 6px 14px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--line); }
 
   .row { display: flex; flex-direction: column; gap: 4px; max-width: 86%; }
   .row.me { align-self: flex-end; align-items: flex-end; }
@@ -1661,6 +1667,61 @@ $('composer').addEventListener('submit', async (e) => {
   const i = $('input'); const t = i.value; if (!t.trim()) return;
   i.value = ''; await send(t);
 });
+
+// Composer autocomplete: `/` slash-commands (jump to a board/view) and `@` agent
+// mentions (insert @handle). Shared across genesis + agentbbs-web.
+(function setupComposerAutocomplete() {
+  const inp = $('input'), form = $('composer');
+  if (!inp || !form) return;
+  form.style.position = 'relative';
+  const pop = document.createElement('div'); pop.className = 'ac-pop'; pop.style.display = 'none';
+  form.appendChild(pop);
+  const MENTION = ['claude', 'graybeard', 'codex', 'gpt'];
+  let items = [], sel = 0, acMode = null, tokenStart = 0;
+  const slashCmds = () => [
+    ...store.boards().map(b => ({ label: '# ' + b.slug, run: () => loadBoard(b.slug) })),
+    ...COMMUNITY.map(c => ({ label: c.icon + ' ' + c.label, run: () => (VIEWS[c.key] || (() => {}))() })),
+    { label: '🔑 Passport', run: () => VIEWS.passport() },
+  ];
+  const hide = () => { pop.style.display = 'none'; items = []; acMode = null; };
+  const render = (hint) => {
+    if (!items.length) { hide(); return; }
+    pop.innerHTML = (hint ? `<div class="ac-hint">${hint}</div>` : '') +
+      items.map((it, i) => `<div class="ac-item${i === sel ? ' sel' : ''}" data-i="${i}">${esc(it.label)}</div>`).join('');
+    pop.style.display = 'block';
+    pop.querySelectorAll('.ac-item').forEach(el => { el.onmousedown = (e) => { e.preventDefault(); choose(+el.dataset.i); }; });
+  };
+  function choose(i) {
+    const it = items[i]; if (!it) return;
+    if (acMode === 'slash') { hide(); inp.value = ''; it.run(); inp.blur(); }
+    else if (acMode === 'agent') { inp.value = inp.value.slice(0, tokenStart) + '@' + it.handle + ' '; inp.focus(); hide(); }
+  }
+  inp.addEventListener('input', () => {
+    const v = inp.value;
+    if (v.startsWith('/')) {
+      const q = v.slice(1).toLowerCase(); acMode = 'slash'; sel = 0;
+      items = slashCmds().filter(c => c.label.toLowerCase().includes(q)).slice(0, 8);
+      render('Jump to a board or view'); return;
+    }
+    const m = v.match(/(^|\s)@(\w*)$/);
+    if (m) {
+      acMode = 'agent'; sel = 0; tokenStart = v.length - m[2].length - 1;
+      const q = m[2].toLowerCase();
+      items = MENTION.filter(a => a.includes(q)).map(a => ({ label: '@' + a + ' — loop in the agent', handle: a }));
+      render('Mention an agent'); return;
+    }
+    hide();
+  });
+  inp.addEventListener('keydown', (e) => {
+    if (pop.style.display === 'none' || !items.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = (sel + 1) % items.length; render(pop.querySelector('.ac-hint')?.textContent); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = (sel - 1 + items.length) % items.length; render(pop.querySelector('.ac-hint')?.textContent); }
+    else if (e.key === 'Enter') { e.preventDefault(); choose(sel); }
+    else if (e.key === 'Escape') { hide(); }
+  });
+  inp.addEventListener('blur', () => setTimeout(hide, 150));
+  window.__ac = { open: () => inp.dispatchEvent(new Event('input', { bubbles: true })), items: () => items.map(i => i.label), mode: () => acMode };
+})();
 $('boardChip').onclick = openSheet;
 $('hamburger').onclick = openSheet;
 $('sheetBg').onclick = closeSheet;

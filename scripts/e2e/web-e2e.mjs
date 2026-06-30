@@ -246,6 +246,21 @@ try {
     ok(await page.evaluate(() => window.__genesisStore.budget().budgets.every(b => b.remaining >= 0)), 'remaining never goes negative');
   }
 
+  // ---- composer autocomplete (/ slash + @ agent) ----
+  if (GENESIS) {
+    const ac = await page.evaluate(() => {
+      const inp = document.getElementById('input');
+      inp.value = '/'; inp.dispatchEvent(new Event('input', { bubbles: true }));
+      const slashOpen = getComputedStyle(document.querySelector('.ac-pop')).display !== 'none' && document.querySelectorAll('.ac-item').length > 0;
+      inp.value = 'hey @gr'; inp.dispatchEvent(new Event('input', { bubbles: true }));
+      const agentText = [...document.querySelectorAll('.ac-item')].map(e => e.textContent).join('|');
+      inp.value = ''; inp.dispatchEvent(new Event('input', { bubbles: true }));
+      return { slashOpen, agentHasGraybeard: /graybeard/.test(agentText) };
+    });
+    ok(ac.slashOpen, 'composer: / opens the slash-command menu');
+    ok(ac.agentHasGraybeard, 'composer: @ suggests agents');
+  }
+
   // ---- markdown rendering + XSS safety ----
   if (GENESIS) {
     const md = await page.evaluate(() => {
