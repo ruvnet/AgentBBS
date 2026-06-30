@@ -305,6 +305,35 @@ mod tests {
         assert_eq!(after[0].trust, TrustLevel::Trusted);
     }
 
+    // G5 + ADR-0043: web-of-trust auto-promotes a discovered (Unknown) peer to
+    // Linked when a trusted root endorses it within depth.
+    #[test]
+    fn web_of_trust_auto_promotes_endorsed_peers() {
+        let root = Identity::generate();
+        let x = Identity::generate().id();
+        let mut book = PeerBook::new();
+        book.add(Peer::new(root.id(), "tcp://root", TrustLevel::Trusted));
+        book.add(Peer::new(x, "tcp://x", TrustLevel::Unknown));
+        let fed = Federator::new(
+            Identity::generate(),
+            Arc::new(agentbbs_core::MemoryStore::new()),
+            Arc::new(NullReporter),
+            Arc::new(LoopbackTransport::new()),
+            book,
+        );
+        fed.endorse(Endorsement::sign(&root, x, Utc::now()))
+            .unwrap();
+        assert_eq!(
+            fed.peers().iter().find(|p| p.node == x).unwrap().trust,
+            TrustLevel::Unknown
+        );
+        assert_eq!(fed.promote_via_trust(1), 1);
+        assert_eq!(
+            fed.peers().iter().find(|p| p.node == x).unwrap().trust,
+            TrustLevel::Linked
+        );
+    }
+
     // 4b. Ingest rejects a replicated message whose author signature is forged.
     #[test]
     fn ingest_rejects_unauthentic_message() {

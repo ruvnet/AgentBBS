@@ -19,9 +19,10 @@ use agentbbs_core::{Board, Event, EventKind, Identity, Message, Reporter, Result
 use serde_json::json;
 
 use crate::envelope::{FederationEnvelope, FederationPayload};
-use crate::peer::PeerBook;
+use crate::peer::{Peer, PeerBook, TrustLevel};
 use crate::pii::strip_pii;
 use crate::transport::Transport;
+use crate::webtrust::{Endorsement, WebOfTrust};
 
 /// Zero-trust federation node.
 pub struct Federator {
@@ -30,6 +31,7 @@ pub struct Federator {
     reporter: Arc<dyn Reporter>,
     transport: Arc<dyn Transport>,
     peers: RwLock<PeerBook>,
+    web: RwLock<WebOfTrust>,
     seq: AtomicU64,
 }
 
@@ -49,8 +51,47 @@ impl Federator {
             reporter,
             transport,
             peers: RwLock::new(peers),
+            web: RwLock::new(WebOfTrust::new()),
             seq: AtomicU64::new(0),
         }
+    }
+
+    /// Record a verified peer endorsement into the web of trust (ADR-0043).
+    pub fn endorse(&self, endorsement: Endorsement) -> Result<()> {
+        self.web.write().unwrap().add(endorsement)
+    }
+
+    /// Auto-promote discovered (`Unknown`) peers to `Linked` when they are
+    /// reachable within `max_depth` of the current trusted set in the web of
+    /// trust (ADR-0043). Returns the number promoted. Trust still governs egress
+    /// only — ingest re-verifies every message regardless.
+    pub fn promote_via_trust(&self, max_depth: u32) -> usize {
+        let (roots, unknowns) = {
+            let book = self.peers.read().unwrap();
+            let roots: Vec<agentbbs_core::AgentId> =
+                book.trusted().iter().map(|p| p.node).collect();
+            let unknowns: Vec<Peer> = book
+                .all()
+                .into_iter()
+                .filter(|p| p.trust == TrustLevel::Unknown)
+                .collect();
+            (roots, unknowns)
+        };
+        if roots.is_empty() {
+            return 0;
+        }
+        let web = self.web.read().unwrap();
+        let mut promoted = 0;
+        for p in unknowns {
+            if web.is_trusted(&p.node, &roots, max_depth) {
+                self.peers
+                    .write()
+                    .unwrap()
+                    .add(Peer::new(p.node, p.addr, TrustLevel::Linked));
+                promoted += 1;
+            }
+        }
+        promoted
     }
 
     /// This node's public id.
