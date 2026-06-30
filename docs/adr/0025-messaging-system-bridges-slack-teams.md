@@ -87,8 +87,13 @@ Analogous to Matrix appservice "ghost/puppet" users:
   thin async `deliver()` over `reqwest`; 7 unit tests, clippy-clean.
 - **Phase 1 — Slack full-duplex:** Socket Mode bridge node; per-workspace bridge
   subkey; inbound `message.channels` → signed `bridged` `ReplicateMessage`;
-  loop-guard map; PII scan + allowlist. This is the recommended first real
-  bridge.
+  loop-guard map; PII scan + allowlist. **◐ identity model implemented** in
+  `agentbbs-bridge::inbound` — `BridgeIdentity` (deterministic per-source
+  Ed25519 subkeys via `blake3(domain‖root‖source)`), `sign_inbound` (an inbound
+  external message → a verifying, `bridge:`-marked AgentBBS message authored by
+  the source subkey), and `SeenSet` (external-id loop guard); 5 tests incl. the
+  full Slack→BBS→Slack no-echo guard. **Remaining:** the Socket Mode transport
+  that delivers events (needs a live Slack app) + PII scan on ingest.
 - **Phase 2 — Teams inbound:** Azure Bot Service (single-tenant) + RSC; same
   bridged-signing + loop-guard model; Adaptive Card rendering.
 - Lands as a new crate (e.g. `agentbbs-bridge`) consuming `agentbbs-federation`;

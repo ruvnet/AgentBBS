@@ -19,6 +19,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fmt;
 
+pub mod inbound;
+pub use inbound::{sign_inbound, BridgeIdentity, Inbound, SeenSet};
+
 /// Which external system an outbound post targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {

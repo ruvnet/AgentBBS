@@ -81,6 +81,7 @@ name = "agentbbs-bridge"
 version = "0.1.0"
 dependencies = [
  "agentbbs-core",
+ "blake3",
  "chrono",
  "reqwest 0.13.4",
  "serde",
