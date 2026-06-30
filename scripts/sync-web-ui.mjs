@@ -48,8 +48,8 @@ const store = {
   board: (s) => _get('/api/boards/' + encodeURIComponent(s)),
   arena: () => _c.arena, retort: () => _c.retort, online: () => _c.online,
   doors: () => _c.doors, federation: () => _c.federation, report: () => _c.report, market: () => _c.market,
-  post: async (seed, { board, body, handle }) => {
-    const signed = await BBS.signPost(seed, { board, body, handle });
+  post: async (seed, { board, body, handle, parent = null }) => {
+    const signed = await BBS.signPost(seed, { board, body, handle, parent });
     const r = await fetch('/api/boards/' + encodeURIComponent(board) + '/signed', { method: 'POST', headers: H, body: JSON.stringify(signed) });
     if (!r.ok) { try { const j = await r.json(); return { ok: false, error: j.error || 'post failed' }; } catch (_) { return { ok: false, error: 'post failed' }; } }
     return { ok: true };
@@ -78,7 +78,9 @@ async function send(text) {
   if (text.trim() === '/arena') { VIEWS.arena(); return; }
   if (text.trim() === '/retort') { VIEWS.retort(); return; }
   if (text.trim() === '/passport' || text.trim() === '/keys') { VIEWS.passport(); return; }
-  const res = await store.post(identity.seed, { board: current, body: text, handle: 'you' });
+  const parent = replyTo ? replyTo.id : null;
+  clearReply();
+  const res = await store.post(identity.seed, { board: current, body: text, handle: 'you', parent });
   if (!res.ok) { alert(res.error || 'post rejected'); return; }
   await loadBoard(current);
   // The node appends any agent reply server-side; refetch shortly after.

@@ -397,6 +397,9 @@ struct StateResponse {
 #[derive(Serialize)]
 struct MessageView {
     id: String,
+    /// Parent message id for threaded replies (ADR-0027 / G4), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
     handle: String,
     author: String,
     subject: String,
@@ -660,6 +663,7 @@ async fn api_board(
         .into_iter()
         .map(|m| MessageView {
             id: m.id.0.clone(),
+            parent: m.body.parent.as_ref().map(|p| p.0.clone()),
             agent: looks_like_agent(&m.body.handle),
             verified: m.verify().is_ok(),
             handle: if m.body.handle.is_empty() {
@@ -722,6 +726,7 @@ async fn api_post(
     }
     Ok(Json(MessageView {
         id: String::new(),
+        parent: None,
         handle: handle.clone(),
         author: state.identity_for(&session).short(),
         subject,
@@ -799,6 +804,7 @@ async fn api_post_signed(
         .map_err(|_| api_error(StatusCode::BAD_REQUEST, "signature verification failed"))?;
     let view = MessageView {
         id: message.id.0.clone(),
+        parent: message.body.parent.as_ref().map(|p| p.0.clone()),
         agent: looks_like_agent(&message.body.handle),
         verified: true,
         handle: if message.body.handle.is_empty() {
@@ -1336,6 +1342,77 @@ mod tests {
             .unwrap()
             .iter()
             .any(|m| { m["body"] == "signed in the browser" && m["verified"] == true }));
+    }
+
+    #[tokio::test]
+    async fn signed_post_with_parent_threads() {
+        use agentbbs_core::{Identity, Message, MessageBody, MessageId};
+        let app = router(AppState::in_memory());
+        // Post a root message, then read its id back.
+        let (root, _) = signed_payload("the root question");
+        app.clone()
+            .oneshot(
+                Request::post("/api/boards/general/signed")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&root).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let board = get_json(&app, "/api/boards/general").await;
+        let root_id = board["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["body"] == "the root question")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Sign a reply whose parent is the root id (parent is in the signing bytes).
+        let id = Identity::generate();
+        let body = MessageBody {
+            board: "general".into(),
+            parent: Some(MessageId(root_id.clone())),
+            subject: "re".into(),
+            body: "the threaded answer".into(),
+            author: id.id(),
+            handle: "you".into(),
+            created_at: chrono::Utc::now(),
+        };
+        let msg = Message::sign(&id, body.clone()).unwrap();
+        let payload = serde_json::json!({
+            "parent": root_id,
+            "subject": body.subject,
+            "body": body.body,
+            "author": id.id().to_hex(),
+            "handle": body.handle,
+            "created_at": body.created_at.to_rfc3339(),
+            "signature": msg.signature.to_hex(),
+        });
+        assert_eq!(
+            app.clone()
+                .oneshot(
+                    Request::post("/api/boards/general/signed")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                        .unwrap()
+                )
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        // The board read must expose the parent so the UI can thread it (G4).
+        let board = get_json(&app, "/api/boards/general").await;
+        let reply = board["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["body"] == "the threaded answer")
+            .unwrap();
+        assert_eq!(reply["parent"], root_id);
+        assert_eq!(reply["verified"], true);
     }
 
     #[tokio::test]

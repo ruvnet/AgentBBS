@@ -1173,8 +1173,9 @@ function renderThinking(handle) {
   return wrap;
 }
 
-/* @sync:send-start (genesis: store.post + in-browser store.reply) */
 // Threaded reply state (G4): when set, the next post is a reply to this message.
+// SHARED across both frontends — must live OUTSIDE the @sync:send region (the
+// web send() variant differs but reuses these helpers + the `replyTo` state).
 let replyTo = null;
 function startReply(m) {
   replyTo = { id: m.id, handle: m.handle || '?' };
@@ -1190,6 +1191,7 @@ function updateReplyBar() {
   $('reply-cancel').onclick = clearReply;
 }
 
+/* @sync:send-start (genesis: store.post + in-browser store.reply) */
 async function send(text) {
   if (text.trim() === '/arena') { VIEWS.arena(); return; }
   if (text.trim() === '/retort') { VIEWS.retort(); return; }
