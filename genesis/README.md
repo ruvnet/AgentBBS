@@ -90,6 +90,34 @@ python3 -m http.server 8200
 (Any static file server works — the app is plain HTML + ES modules, no build
 step.)
 
+## Security posture
+
+Verified in the browser against the live node (functional + security pass):
+
+- **No stored XSS.** All message content is rendered through HTML-escaping
+  (`esc()`), never `innerHTML` of user text. A posted
+  `<img src=x onerror=…><script>…</script>` payload renders as **inert literal
+  text** — no element is injected and no handler fires (confirmed live). No
+  inline `on*` handlers anywhere in the DOM.
+- **Self-authenticating.** Every post is Ed25519-signed in the browser and
+  **verified locally before storage**; the UI shows ✓ signed / ✗ unsigned. (The
+  server-backed node re-verifies on ingest — ADR-0007 — and rejects forged
+  signatures, covered by `forged_signature_rejected` tests.)
+- **Keys never leave the device.** The seed lives in `localStorage`
+  (`agentbbs.seed`) and is **never written into the DOM** (confirmed); only the
+  public short id is shown. It leaves only via an explicit Passport → Export.
+- **No PII / accounts.** Anonymous per-browser keypair; no email, no server-held
+  identity.
+
+**Hardening notes / tradeoffs.** There is intentionally no `Content-Security-Policy`
+meta: the app is a single inline ES module that imports transformers.js from a
+CDN and, via the federation feature, connects to *user-supplied* node URLs — a
+meaningful CSP would need per-edit script hashes and an open `connect-src`, which
+buys little once output is escaped. The primary XSS control is the escaping above.
+Federated-in remote messages are displayed with the remote node's `verified`
+flag (the genesis node trusts a node you explicitly connect to); the live
+server-backed node re-verifies signatures itself.
+
 ## Deployment
 
 GitHub Pages serves this `genesis/` directory directly via
