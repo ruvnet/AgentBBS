@@ -246,6 +246,19 @@ try {
     ok(await page.evaluate(() => window.__genesisStore.budget().budgets.every(b => b.remaining >= 0)), 'remaining never goes negative');
   }
 
+  // ---- Budget: top up a pod's cap (interactive) ----
+  if (GENESIS) {
+    const r = await page.evaluate(async () => {
+      window.__ui.VIEWS.budget(); await new Promise(s => setTimeout(s, 150));
+      const b0 = window.__genesisStore.budget().budgets[0];
+      window.__genesisStore.topUpCap(b0.pod_id, 0.10);
+      const b1 = window.__genesisStore.budget().budgets.find(x => x.pod_id === b0.pod_id);
+      return { hasBtn: !!document.querySelector('#thread [data-topup]'), raised: Math.abs((b1.cap - b0.cap) - 0.10) < 1e-9 };
+    });
+    ok(r.hasBtn, 'Budget rows have a + cap (top-up) button');
+    ok(r.raised, 'topping up raises the pod cap by $0.10');
+  }
+
   // ---- Pods: spawn a pod from the UI (interactive) ----
   if (GENESIS) {
     const r = await page.evaluate(async () => {

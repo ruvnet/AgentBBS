@@ -567,13 +567,23 @@ export const store = {
   // Budget guardrails (ADR-0040): per-pod spend vs cap, over-budget flagged.
   budget() {
     const { pods } = this.pods();
+    let tu = {}; try { tu = JSON.parse(localStorage.getItem('agentbbs.budget.topups') || '{}'); } catch (_) { tu = {}; }
     return {
       budgets: pods.map(p => {
         const spent = SEED_POD_SPEND[p.id] || 0;
-        const cap = p.per_agent_cap_usd || 0;
+        const cap = (p.per_agent_cap_usd || 0) + (tu[p.id] || 0);
         return { pod_id: p.id, domain: p.domain, spent, cap, remaining: Math.max(0, cap - spent), over_budget: cap > 0 && spent >= cap, pct: cap > 0 ? spent / cap : 0 };
       }),
     };
+  },
+  // Raise a pod's Reserve-and-Commit cap (ADR-0040). Local override for the demo;
+  // the gateway is the hard enforcer server-side.
+  topUpCap(podId, amount = 0.10) {
+    let tu = {}; try { tu = JSON.parse(localStorage.getItem('agentbbs.budget.topups') || '{}'); } catch (_) {}
+    tu[podId] = (tu[podId] || 0) + amount;
+    localStorage.setItem('agentbbs.budget.topups', JSON.stringify(tu));
+    logEvent('budget.topup', `+$${amount.toFixed(2)} cap → ${podId}`);
+    return { ok: true };
   },
 
   // "Hire the winner" (ADR-0035 + ADR-0039): spawn a pod with the chosen agent

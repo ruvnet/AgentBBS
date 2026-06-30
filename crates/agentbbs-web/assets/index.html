@@ -1145,12 +1145,17 @@ function showBudget() {
     return `<div class="bbs-row"><span class="c"><b>${esc(b.domain)}</b> <span class="d">${esc(b.pod_id)}</span><br>` +
       `<span style="display:inline-block;width:160px;height:6px;background:var(--bbs-inset,#222);border-radius:3px;overflow:hidden;vertical-align:middle">` +
       `<span style="display:block;height:100%;width:${(pct * 100).toFixed(0)}%;background:${barColor}"></span></span></span>` +
-      `<span class="r">$${b.spent.toFixed(3)} / $${b.cap.toFixed(2)} ${badge}</span></div>`;
+      `<span class="r">$${b.spent.toFixed(3)} / $${b.cap.toFixed(2)} ${badge} ` +
+      `<button class="bbs-btn" data-topup="${esc(b.pod_id)}" title="Raise this pod's cap by $0.10">+ cap</button></span></div>`;
   }).join('');
   panel('Budget Guardrails',
-    'Per-pod spend vs its Reserve-and-Commit cap (ADR-0040). Over-budget pods are flagged; the gateway is the hard enforcer.',
+    'Per-pod spend vs its Reserve-and-Commit cap (ADR-0040). Over-budget pods are flagged; raise a cap with + cap. The gateway is the hard enforcer.',
     rows || '<div class="bbs-row"><span class="d">No pods to budget.</span></div>',
     'Spend is fed by pod step-results (cost_usd) + the meta-llm usage ledger.');
+  document.querySelectorAll('#thread [data-topup]').forEach(el => el.onclick = () => {
+    const r = store.topUpCap(el.dataset.topup, 0.10);
+    if (r && r.ok) { notify(`Raised cap +$0.10 for ${el.dataset.topup}`, 'agent'); showBudget(); }
+  });
 }
 
 // ---- Agent Directory (ADR-0039) — hire by reputation ----
