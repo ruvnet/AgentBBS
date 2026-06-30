@@ -23,7 +23,7 @@ v0-hardening.
 | G1 | **Bridge runnable surface** — Phase-0 outbound exists as a lib but nothing invokes it | ✓ shipped — `agentbbs-bridge` bin (stdin→plan→deliver, `--dry-run`) | 0025 | **P1** |
 | G2 | **Bridge inbound (Slack Socket Mode) + bridge-signing identity** (per-source subkeys, `bridged` envelope metadata, loop-guard map) | not built | 0025 (Phase 1) | **P1** |
 | G3 | **Bridge inbound (Teams: Azure Bot + RSC)** | not built | 0025 (Phase 2) | P2 |
-| G4 | **UI threading** — `MessageBody.parent` exists; the web UI renders flat | data only, no UI | 0013/0024 | **P1** |
+| G4 | **UI threading** — `MessageBody.parent` exists; the web UI renders flat | ✓ shipped — reply-in-thread + indented render (ADR-0027) | 0013/0024 | **P1** |
 | G5 | **Federation auto-sync** — peer discovery, signed board snapshots for bootstrap, CRDT/gossip convergence (today: manual node URL) | manual only | 0007/0017 | P2 |
 | G6 | **RVF ANN index** — search is brute-force O(n·dim); not byte-compatible with RuVector | v0 brute force | 0006 | P2 |
 | G7 | **Marketplace real install/credits** — listings act cosmetically; no purchase/credit ledger or arbitrary-plugin install | illustrative | 0011/0009 | P3 |

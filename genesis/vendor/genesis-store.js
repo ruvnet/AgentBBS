@@ -312,8 +312,8 @@ export const store = {
   // reply is generated separately via reply() so the UI can show the human
   // message immediately and a "thinking" indicator while the model responds.
   // Returns { ok, error }.
-  async post(seedHex, { board, body, handle = 'you' }) {
-    const built = await buildVerifiedMessage(seedHex, { board, body, handle });
+  async post(seedHex, { board, body, handle = 'you', parent = null }) {
+    const built = await buildVerifiedMessage(seedHex, { board, body, handle, parent });
     if (!built.ok) {
       logEvent('post.rejected', built.error, 'Warn');
       return { ok: false, error: built.error };
@@ -323,7 +323,7 @@ export const store = {
 
     // Best-effort federation to a live node (non-fatal).
     const signed = {
-      board, parent: null, subject: built.message.subject, body: built.message.body,
+      board, parent: built.message.parent || null, subject: built.message.subject, body: built.message.body,
       author: built.message.author, handle: built.message.handle,
       created_at: built.message.created_at, signature: built.message.signature,
     };

@@ -75,6 +75,17 @@ try {
   await page.waitForTimeout(120);
   ok(await page.evaluate(() => /Who's online/.test(document.getElementById('rbHead').textContent)), 'right rail: back returns to online');
 
+  // ---- threaded reply (G4) ----
+  await page.click('.row.me .bubble');
+  await page.waitForTimeout(120);
+  await page.click('#rb-reply');
+  ok(await page.evaluate(() => getComputedStyle(document.getElementById('replyBar')).display !== 'none'), 'threading: "Reply in thread" shows the reply bar');
+  await page.fill('#input', 'this is a threaded reply');
+  await page.click('#send');
+  await page.waitForFunction(() => [...document.querySelectorAll('.row.reply')].some(r => /threaded reply/.test(r.textContent)), { timeout: 8000 }).catch(() => {});
+  ok(await page.evaluate(() => [...document.querySelectorAll('.row.reply')].some(r => /threaded reply/.test(r.textContent))), 'threading: reply renders indented (.row.reply) under its parent');
+  ok(await page.evaluate(() => getComputedStyle(document.getElementById('replyBar')).display === 'none'), 'threading: reply bar clears after posting');
+
   // ---- community: Arena (sidebar) ----
   await page.click('[data-nav="view:arena"]');
   await page.waitForTimeout(300);

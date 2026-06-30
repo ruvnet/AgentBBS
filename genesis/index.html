@@ -234,6 +234,17 @@
   .sig { color: var(--green); font-size: 10px; }
   .sig.bad { color: var(--bad); }
 
+  /* Threaded replies (G4): rendered under their parent, left-aligned + indented */
+  .row.reply { align-self: flex-start; align-items: flex-start; max-width: 86%;
+    margin-left: var(--reply-indent, 22px); border-left: 2px solid var(--accentSoft); padding-left: 10px; }
+  .row.reply .meta::before { content: "↳ "; color: var(--muted); }
+
+  /* "Replying to …" composer bar */
+  .reply-bar { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; padding: 6px 12px;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; font-size: 13px; color: var(--muted); }
+  .reply-bar b { color: var(--fg); }
+  .reply-bar .x { margin-left: auto; cursor: pointer; color: var(--muted); background: transparent; border: 0; font-size: 15px; }
+
   /* Agent action status lines (the "looped in" stream) */
   .action { display: flex; gap: 8px; align-items: flex-start; color: var(--muted); font-size: 14.5px; padding: 1px 2px; }
   .action .mk { margin-top: 2px; }
@@ -386,6 +397,7 @@
     <div class="chips" id="chips"></div>
 
     <footer>
+      <div class="reply-bar" id="replyBar" style="display:none"></div>
       <form class="composer" id="composer" autocomplete="off">
         <span class="plus">+</span>
         <input id="input" placeholder="Ask AgentBBS…" />
@@ -600,9 +612,10 @@ function setHeading(name, desc) {
   if (chip) chip.textContent = name.startsWith('#') ? name.slice(1).trim() : name.replace(/^[^ ]+ /, '').toLowerCase() || name;
 }
 
-function renderMessage(m) {
+function renderMessage(m, depth = 0) {
   const mine = m.handle === 'you' || (m.handle || '').startsWith('you-') || (me && m.author === me.id);
   const agent = m.agent ?? isAgent(m.handle);
+  const threadify = (el) => { if (depth > 0) { el.classList.add('reply'); el.style.setProperty('--reply-indent', (depth * 22) + 'px'); } };
   if (agent && /^[\s]*[•▸✓\-]/m.test(m.body)) {
     const lines = m.body.split('\n').filter(Boolean);
     const wrap = document.createElement('div');
@@ -616,6 +629,7 @@ function renderMessage(m) {
       }).join('');
     wrap.classList.add('tappable');
     wrap.onclick = () => showDetails(m);
+    threadify(wrap);
     return wrap;
   }
   const row = document.createElement('div');
@@ -629,6 +643,7 @@ function renderMessage(m) {
     `<div class="bubble">${subj}${esc(m.body)}</div>`;
   row.classList.add('tappable');
   row.onclick = () => showDetails(m);
+  threadify(row);
   return row;
 }
 
@@ -665,7 +680,18 @@ async function loadBoard(slug, { keepScroll } = {}) {
     empty.innerHTML = '<span class="mk dot">•</span><span>No messages yet — say something, or loop in an agent.</span>';
     thread.appendChild(empty);
   }
-  data.messages.forEach(m => thread.appendChild(renderMessage(m)));
+  // Threaded render (G4): replies (messages with `parent`) are drawn beneath
+  // their parent, indented by depth. Messages whose parent isn't on this board
+  // are treated as top-level.
+  const msgs = data.messages;
+  const ids = new Set(msgs.map(m => m.id));
+  const byParent = new Map();
+  msgs.forEach(m => { if (m.parent && ids.has(m.parent)) { (byParent.get(m.parent) || byParent.set(m.parent, []).get(m.parent)).push(m); } });
+  const renderThread = (m, depth) => {
+    thread.appendChild(renderMessage(m, depth));
+    (byParent.get(m.id) || []).forEach(r => renderThread(r, depth + 1));
+  };
+  msgs.forEach(m => { if (!(m.parent && ids.has(m.parent))) renderThread(m, 0); });
   if (!keepScroll) thread.scrollTop = thread.scrollHeight;
   markActive();
 }
@@ -1092,8 +1118,10 @@ function renderRightbar() {
       ['id', esc(m.id || '')],
     ];
     list.innerHTML = `<div class="rb-detail"><div class="rb-quote">${esc((m.body || '').slice(0, 280))}</div>` +
-      kv.map(([k, v]) => `<div class="rb-kv"><span class="rb-k">${k}</span><span class="rb-v">${v}</span></div>`).join('') + `</div>`;
+      kv.map(([k, v]) => `<div class="rb-kv"><span class="rb-k">${k}</span><span class="rb-v">${v}</span></div>`).join('') +
+      `<div style="margin-top:12px"><button class="chip" id="rb-reply">↳ Reply in thread</button></div></div>`;
     $('rb-back').onclick = rbBackToOnline;
+    $('rb-reply').onclick = () => startReply(m);
     return;
   }
   const d = store.online(me ? me.short : '');
@@ -1146,13 +1174,31 @@ function renderThinking(handle) {
 }
 
 /* @sync:send-start (genesis: store.post + in-browser store.reply) */
+// Threaded reply state (G4): when set, the next post is a reply to this message.
+let replyTo = null;
+function startReply(m) {
+  replyTo = { id: m.id, handle: m.handle || '?' };
+  updateReplyBar();
+  const i = $('input'); if (i) i.focus();
+}
+function clearReply() { replyTo = null; updateReplyBar(); }
+function updateReplyBar() {
+  const bar = $('replyBar'); if (!bar) return;
+  if (!replyTo) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  bar.style.display = 'flex';
+  bar.innerHTML = `<span>↳ replying to <b>@${esc(replyTo.handle)}</b></span><button class="x" id="reply-cancel" title="Cancel reply">✕</button>`;
+  $('reply-cancel').onclick = clearReply;
+}
+
 async function send(text) {
   if (text.trim() === '/arena') { VIEWS.arena(); return; }
   if (text.trim() === '/retort') { VIEWS.retort(); return; }
   if (text.trim() === '/passport' || text.trim() === '/keys') { VIEWS.passport(); return; }
   const currentAtPost = current; // the board we posted to (the async reply may outlive a nav away)
+  const parent = replyTo ? replyTo.id : null;
+  clearReply();
   // Sign + verify the post in THIS browser; the genesis node self-authenticates before storing.
-  const res = await store.post(identity.seed, { board: current, body: text, handle: 'you' });
+  const res = await store.post(identity.seed, { board: current, body: text, handle: 'you', parent });
   if (!res.ok) { alert(res.error || 'post rejected'); return; }
   await loadBoard(current);
   if (mode === 'board' && !liveNode()) {
