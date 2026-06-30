@@ -271,6 +271,41 @@ if (missing.length) {
   }
 }
 
+// --- Cache-bust guard ---
+// If any vendor file's content actually changed since the last committed sync,
+// the `?v=live-N` cache-bust token in the genesis-store.js import MUST also
+// have changed — otherwise a browser that cached the old genesis-store.js under
+// the unchanged URL keeps serving stale code after deploy (silently, since
+// Pages always serves current bytes regardless of query string — only the
+// browser's OWN cache key is affected). This bit four fires in a row before
+// being caught: each one bumped `sed`-style from an assumed prior version that
+// had itself silently failed to bump, so the token never actually moved while
+// vendor content kept changing underneath it.
+{
+  let vendorChanged = false;
+  for (const f of VENDOR) {
+    const newContent = readFileSync(resolve(ROOT, 'genesis/vendor', f), 'utf8');
+    const oldPath = resolve(ROOT, 'crates/agentbbs-web/assets/vendor', f);
+    let oldContent = null;
+    try { oldContent = readFileSync(oldPath, 'utf8'); } catch (_) { /* first sync */ }
+    if (oldContent !== null && oldContent !== newContent) vendorChanged = true;
+  }
+  if (vendorChanged) {
+    let oldHtml = null;
+    try { oldHtml = readFileSync(DST, 'utf8'); } catch (_) { /* first sync */ }
+    const tokenOf = (s) => (s && (s.match(/genesis-store\.js\?v=([\w.-]+)/) || [])[1]) || null;
+    const oldToken = tokenOf(oldHtml);
+    const newToken = tokenOf(html);
+    if (oldHtml !== null && oldToken !== null && oldToken === newToken) {
+      console.error(
+        `sync-web-ui: genesis/vendor/*.js content changed but the cache-bust token (?v=${newToken}) in genesis/index.html did NOT. ` +
+        `Bump it (e.g. ?v=live-${(parseInt((newToken || '').replace(/\D/g, ''), 10) || 0) + 1}) so browsers fetch the new code instead of a stale cached copy.`,
+      );
+      process.exit(4);
+    }
+  }
+}
+
 const header = `<!-- GENERATED FROM genesis/index.html BY scripts/sync-web-ui.mjs — DO NOT EDIT BY HAND.\n     Edit genesis/index.html (the single source of truth, ADR-0024) and re-run the script. -->\n`;
 writeFileSync(DST, header + html);
 
