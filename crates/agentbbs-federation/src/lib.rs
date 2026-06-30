@@ -21,6 +21,7 @@
 #![warn(missing_docs)]
 
 pub mod adapter;
+pub mod collab;
 pub mod envelope;
 pub mod federator;
 pub mod peer;
@@ -32,6 +33,7 @@ pub use adapter::{
     AgentDbAdapter, CommandRunner, FakeCommandRunner, MemoryRecord, RufloAdapter,
     TokioCommandRunner,
 };
+pub use collab::{GitHubAdapter, JujutsuAdapter, MergeMethod};
 pub use envelope::{FederationEnvelope, FederationPayload};
 pub use federator::Federator;
 pub use peer::{Peer, PeerBook, PeerInfo, TrustLevel};
