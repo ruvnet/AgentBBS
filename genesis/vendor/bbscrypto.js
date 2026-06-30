@@ -12,6 +12,7 @@
 //    `to_rfc3339()` re-renders it byte-identically on the server.
 
 import * as ed from './noble-ed25519.js';
+import { blake3hex } from './blake3.js';
 
 const enc = new TextEncoder();
 
@@ -54,6 +55,29 @@ export function signingBytes({ board, parent, subject, author, handle, createdAt
     enc.encode(`${bodyBytes.length}:`),
     bodyBytes,
   ]);
+}
+
+// Canonical decision content bytes — must match agentbbs-core decision.rs
+// (`content_bytes`, domain "agentbbs.decision.v1"; each field byte-length-prefixed).
+export function decisionBytes({ title, decision, rationale, board, decidedBy, decidedAt }) {
+  const fields = [title, decision, rationale, board, decidedBy, decidedAt].map((f) => enc.encode(f || ''));
+  const chunks = [enc.encode('agentbbs.decision.v1\n')];
+  for (const f of fields) chunks.push(enc.encode(`${f.length}:`), f, enc.encode('\n'));
+  return concat(chunks);
+}
+
+// Build a fully signed DecisionRecord (ADR-0045) for POST /api/decisions: the
+// content-addressed BLAKE3 id + an Ed25519 signature over the same bytes, so the
+// server's verify (id AND signature) accepts it.
+export async function signDecision(seedHex, { title, decision, rationale, board, decidedAt }) {
+  const decidedBy = await agentId(seedHex);
+  const at = decidedAt || rfc3339();
+  const bytes = decisionBytes({ title, decision, rationale: rationale || '', board, decidedBy, decidedAt: at });
+  const sig = await ed.signAsync(bytes, unhex(seedHex));
+  return {
+    id: blake3hex(bytes), title, decision, rationale: rationale || '', board,
+    decided_by: decidedBy, decided_at: at, signature: hex(sig),
+  };
 }
 
 // ---- identity / key management ----

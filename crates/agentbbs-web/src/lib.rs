@@ -372,6 +372,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/manifest.webmanifest", get(manifest))
         .route("/vendor/bbscrypto.js", get(js_bbscrypto))
         .route("/vendor/noble-ed25519.js", get(js_noble))
+        .route("/vendor/blake3.js", get(js_blake3))
         .route("/api/state", get(api_state))
         .route("/api/boards/{slug}", get(api_board).post(api_post))
         .route("/api/boards/{slug}/signed", post(api_post_signed))
@@ -467,6 +468,15 @@ async fn js_noble() -> impl IntoResponse {
     (
         [("content-type", JS_CT)],
         include_str!("../assets/vendor/noble-ed25519.js"),
+    )
+}
+
+/// Vendored BLAKE3 (content-addressed ids; imported by bbscrypto for signed
+/// decision records and JS↔Rust message-id parity).
+async fn js_blake3() -> impl IntoResponse {
+    (
+        [("content-type", JS_CT)],
+        include_str!("../assets/vendor/blake3.js"),
     )
 }
 

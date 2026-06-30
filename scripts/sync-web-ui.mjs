@@ -16,7 +16,7 @@ import { dirname, resolve } from 'node:path';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = resolve(ROOT, 'genesis/index.html');
 const DST = resolve(ROOT, 'crates/agentbbs-web/assets/index.html');
-const VENDOR = ['bbscrypto.js', 'noble-ed25519.js'];
+const VENDOR = ['bbscrypto.js', 'noble-ed25519.js', 'blake3.js'];
 
 let html = readFileSync(SRC, 'utf8');
 
@@ -103,9 +103,19 @@ const store = {
       const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'spawn failed' };
     } catch (_) { return { ok: false, error: 'spawn failed' }; }
   },
-  // Server-side signed decisions + budget cap top-up are follow-ups (the genesis
-  // node does these locally); stub honestly so the shared UI never crashes.
-  recordDecision: async () => ({ ok: false, error: 'server-side signed decisions land in a follow-up — use the genesis node' }),
+  // Record a decision (ADR-0045): build a signed DecisionRecord in-browser and
+  // POST it to the federated log (/api/decisions verifies id + signature).
+  recordDecision: async (seed, { title, decision, rationale, board = 'general' }) => {
+    if (!title || !decision) return { ok: false, error: 'title and decision are required' };
+    try {
+      const rec = await BBS.signDecision(seed, { title, decision, rationale, board });
+      const r = await fetch('/api/decisions', { method: 'POST', headers: H, body: JSON.stringify(rec) });
+      if (r.ok) { await _sync(); return { ok: true, rec }; }
+      const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'record failed' };
+    } catch (_) { return { ok: false, error: 'record failed' }; }
+  },
+  // Budget cap top-up has no server endpoint yet (the genesis node does it
+  // locally); stub honestly so the shared UI never crashes.
   topUpCap: () => ({ ok: false, error: 'server-side cap top-up lands in a follow-up' }),
   sync: _sync,
 };
