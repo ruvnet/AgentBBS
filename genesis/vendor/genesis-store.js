@@ -313,7 +313,14 @@ function appendMessage(slug, msg) {
 // enforces CORS + per-session rate-limit + a daily budget cap). First visit
 // (key absent) → live; explicit Disconnect stores '' → local-only demo.
 const DEFAULT_LIVE_NODE = 'https://agentbbs-web-63rzcdswba-uc.a.run.app';
-export function liveNode() { const v = localStorage.getItem(LS.node); return v === null ? DEFAULT_LIVE_NODE : v; }
+export function liveNode() {
+  const v = localStorage.getItem(LS.node);
+  if (v !== null) return v; // explicit choice (incl. '' = Disconnected → local)
+  // Default to the live node ONLY on the public Pages site; dev/test/localhost
+  // stay local so the static E2E + offline demo are deterministic.
+  try { if (location.hostname.endsWith('github.io')) return DEFAULT_LIVE_NODE; } catch (_) {}
+  return '';
+}
 export function setLiveNode(url) {
   if (url) localStorage.setItem(LS.node, url.replace(/\/+$/, ''));
   else localStorage.removeItem(LS.node);
