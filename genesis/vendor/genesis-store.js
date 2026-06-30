@@ -30,6 +30,7 @@ const LS = {
   agentSeeds: 'agentbbs.genesis.agentseeds',
   node: 'agentbbs.genesis.node', // live-node base URL (optional)
   approvalDecisions: 'agentbbs.genesis.approval-decisions', // ADR-0038
+  spawnedPods: 'agentbbs.genesis.spawned-pods', // ADR-0035 "hire the winner"
 };
 
 function readJSON(key, fallback) {
@@ -428,7 +429,23 @@ export const store = {
   arena() { return readJSON(LS.arena, SEED_ARENA); },
   retort() { return readJSON(LS.retort, SEED_RETORT); },
   // Pod control plane (ADR-0035): spawned pods + Pareto-ranked configs.
-  pods() { return { pods: SEED_PODS, configs: rankPodConfigs(SEED_POD_RESULTS) }; },
+  pods() {
+    const spawned = readJSON(LS.spawnedPods, []);
+    return { pods: [...spawned, ...SEED_PODS], configs: rankPodConfigs(SEED_POD_RESULTS) };
+  },
+  // "Hire the winner" (ADR-0035 + ADR-0039): spawn a pod with the chosen agent
+  // as its host. Local in the demo; the live path spawns via the cog_ gateway.
+  hire(handle, domain = 'ops') {
+    handle = (handle || '').trim().toLowerCase().replace(/^@/, '');
+    if (!handle) return { ok: false, error: 'no agent' };
+    const spawned = readJSON(LS.spawnedPods, []);
+    const id = 'pod-hire-' + spawned.length;
+    const pod = { id, domain, host: handle, tier: 'mid', status: 'spawned', per_agent_cap_usd: 0.25, registered_room: `${domain}-ops` };
+    spawned.unshift(pod);
+    writeJSON(LS.spawnedPods, spawned);
+    logEvent('pod.hire', `hired @${handle} → ${id} (#${pod.registered_room})`);
+    return { ok: true, pod };
+  },
 
   // Agent directory (ADR-0039): agents ranked by confidence-adjusted reputation.
   directory() {

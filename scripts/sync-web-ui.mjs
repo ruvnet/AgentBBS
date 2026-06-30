@@ -51,6 +51,8 @@ const store = {
   pods: () => _c.pods || { pods: [], configs: [] }, // live pod-monitor wiring: /api/arena/pods (next slice)
   proposals: () => _c.approvals || { proposals: [] }, // ADR-0038: GET /api/approvals
   directory: () => ({ agents: ((_c.reputation && _c.reputation.ranking) || []).map((r, i) => ({ handle: r.agent.slice(0, 8), kind: 'agent', successes: r.successes, total: r.total, rate: r.rate, score: r.score, rank: i + 1 })) }), // ADR-0039
+  hire: async () => ({ ok: false, error: 'live "hire" spawns the pod via the cog_ gateway (next slice)' }), // ADR-0035
+
   decide: async () => ({ ok: false, error: 'approvals: in-browser decision signing on the server node lands in ADR-0038 phase 3' }),
   doors: () => _c.doors, federation: () => _c.federation, report: () => _c.report, market: () => _c.market,
   post: async (seed, { board, body, handle, parent = null }) => {

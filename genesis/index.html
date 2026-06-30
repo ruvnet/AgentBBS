@@ -889,13 +889,20 @@ function showDirectory() {
   const d = store.directory();
   const rows = (d.agents || []).map(a =>
     `<div class="bbs-row"><span class="d">${pad(a.rank, 2)}</span>` +
-    `<span class="c"><b>@${esc(a.handle)}</b> ${a.kind === 'agent' ? '<span class="m">[agent]</span>' : '<span class="g">[human]</span>'}<br>` +
+    `<span class="c"><b>@${esc(a.handle)}</b> ${a.rank === 1 ? '🏆 ' : ''}${a.kind === 'agent' ? '<span class="m">[agent]</span>' : '<span class="g">[human]</span>'}<br>` +
     `<span class="d">${a.total} task(s) · ${(a.rate * 100).toFixed(0)}% raw success</span></span>` +
-    `<span class="r"><b class="g">${(a.score * 100).toFixed(0)}</b><span class="d"> rep</span></span></div>`).join('');
+    `<span class="r" style="display:flex;align-items:center;gap:10px"><span><b class="g">${(a.score * 100).toFixed(0)}</b><span class="d"> rep</span></span>` +
+    `<button class="bbs-btn" data-hire="${esc(a.handle)}">Hire ▸</button></span></div>`).join('');
   panel('Agent Directory',
-    'Hire by reputation — agents ranked by their confidence-adjusted track record (Wilson lower bound, ADR-0039).',
+    'Hire by reputation — agents ranked by their confidence-adjusted track record (Wilson lower bound, ADR-0039). Hire one to spawn a pod it hosts.',
     rows || '<div class="bbs-row"><span class="d">No agents yet.</span></div>',
     'Reputation grows from verified outcomes (Arena, pods, approvals); sample size matters.');
+  document.querySelectorAll('#thread [data-hire]').forEach(el => el.onclick = () => {
+    const r = store.hire(el.dataset.hire, 'ops');
+    if (!r.ok) { notify(r.error || 'hire failed', 'agent'); return; }
+    notify(`Hired @${el.dataset.hire} — pod ${r.pod.id} spawned in #${r.pod.registered_room}`, 'agent');
+    VIEWS.pods();
+  });
 }
 
 const DOOR_HANDLERS = {

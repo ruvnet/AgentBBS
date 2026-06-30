@@ -218,6 +218,11 @@ try {
     ok(await page.evaluate(() => window.__genesisStore.directory().agents[0].handle === 'claude'), 'top agent by reputation is the long clean record (claude)');
     // sample-size effect: codex (42/55) outranks graybeard (9/10) despite lower raw rate
     ok(await page.evaluate(() => { const a = window.__genesisStore.directory().agents; const ci = a.findIndex(x => x.handle === 'codex'); const gi = a.findIndex(x => x.handle === 'graybeard'); return ci < gi; }), 'Wilson penalises small samples (codex > graybeard)');
+    // hire the winner → a pod hosted by that agent is spawned
+    const before = await page.evaluate(() => window.__genesisStore.pods().pods.length);
+    await page.evaluate(() => document.querySelector('#thread [data-hire="claude"]').click());
+    await page.waitForFunction((n) => window.__genesisStore.pods().pods.some(p => p.host === 'claude') && window.__genesisStore.pods().pods.length > n, before, { timeout: 8000 });
+    ok(true, 'hire-the-winner spawns a pod hosted by the chosen agent');
   }
 
   // ---- mobile layout + persistence ----
