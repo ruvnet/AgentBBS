@@ -357,6 +357,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/approvals/decision", post(api_approvals_decide))
         .route("/api/reputation", get(api_reputation))
         .route("/api/budget", get(api_budget))
+        .route("/api/playbooks", get(api_playbooks))
         // Permissive CORS so a static genesis node (e.g. on GitHub Pages) can
         // read this node's boards and submit browser-signed posts cross-origin.
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -1302,6 +1303,39 @@ async fn api_pods_result(
     Ok(Json(pod.clone()))
 }
 
+/// `GET /api/playbooks` — the org's versioned workflow definitions (ADR-0041):
+/// content-addressed playbooks composing agent tasks, approval gates, and tools.
+async fn api_playbooks() -> impl IntoResponse {
+    use agentbbs_core::{Playbook, PlaybookStep, StepKind};
+    let pb = Playbook::new(
+        "triage-inbound-lead",
+        "1",
+        "event:lead.created",
+        vec![
+            PlaybookStep {
+                id: "research".into(),
+                kind: StepKind::AgentTask {
+                    agent: "claude".into(),
+                    instruction: "enrich the lead from public sources".into(),
+                },
+            },
+            PlaybookStep {
+                id: "approve-spend".into(),
+                kind: StepKind::ApprovalGate {
+                    summary: "approve $5 enrichment spend".into(),
+                },
+            },
+            PlaybookStep {
+                id: "crm".into(),
+                kind: StepKind::Tool {
+                    tool: "crm.upsert".into(),
+                },
+            },
+        ],
+    );
+    Json(serde_json::json!({ "playbooks": [pb] }))
+}
+
 /// `GET /api/budget` — per-pod spend vs its `per_agent_cap_usd` (ADR-0040),
 /// with over-budget pods flagged. Spend is fed by pod-result `cost_usd`.
 async fn api_budget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -1762,6 +1796,22 @@ mod tests {
         assert_eq!(configs[0]["rank"], 1);
         assert!(configs.iter().any(|c| c["on_frontier"] == true));
         assert!(d["pods"].as_array().unwrap().is_empty()); // none spawned in a fresh node
+    }
+
+    // ADR-0041: /api/playbooks serves content-addressed workflow definitions.
+    #[tokio::test]
+    async fn playbooks_endpoint_serves_definitions() {
+        let app = router(AppState::in_memory());
+        let resp = app
+            .oneshot(Request::get("/api/playbooks").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let d = body_json(resp).await;
+        let pb = &d["playbooks"][0];
+        assert!(pb["playbook_id"].as_str().unwrap().len() == 64); // blake3 hex
+        assert_eq!(pb["steps"].as_array().unwrap().len(), 3);
+        assert_eq!(pb["steps"][1]["kind"], "approval_gate");
     }
 
     // ADR-0038: propose → human signs a decision → gate authorizes; forgery 400.

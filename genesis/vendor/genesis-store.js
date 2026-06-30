@@ -436,6 +436,28 @@ export const store = {
     const spawned = readJSON(LS.spawnedPods, []);
     return { pods: [...spawned, ...SEED_PODS], configs: rankPodConfigs(SEED_POD_RESULTS) };
   },
+  // Playbooks (ADR-0041): versioned workflow definitions composing agent tasks,
+  // approval gates, and tools.
+  playbooks() {
+    return {
+      playbooks: [{
+        playbook_id: 'triage-inbound-lead@1', name: 'triage-inbound-lead', version: '1', trigger: 'event:lead.created',
+        steps: [
+          { id: 'research', kind: 'agent_task', agent: 'claude', instruction: 'enrich the lead from public sources' },
+          { id: 'approve-spend', kind: 'approval_gate', summary: 'approve $5 enrichment spend' },
+          { id: 'crm', kind: 'tool', tool: 'crm.upsert' },
+        ],
+      }, {
+        playbook_id: 'nightly-security-audit@1', name: 'nightly-security-audit', version: '1', trigger: 'cron:0 3 * * *',
+        steps: [
+          { id: 'scan', kind: 'agent_task', agent: 'graybeard', instruction: 'enumerate deps + match CVE feeds' },
+          { id: 'repro', kind: 'tool', tool: 'sandbox.exec' },
+          { id: 'sign-off', kind: 'approval_gate', summary: 'approve filing HIGH/CRITICAL findings' },
+        ],
+      }],
+    };
+  },
+
   // Budget guardrails (ADR-0040): per-pod spend vs cap, over-budget flagged.
   budget() {
     const { pods } = this.pods();

@@ -234,6 +234,14 @@ try {
     ok(await page.evaluate(() => window.__genesisStore.budget().budgets.every(b => b.remaining >= 0)), 'remaining never goes negative');
   }
 
+  // ---- playbooks (ADR-0041) ----
+  await page.evaluate(() => window.__ui.VIEWS.playbooks());
+  await page.waitForTimeout(80);
+  ok(await page.evaluate(() => /Playbooks/.test(document.getElementById('thread').textContent)), 'Playbooks view renders');
+  if (GENESIS) {
+    ok(await page.evaluate(() => /approval gate/.test(document.getElementById('thread').textContent) && /agent/.test(document.getElementById('thread').textContent)), 'a playbook shows agent steps + a human approval gate');
+  }
+
   // ---- mobile layout + persistence ----
   await page.evaluate(() => window.__ui.applyLayout('mobile'));
   ok(await page.evaluate(() => document.documentElement.dataset.layout === 'mobile' && getComputedStyle(document.getElementById('sidebar')).display === 'none'), 'mobile layout hides sidebar');

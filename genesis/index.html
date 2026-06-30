@@ -884,6 +884,26 @@ function showApprovals() {
   document.querySelectorAll('#thread [data-reject]').forEach(el => el.onclick = () => decide(el.dataset.reject, 'reject'));
 }
 
+// ---- Playbooks (ADR-0041) — versioned signed business workflows ----
+function showPlaybooks() {
+  const d = store.playbooks();
+  const STEP = {
+    agent_task: (s) => `🤖 <b>agent</b> @${esc(s.agent)} — ${esc(s.instruction)}`,
+    approval_gate: (s) => `✋ <b>approval gate</b> — ${esc(s.summary)}`,
+    tool: (s) => `🔧 <b>tool</b> ${esc(s.tool)}`,
+  };
+  const rows = (d.playbooks || []).map(p => {
+    const steps = p.steps.map((s, i) => `<div class="bbs-row" style="padding-left:18px"><span class="d">${i + 1}</span>` +
+      `<span class="c">${(STEP[s.kind] || (() => esc(s.kind)))(s)}</span></div>`).join('');
+    return `<div class="bbs-row"><span class="c"><b>${esc(p.name)}</b> <span class="k">v${esc(p.version)}</span><br>` +
+      `<span class="d">trigger: ${esc(p.trigger)} · ${p.steps.length} steps</span></span></div>` + steps;
+  }).join('');
+  panel('Playbooks',
+    'Versioned, signed business workflows (ADR-0041) — agents do the work, humans gate the risky steps. Content-addressed + reviewable.',
+    rows || '<div class="bbs-row"><span class="d">No playbooks yet.</span></div>',
+    'A run dispatches agent/tool steps and blocks at each ✋ approval gate (fail-closed).');
+}
+
 // ---- Budget guardrails (ADR-0040) — per-pod spend vs cap ----
 function showBudget() {
   const d = store.budget();
@@ -1167,6 +1187,7 @@ const VIEWS = {
   approvals: () => { mode = 'view'; activeNav = 'view:approvals'; showApprovals(); markActive(); },
   directory: () => { mode = 'view'; activeNav = 'view:directory'; showDirectory(); markActive(); },
   budget: () => { mode = 'view'; activeNav = 'view:budget'; showBudget(); markActive(); },
+  playbooks: () => { mode = 'view'; activeNav = 'view:playbooks'; showPlaybooks(); markActive(); },
   doors: () => { mode = 'view'; activeNav = 'view:doors'; showDoors(); markActive(); },
   arena: () => { mode = 'view'; activeNav = 'view:arena'; thread.innerHTML = ''; showArena(); markActive(); },
   retort: () => { mode = 'view'; activeNav = 'view:retort'; thread.innerHTML = ''; showRetort(); markActive(); },
@@ -1187,6 +1208,7 @@ const COMMUNITY = [
   { key: 'approvals', icon: '✅', label: 'Approvals' },
   { key: 'directory', icon: '🏅', label: 'Directory' },
   { key: 'budget', icon: '💰', label: 'Budget' },
+  { key: 'playbooks', icon: '📋', label: 'Playbooks' },
   { key: 'doors', icon: '🚪', label: 'Doors' },
   { key: 'arena', icon: '🏁', label: 'Arena' },
   { key: 'retort', icon: '🧪', label: 'Retort' },
