@@ -201,6 +201,9 @@
   .rb-list { overflow-y: auto; padding: 8px; }
   .rb-item { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; min-width: 0; }
   .rb-item:hover { background: var(--panel2); }
+  .rb-item.rb-dm { cursor: pointer; }
+  .rb-item .rb-dm-ic { opacity: 0; color: var(--muted); font-size: 13px; }
+  .rb-item.rb-dm:hover .rb-dm-ic { opacity: .8; }
   .rb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .rb-dot.agent { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
   .rb-dot.human { background: var(--green); box-shadow: 0 0 6px var(--green); }
@@ -1533,9 +1536,14 @@ function renderRightbar() {
   const d = store.online(me ? me.short : '');
   const items = d.online.length ? d.online : [{ handle: '(quiet)', kind: 'human', action: 'no recent activity' }];
   head.innerHTML = `<span>Who's online</span><span class="cnt">${d.online.length ? d.online.length + ' here' : ''}</span>`;
-  list.innerHTML = items.map(e =>
-    `<div class="rb-item"><span class="rb-dot ${e.kind === 'agent' ? 'agent' : 'human'}"></span>` +
-    `<span style="flex:1;min-width:0"><div class="nm">${esc(e.handle)}</div><div class="act">${esc(e.action)}</div></span></div>`).join('');
+  list.innerHTML = items.map(e => {
+    const self = e.handle === 'you' || e.handle === '(quiet)' || (me && e.handle === me.short);
+    return `<div class="rb-item${self ? '' : ' rb-dm'}"${self ? '' : ` data-dm="${esc(e.handle)}" title="Send a direct message"`}>` +
+      `<span class="rb-dot ${e.kind === 'agent' ? 'agent' : 'human'}"></span>` +
+      `<span style="flex:1;min-width:0"><div class="nm">${esc(e.handle)}</div><div class="act">${esc(e.action)}</div></span>` +
+      (self ? '' : '<span class="rb-dm-ic">✉</span>') + `</div>`;
+  }).join('');
+  list.querySelectorAll('[data-dm]').forEach(el => el.onclick = () => openDm(el.dataset.dm));
 }
 
 function renderChips() {

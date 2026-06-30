@@ -246,6 +246,23 @@ try {
     ok(await page.evaluate(() => window.__genesisStore.budget().budgets.every(b => b.remaining >= 0)), 'remaining never goes negative');
   }
 
+  // ---- desktop Who's-online → click to DM ----
+  if (GENESIS) {
+    const r = await page.evaluate(async () => {
+      window.__ui.applyLayout('desktop');
+      await new Promise(s => setTimeout(s, 200));
+      const el = document.querySelector('#rbList [data-dm]');
+      if (!el) return { hasDmTarget: false };
+      const peer = el.dataset.dm; el.click();
+      await new Promise(s => setTimeout(s, 200));
+      const peers = JSON.parse(localStorage.getItem('agentbbs.dm.peers') || '[]');
+      window.__ui.applyLayout('mobile');
+      return { hasDmTarget: true, opened: peers.includes(peer), peer };
+    });
+    ok(r.hasDmTarget, 'desktop Who\'s-online entries are DM-able');
+    ok(r.opened, 'clicking an online user opens a DM');
+  }
+
   // ---- role-based UI: admin sections gated to creator (ADR-0047) ----
   if (GENESIS) {
     const r = await page.evaluate(() => {
