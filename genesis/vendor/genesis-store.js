@@ -132,6 +132,37 @@ function logEvent(kind, subject, severity = 'Info') {
 }
 
 // ---- store init ----
+// ---- domain agent pods (ADR-0035 control plane, demo seed) ----
+const SEED_PODS = [
+  { id: 'pod-0000', domain: 'research', host: 'claude-code', tier: 'mid', status: 'executing', per_agent_cap_usd: 0.10, registered_room: 'research-intel' },
+  { id: 'pod-0001', domain: 'security', host: 'native', tier: 'mid', status: 'evaluating', per_agent_cap_usd: 0.50, registered_room: 'security-watch' },
+  { id: 'pod-0002', domain: 'trading', host: 'codex', tier: 'high', status: 'completed', per_agent_cap_usd: 0.25, registered_room: 'trading-signals' },
+];
+const SEED_POD_RESULTS = [
+  { config: { domain: 'research', host: 'claude-code', tier: 'high' }, accuracy: 0.92, cost_usd: 0.020, runs: 12 },
+  { config: { domain: 'research', host: 'native', tier: 'low' }, accuracy: 0.88, cost_usd: 0.002, runs: 12 },
+  { config: { domain: 'research', host: 'codex', tier: 'mid' }, accuracy: 0.80, cost_usd: 0.010, runs: 9 },
+];
+// Pareto rank of {domain×host×tier} configs — mirrors agentbbs_arena::podrank
+// (accuracy maximize, $/task minimize; non-dominated sorting). Keep in lockstep.
+function rankPodConfigs(results) {
+  const E = 1e-9;
+  const dom = (a, b) => (a.accuracy >= b.accuracy - E && a.cost_usd <= b.cost_usd + E)
+    && (a.accuracy > b.accuracy + E || a.cost_usd < b.cost_usd - E);
+  const tier = results.map(() => 0);
+  let rem = results.map((_, i) => i), cur = 1;
+  while (rem.length) {
+    let front = rem.filter(i => !rem.some(j => j !== i && dom(results[j], results[i])));
+    if (!front.length) front = rem.slice();
+    front.forEach(i => tier[i] = cur);
+    rem = rem.filter(i => !front.includes(i));
+    cur++;
+  }
+  return results.map((r, i) => ({ ...r, label: `${r.config.domain}×${r.config.host}×${r.config.tier}`, pareto_tier: tier[i], on_frontier: tier[i] === 1 }))
+    .sort((a, b) => a.pareto_tier - b.pareto_tier || b.accuracy - a.accuracy || a.cost_usd - b.cost_usd || a.label.localeCompare(b.label))
+    .map((s, i) => ({ ...s, rank: i + 1 }));
+}
+
 function ensureSeeded() {
   if (!localStorage.getItem(LS.boards)) writeJSON(LS.boards, SEED_BOARDS);
   if (!localStorage.getItem(LS.messages)) writeJSON(LS.messages, {});
@@ -374,6 +405,8 @@ export const store = {
 
   arena() { return readJSON(LS.arena, SEED_ARENA); },
   retort() { return readJSON(LS.retort, SEED_RETORT); },
+  // Pod control plane (ADR-0035): spawned pods + Pareto-ranked configs.
+  pods() { return { pods: SEED_PODS, configs: rankPodConfigs(SEED_POD_RESULTS) }; },
   market() { return { listings: readJSON(LS.market, SEED_MARKET) }; },
   doors() { return { doors: DOORS }; },
   federation() { return { ...FEDERATION, peers: liveNode() ? [{ addr: liveNode() }] : [] }; },

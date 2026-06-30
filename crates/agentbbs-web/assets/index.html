@@ -464,6 +464,7 @@ const store = {
   state: () => _c.state, boards: () => _c.state.boards || [],
   board: (s) => _get('/api/boards/' + encodeURIComponent(s)),
   arena: () => _c.arena, retort: () => _c.retort, online: () => _c.online,
+  pods: () => _c.pods || { pods: [], configs: [] }, // live pod-monitor wiring: /api/arena/pods (next slice)
   doors: () => _c.doors, federation: () => _c.federation, report: () => _c.report, market: () => _c.market,
   post: async (seed, { board, body, handle, parent = null }) => {
     const signed = await BBS.signPost(seed, { board, body, handle, parent });
@@ -874,6 +875,25 @@ function showDm() {
   if (start) start.onclick = () => openDm(document.getElementById('dm-new').value);
 }
 
+// ---- Domain agent pods (ADR-0035 control plane) — monitor + config ranking ----
+function showPods() {
+  const d = store.pods();
+  const STATUS = { spawned: 'spawned', executing: 'executing', evaluating: 'evaluating', escalating: 'escalating', completed: '✓ completed', failed: '✗ failed' };
+  const podRows = d.pods.length ? d.pods.map(p =>
+    `<div class="bbs-row"><span class="c"><b>${esc(p.domain)}</b> <span class="k">[${esc(p.tier)}]</span> ` +
+    `<span class="d">@${esc(p.host)} → #${esc(p.registered_room)}</span></span>` +
+    `<span class="r"><span class="g">${esc(STATUS[p.status] || p.status)}</span> <span class="d">· cap $${(p.per_agent_cap_usd || 0).toFixed(2)}</span></span></div>`).join('')
+    : '<div class="bbs-row"><span class="d">No pods spawned yet.</span></div>';
+  const cfgRows = d.configs.map(c =>
+    `<div class="bbs-row"><span class="d">${pad(c.rank, 2)}</span>` +
+    `<span class="c"><b>${esc(c.label)}</b> ${c.on_frontier ? '<span class="g">◆ frontier</span>' : '<span class="m">dominated</span>'}</span>` +
+    `<span class="r d">acc ${(c.accuracy * 100).toFixed(0)}% · $${c.cost_usd.toFixed(4)}/task</span></div>`).join('');
+  panel('Domain Agent Pods',
+    'Hosted autonomous workers — status + the Pareto-ranked {domain×host×tier} configs.',
+    podRows + '<div class="bbs-sub">Config leaderboard · accuracy-vs-cost frontier (ADR-0023/0035)</div>' + cfgRows,
+    'Pods spawn via the cog_ gateway; step-results post signed into their room board.');
+}
+
 const DOOR_HANDLERS = {
   plugins: () => doorEcho(),
   mcp: () => doorMcp(),
@@ -1114,6 +1134,7 @@ const VIEWS = {
   boards: () => { closeSheet(); loadBoard(current); },
   online: () => { mode = 'view'; activeNav = 'view:online'; showOnline(); markActive(); },
   dm: () => { mode = 'view'; activeNav = 'view:dm'; showDm(); markActive(); },
+  pods: () => { mode = 'view'; activeNav = 'view:pods'; showPods(); markActive(); },
   doors: () => { mode = 'view'; activeNav = 'view:doors'; showDoors(); markActive(); },
   arena: () => { mode = 'view'; activeNav = 'view:arena'; thread.innerHTML = ''; showArena(); markActive(); },
   retort: () => { mode = 'view'; activeNav = 'view:retort'; thread.innerHTML = ''; showRetort(); markActive(); },
@@ -1130,6 +1151,7 @@ const VIEWS = {
 const COMMUNITY = [
   { key: 'online', icon: '🟢', label: "Who's Online" },
   { key: 'dm', icon: '✉️', label: 'Messages' },
+  { key: 'pods', icon: '🤖', label: 'Pods' },
   { key: 'doors', icon: '🚪', label: 'Doors' },
   { key: 'arena', icon: '🏁', label: 'Arena' },
   { key: 'retort', icon: '🧪', label: 'Retort' },

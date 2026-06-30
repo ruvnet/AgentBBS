@@ -47,6 +47,7 @@ const store = {
   state: () => _c.state, boards: () => _c.state.boards || [],
   board: (s) => _get('/api/boards/' + encodeURIComponent(s)),
   arena: () => _c.arena, retort: () => _c.retort, online: () => _c.online,
+  pods: () => _c.pods || { pods: [], configs: [] }, // live pod-monitor wiring: /api/arena/pods (next slice)
   doors: () => _c.doors, federation: () => _c.federation, report: () => _c.report, market: () => _c.market,
   post: async (seed, { board, body, handle, parent = null }) => {
     const signed = await BBS.signPost(seed, { board, body, handle, parent });

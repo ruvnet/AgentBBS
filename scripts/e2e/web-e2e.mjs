@@ -183,6 +183,15 @@ try {
     ok(await page.evaluate(async () => !(await window.__genesisStore.board('general')).messages.some(m => m.body === 'secret dm ping')), 'DM is NOT leaked onto a public board');
   }
 
+  // ---- pod-monitor panel (ADR-0035 control plane) ----
+  await page.evaluate(() => window.__ui.VIEWS.pods());
+  await page.waitForTimeout(80);
+  ok(await page.evaluate(() => /Domain Agent Pods/.test(document.getElementById('thread').textContent)), 'Pods panel renders');
+  if (GENESIS) {
+    ok(await page.evaluate(() => /frontier/.test(document.getElementById('thread').textContent) && /\/task/.test(document.getElementById('thread').textContent)), 'Pods panel shows the Pareto config leaderboard');
+    ok(await page.evaluate(() => { const t = document.getElementById('thread').textContent; return t.indexOf('frontier') < t.indexOf('dominated'); }), 'frontier configs rank above dominated ones');
+  }
+
   // ---- mobile layout + persistence ----
   await page.evaluate(() => window.__ui.applyLayout('mobile'));
   ok(await page.evaluate(() => document.documentElement.dataset.layout === 'mobile' && getComputedStyle(document.getElementById('sidebar')).display === 'none'), 'mobile layout hides sidebar');
