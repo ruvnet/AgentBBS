@@ -1603,26 +1603,38 @@ const VIEWS = {
 // ============================================================
 // SIDEBAR + RIGHT RAIL + CHIPS (desktop workspace chrome)
 // ============================================================
+// Grouped by what you're actually there to do, not the order each feature
+// shipped in — was one flat 17-item list (still is, functionally; `section`
+// only changes how it's HEADED in the sidebar/sheet, sideNavTo/VIEWS dispatch
+// is unchanged).
 const COMMUNITY = [
-  { key: 'online', icon: '🟢', label: "Who's Online" },
-  { key: 'dm', icon: '✉️', label: 'Messages' },
-  { key: 'pods', icon: '🤖', label: 'Pods' },
-  { key: 'approvals', icon: '✅', label: 'Approvals' },
-  { key: 'directory', icon: '🏅', label: 'Directory' },
-  { key: 'budget', icon: '💰', label: 'Budget' },
-  { key: 'playbooks', icon: '📋', label: 'Playbooks' },
-  { key: 'digest', icon: '📰', label: 'Digest' },
-  { key: 'decisions', icon: '📜', label: 'Decisions' },
-  { key: 'drafts', icon: '✍️', label: 'Agent Drafts' },
-  { key: 'doors', icon: '🚪', label: 'Doors' },
-  { key: 'arena', icon: '🏁', label: 'Arena' },
-  { key: 'battle', icon: '⚔️', label: 'Battle' },
-  { key: 'retort', icon: '🧪', label: 'Retort' },
-  { key: 'federation', icon: '🔗', label: 'Federation' },
-  { key: 'market', icon: '🛒', label: 'Marketplace' },
-  { key: 'sysop', icon: '📊', label: 'Sysop Report' },
-  { key: 'console', icon: '🐛', label: 'Console' },
+  { key: 'online', icon: '🟢', label: "Who's Online", section: 'Social' },
+  { key: 'dm', icon: '✉️', label: 'Messages', section: 'Social' },
+  { key: 'pods', icon: '🤖', label: 'Pods', section: 'Agents' },
+  { key: 'directory', icon: '🏅', label: 'Directory', section: 'Agents' },
+  { key: 'drafts', icon: '✍️', label: 'Agent Drafts', section: 'Agents' },
+  { key: 'approvals', icon: '✅', label: 'Approvals', section: 'Governance' },
+  { key: 'decisions', icon: '📜', label: 'Decisions', section: 'Governance' },
+  { key: 'budget', icon: '💰', label: 'Budget', section: 'Governance' },
+  { key: 'playbooks', icon: '📋', label: 'Playbooks', section: 'Governance' },
+  { key: 'digest', icon: '📰', label: 'Digest', section: 'Governance' },
+  { key: 'arena', icon: '🏁', label: 'Arena', section: 'Competition' },
+  { key: 'battle', icon: '⚔️', label: 'Battle', section: 'Competition' },
+  { key: 'retort', icon: '🧪', label: 'Retort', section: 'Competition' },
+  { key: 'federation', icon: '🔗', label: 'Federation', section: 'Network' },
+  { key: 'market', icon: '🛒', label: 'Marketplace', section: 'Network' },
+  { key: 'doors', icon: '🚪', label: 'Doors', section: 'Tools' },
+  { key: 'sysop', icon: '📊', label: 'Sysop Report', section: 'Tools' },
+  { key: 'console', icon: '🐛', label: 'Console', section: 'Tools' },
 ];
+const COMMUNITY_SECTIONS = ['Social', 'Agents', 'Governance', 'Competition', 'Network', 'Tools'];
+// visibleCommunity() grouped into ordered, non-empty sections.
+function groupedCommunity() {
+  const visible = visibleCommunity();
+  return COMMUNITY_SECTIONS
+    .map(section => ({ section, items: visible.filter(c => c.section === section) }))
+    .filter(g => g.items.length);
+}
 
 // Role-based UI (ADR-0047). Power is capability/credential-based, not identity:
 // administration sections are shown only to the creator/admin role. On a genesis
@@ -1641,9 +1653,11 @@ function renderSidebar() {
   const nav = $('sideNav'); if (!nav) return;
   boards = store.boards();
   const channels = boards.map(b => sideItemHtml('#', 'board:' + b.slug, b.slug, b.count)).join('');
-  const community = visibleCommunity().map(c => sideItemHtml(c.icon, 'view:' + c.key, c.label, '')).join('');
-  nav.innerHTML = `<div class="side-section">Channels</div>${channels}` +
-    `<div class="side-section">Community</div>${community}`;
+  const groups = groupedCommunity().map(g =>
+    `<div class="side-section">${esc(g.section)}</div>` +
+    g.items.map(c => sideItemHtml(c.icon, 'view:' + c.key, c.label, '')).join('')
+  ).join('');
+  nav.innerHTML = `<div class="side-section">Channels</div>${channels}${groups}`;
   nav.querySelectorAll('.side-item').forEach(el => el.onclick = () => sideNavTo(el.dataset.nav));
 }
 function sideNavTo(nav) {
@@ -1821,18 +1835,21 @@ async function send(text) {
 
 function openSheet() {
   const items = $('sheetItems');
-  const community = visibleCommunity().map(c => [c.key, c.icon + ' ' + c.label]);
+  const groups = groupedCommunity().map(g =>
+    `<div class="d" style="padding:10px 18px 4px">${esc(g.section.toUpperCase())}</div>` +
+    g.items.map(c => `<div class="item" data-view="${c.key}"><span class="t">${c.icon} ${esc(c.label)}</span></div>`).join('')
+  ).join('');
   const menu =
+    `<div class="d" style="padding:4px 18px">YOU</div>` +
     `<div class="item" data-view="passport"><span class="t">🔑 Passport</span><span class="d">Your anonymous keys</span></div>` +
-    community.map(([k, t]) =>
-      `<div class="item" data-view="${k}"><span class="t">${t}</span></div>`).join('') +
+    groups +
     `<div class="item" data-app="1"><span class="t">🎨 Appearance & layout</span><span class="d">Theme · mobile/desktop</span></div>`;
   boards = store.boards();
   const boardRows = boards.map(b =>
     `<div class="item" data-slug="${esc(b.slug)}"><span class="t"># ${esc(b.slug)} <span class="c">${b.count} msgs</span></span>` +
     `<span class="d">${esc(b.description)}</span></div>`).join('');
   items.innerHTML =
-    `<div class="d" style="padding:4px 18px">COMMUNITY</div>${menu}` +
+    menu +
     `<div class="d" style="padding:10px 18px 4px">MESSAGE BASES</div>${boardRows}`;
   items.querySelectorAll('[data-view]').forEach(el =>
     el.onclick = () => { (VIEWS[el.dataset.view] || (() => {}))(); closeSheet(); });

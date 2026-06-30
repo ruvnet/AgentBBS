@@ -49,6 +49,16 @@ try {
   ok(chans >= 3, `sidebar shows ${chans} channels`);
   ok(await page.evaluate(() => getComputedStyle(document.getElementById('rightbar')).display !== 'none'), 'right rail visible on desktop');
 
+  // ---- sidebar: community items are grouped under labeled sections ----
+  const grouping = await page.evaluate(() => {
+    const sections = [...document.querySelectorAll('#sideNav .side-section')].map((s) => s.textContent);
+    const arenaItem = document.querySelector('#sideNav [data-nav="view:arena"]');
+    return { sections, hasGroupHeaders: sections.length > 2, arenaExists: !!arenaItem };
+  });
+  ok(grouping.sections.includes('Channels'), 'sidebar still has a Channels header');
+  ok(grouping.hasGroupHeaders, `community items are grouped under labeled sections (${grouping.sections.join(', ')})`);
+  ok(grouping.arenaExists, 'a view item (Arena) is still individually reachable after grouping');
+
   // ---- themes ----
   const themes = await page.evaluate(() => window.__ui.THEMES.map(t => t.id));
   ok(themes.length === 6, `theme registry has ${themes.length} themes: ${themes.join(',')}`);
@@ -704,6 +714,8 @@ try {
   ok(await mpage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'mobile: no horizontal overflow even with desktop layout');
   ok(await mpage.evaluate(() => getComputedStyle(document.getElementById('sidebar')).display === 'none' && getComputedStyle(document.getElementById('hamburger')).display !== 'none'), 'mobile: collapses to mobile chrome (sidebar hidden, ☰ shown)');
   await mpage.click('#hamburger'); await mpage.waitForTimeout(200);
+  const sheetText = await mpage.evaluate(() => document.getElementById('sheetItems').textContent);
+  ok(/SOCIAL/.test(sheetText) && /AGENTS/.test(sheetText) && /GOVERNANCE/.test(sheetText), 'mobile ☰ menu groups community items under labeled sections too');
   await mpage.click('#sheetItems [data-view="market"]'); await mpage.waitForTimeout(250);
   ok(await mpage.evaluate(() => /Marketplace/.test(document.getElementById('thread').textContent)), 'mobile: ☰ menu navigation works');
   await mpage.click('#thread [data-kind="Theme"]'); await mpage.waitForTimeout(150);
