@@ -182,6 +182,14 @@ impl ApprovalGate {
         Ok(())
     }
 
+    /// All verified decisions recorded for `action_id`.
+    pub fn decisions_for(&self, action_id: &str) -> Vec<&SignedDecision> {
+        self.decisions
+            .iter()
+            .filter(|d| d.action_id == action_id)
+            .collect()
+    }
+
     /// Whether `action_id` is authorized: at least one verified `Approve` from an
     /// `allowed` decider, and no `Reject` from an allowed decider (a veto wins —
     /// fail-closed). An empty `allowed` set authorizes nothing.

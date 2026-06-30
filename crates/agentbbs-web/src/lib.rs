@@ -21,7 +21,10 @@ use agentbbs_core::caps::Caps;
 use agentbbs_core::identity::Identity;
 use agentbbs_core::market::{Listing, ListingBody, ListingKind, Market};
 use agentbbs_core::report::MemoryReporter;
-use agentbbs_core::{Bbs, Board, MaxTier, MemoryStore, PodSpec, PodStatus, Role, Store};
+use agentbbs_core::{
+    ActionProposal, ApprovalGate, Bbs, Board, MaxTier, MemoryStore, PodSpec, PodStatus, Role,
+    SignedDecision, Store,
+};
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -101,6 +104,10 @@ pub struct AppState {
     /// Spawned domain-agent pods (ADR-0035 control plane). In-memory registry;
     /// the live spawn forwards to the meta-llm `cog_` gateway when configured.
     pods: Mutex<Vec<PodRecord>>,
+    /// Proposed side-effectful actions awaiting human sign-off (ADR-0038).
+    proposals: Mutex<Vec<ActionProposal>>,
+    /// The signed-decision approval gate (ADR-0038).
+    gate: Mutex<ApprovalGate>,
 }
 
 impl AppState {
@@ -117,6 +124,8 @@ impl AppState {
             market: Mutex::new(seed_market()),
             agents: Mutex::new(HashMap::new()),
             pods: Mutex::new(Vec::new()),
+            proposals: Mutex::new(Vec::new()),
+            gate: Mutex::new(ApprovalGate::new()),
         })
     }
 
@@ -335,6 +344,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/pods", get(api_pods_list).post(api_pods_spawn))
         .route("/api/pods/{id}", get(api_pods_get))
         .route("/api/pods/{id}/results", post(api_pods_result))
+        .route(
+            "/api/approvals",
+            get(api_approvals_list).post(api_approvals_propose),
+        )
+        .route("/api/approvals/decision", post(api_approvals_decide))
         // Permissive CORS so a static genesis node (e.g. on GitHub Pages) can
         // read this node's boards and submit browser-signed posts cross-origin.
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -1265,6 +1279,86 @@ async fn api_pods_result(
     Ok(Json(pod.clone()))
 }
 
+/// Request to propose a side-effectful action (ADR-0038).
+#[derive(Deserialize)]
+struct ProposeReq {
+    kind: String,
+    summary: String,
+    proposer: String,
+    board: String,
+}
+
+/// `POST /api/approvals` — an agent proposes a side-effectful action. Returns the
+/// content-addressed proposal (its `action_id` is what a human signs over).
+async fn api_approvals_propose(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ProposeReq>,
+) -> Result<Json<ActionProposal>, (StatusCode, Json<serde_json::Value>)> {
+    let proposer = agentbbs_core::AgentId::from_hex(&req.proposer)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("proposer: {e}")))?;
+    if req.summary.trim().is_empty() || req.kind.trim().is_empty() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "kind and summary required",
+        ));
+    }
+    let proposal = ActionProposal::new(
+        req.kind,
+        req.summary,
+        proposer,
+        req.board,
+        chrono::Utc::now(),
+    );
+    state.proposals.lock().unwrap().push(proposal.clone());
+    Ok(Json(proposal))
+}
+
+/// `POST /api/approvals/decision` — record a human's browser-signed
+/// [`SignedDecision`]. The signature is verified before it is recorded; forged or
+/// tampered decisions are rejected.
+async fn api_approvals_decide(
+    State(state): State<Arc<AppState>>,
+    Json(decision): Json<SignedDecision>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    state
+        .gate
+        .lock()
+        .unwrap()
+        .record(decision)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "decision signature invalid"))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// `GET /api/approvals` — pending proposals, each with its verified decisions and
+/// whether it is currently authorized (an Approve with no veto; fail-closed).
+async fn api_approvals_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let proposals = state.proposals.lock().unwrap();
+    let gate = state.gate.lock().unwrap();
+    let views: Vec<serde_json::Value> = proposals
+        .iter()
+        .map(|p| {
+            let decisions = gate.decisions_for(&p.action_id);
+            let deciders: Vec<agentbbs_core::AgentId> =
+                decisions.iter().map(|d| d.decider).collect();
+            let authorized = gate.is_authorized(&p.action_id, &deciders);
+            serde_json::json!({
+                "action_id": p.action_id,
+                "kind": p.kind,
+                "summary": p.summary,
+                "proposer": p.proposer.to_hex(),
+                "board": p.board,
+                "authorized": authorized,
+                "decisions": decisions.iter().map(|d| serde_json::json!({
+                    "decider": d.decider.to_hex(),
+                    "verdict": d.verdict,
+                    "reason": d.reason,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "proposals": views }))
+}
+
 /// `GET /api/arena/pods` — the pod monitor: live spawned pods plus the
 /// Pareto-ranked `{domain×host×tier}` config leaderboard (ADR-0035/0023). Config
 /// results are the current benchmark seed (kept in lockstep with genesis);
@@ -1593,6 +1687,92 @@ mod tests {
         assert_eq!(configs[0]["rank"], 1);
         assert!(configs.iter().any(|c| c["on_frontier"] == true));
         assert!(d["pods"].as_array().unwrap().is_empty()); // none spawned in a fresh node
+    }
+
+    // ADR-0038: propose → human signs a decision → gate authorizes; forgery 400.
+    #[tokio::test]
+    async fn approvals_propose_sign_and_authorize() {
+        use agentbbs_core::{Identity, SignedDecision, Verdict};
+        let app = router(AppState::in_memory());
+        let agent = Identity::generate();
+        let human = Identity::generate();
+
+        // Propose a side-effectful action.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/approvals")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "kind": "spend", "summary": "buy 1 GPU-hr",
+                            "proposer": agent.id().to_hex(), "board": "ops"
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let action_id = body_json(resp).await["action_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Initially not authorized.
+        let list = async {
+            let r = app
+                .clone()
+                .oneshot(Request::get("/api/approvals").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            body_json(r).await
+        };
+        assert_eq!(list.await["proposals"][0]["authorized"], false);
+
+        // Human signs an Approve in-browser; POST it.
+        let d = SignedDecision::sign(
+            &human,
+            action_id.clone(),
+            Verdict::Approve,
+            "ok",
+            chrono::Utc::now(),
+        );
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/approvals/decision")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&d).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Now authorized.
+        let r = app
+            .clone()
+            .oneshot(Request::get("/api/approvals").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(body_json(r).await["proposals"][0]["authorized"], true);
+
+        // A forged (tampered) decision is rejected.
+        let mut bad =
+            SignedDecision::sign(&human, action_id, Verdict::Approve, "x", chrono::Utc::now());
+        bad.reason = "tampered".into();
+        let resp = app
+            .oneshot(
+                Request::post("/api/approvals/decision")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&bad).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
