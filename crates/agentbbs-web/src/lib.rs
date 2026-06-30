@@ -395,6 +395,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/approvals/decision", post(api_approvals_decide))
         .route("/api/reputation", get(api_reputation))
         .route("/api/budget", get(api_budget))
+        .route("/api/budget/topup", post(api_budget_topup))
         .route("/api/playbooks", get(api_playbooks))
         .route(
             "/api/decisions",
@@ -1875,6 +1876,25 @@ async fn api_budget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!({ "budgets": statuses }))
 }
 
+/// `POST /api/budget/topup` — raise a pod's Reserve-and-Commit cap by `amount`
+/// USD (ADR-0040 operator override; the gateway stays the hard enforcer).
+async fn api_budget_topup(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<TopUpReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    if !req.amount.is_finite() || req.amount <= 0.0 {
+        return Err(api_error(StatusCode::BAD_REQUEST, "amount must be > 0"));
+    }
+    state.budget.lock().unwrap().bump_cap(&req.pod_id, req.amount);
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(serde::Deserialize)]
+struct TopUpReq {
+    pod_id: String,
+    amount: f64,
+}
+
 /// `GET /api/reputation` — agents ranked by their confidence-adjusted track
 /// record (ADR-0039), fed by terminal pod outcomes (and, later, Arena/approval).
 async fn api_reputation(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -2295,6 +2315,64 @@ mod tests {
         let b0 = &bud["budgets"][0];
         assert!(b0["spent"].as_f64().unwrap() > 0.0);
         assert_eq!(b0["over_budget"], false); // 3×0.0001 well under the 0.10 cap
+    }
+
+    // ADR-0040: an operator cap top-up raises the pod's budget cap.
+    #[tokio::test]
+    async fn budget_topup_raises_cap() {
+        let app = router(AppState::in_memory());
+        let spec = serde_json::json!({
+            "template": {
+                "template_ref": "research/intel@1", "domain": "research",
+                "system_prompt": "analyst", "tools": [],
+                "bench_assertions": "sources", "per_agent_cap_usd": 0.10,
+                "max_tier": "mid", "registered_room": "research-intel"
+            },
+            "idempotency_key": "topup1"
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/pods")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&spec).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+        let cap0 = body_json(
+            app.clone()
+                .oneshot(Request::get("/api/budget").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await["budgets"][0]["cap"]
+            .as_f64()
+            .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/budget/topup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({ "pod_id": id, "amount": 0.25 }))
+                            .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cap1 = body_json(
+            app.oneshot(Request::get("/api/budget").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await["budgets"][0]["cap"]
+            .as_f64()
+            .unwrap();
+        assert!((cap1 - cap0 - 0.25).abs() < 1e-9, "cap rose by the top-up amount");
     }
 
     // P5: a completed pod that reports a bench outcome ranks live in the Arena.

@@ -114,9 +114,14 @@ const store = {
       const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'record failed' };
     } catch (_) { return { ok: false, error: 'record failed' }; }
   },
-  // Budget cap top-up has no server endpoint yet (the genesis node does it
-  // locally); stub honestly so the shared UI never crashes.
-  topUpCap: () => ({ ok: false, error: 'server-side cap top-up lands in a follow-up' }),
+  // Raise a pod's cap (ADR-0040): POST to the server override, then resync.
+  topUpCap: async (podId, amount = 0.10) => {
+    try {
+      const r = await fetch('/api/budget/topup', { method: 'POST', headers: H, body: JSON.stringify({ pod_id: podId, amount }) });
+      if (r.ok) { await _sync(); return { ok: true }; }
+      const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'top-up failed' };
+    } catch (_) { return { ok: false, error: 'top-up failed' }; }
+  },
   sync: _sync,
 };
 let _peer = localStorage.getItem('agentbbs.livenode') || '';

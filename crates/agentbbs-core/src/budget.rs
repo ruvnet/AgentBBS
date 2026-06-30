@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Default, Debug)]
 pub struct BudgetLedger {
     spent: BTreeMap<String, f64>,
+    /// Operator cap top-ups per key (USD added to the base cap, ADR-0040). The
+    /// gateway remains the hard enforcer; this raises the local guardrail.
+    bumps: BTreeMap<String, f64>,
 }
 
 /// A key's spend against a cap — the shape a guardrails UI / alert renders.
@@ -52,15 +55,28 @@ impl BudgetLedger {
         self.spent.get(key).copied().unwrap_or(0.0)
     }
 
+    /// Raise `key`'s cap by `amount` (USD). Non-finite/≤0 amounts are ignored.
+    pub fn bump_cap(&mut self, key: &str, amount: f64) {
+        if amount.is_finite() && amount > 0.0 {
+            *self.bumps.entry(key.to_string()).or_insert(0.0) += amount;
+        }
+    }
+
+    /// The operator cap top-up applied to `key` (0 if none).
+    pub fn bump(&self, key: &str) -> f64 {
+        self.bumps.get(key).copied().unwrap_or(0.0)
+    }
+
     /// Reserve-and-Commit pre-check: would spending `amount` more keep `key`
     /// within `cap`? (`spent + amount ≤ cap`).
     pub fn reserve(&self, key: &str, amount: f64, cap: f64) -> bool {
         self.spent(key) + amount <= cap
     }
 
-    /// Status of `key` against `cap`.
+    /// Status of `key` against `cap` (plus any operator top-up for `key`).
     pub fn status(&self, key: &str, cap: f64) -> BudgetStatus {
         let spent = self.spent(key);
+        let cap = cap + self.bump(key);
         BudgetStatus {
             key: key.to_string(),
             spent,
