@@ -907,10 +907,13 @@ async function showBattle() {
   });
 }
 
-function showArena() {
+async function showArena() {
   navGen++;
+  const gen = navGen;
   setHeading('🏁 Arena', 'CVE-Bench leaderboard');
-  const a = store.arena();
+  const a = await store.arenaLive(); // live node's board (incl. pod bench runs) or local seed
+  if (gen !== navGen) return; // navigated away while awaiting
+  thread.innerHTML = '';
   thread.appendChild(arenaCard(a));
   const btn = $('arena-compete');
   if (btn) btn.onclick = () => { const cmd = 'npx ruflo bench ' + a.benchmark; if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {}); toast('Copied: ' + cmd); };

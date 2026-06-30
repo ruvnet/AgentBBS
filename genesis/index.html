@@ -465,7 +465,7 @@
 <script type="module">
 /* @sync:adapter-start (genesis: localStorage store + in-browser demo engine) */
 import * as BBS from './vendor/bbscrypto.js';
-import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-19';
+import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-20';
 import { createDemoEngine } from './vendor/demo-engine.js';
 /* @sync:adapter-end */
 
@@ -854,10 +854,13 @@ async function showBattle() {
   });
 }
 
-function showArena() {
+async function showArena() {
   navGen++;
+  const gen = navGen;
   setHeading('🏁 Arena', 'CVE-Bench leaderboard');
-  const a = store.arena();
+  const a = await store.arenaLive(); // live node's board (incl. pod bench runs) or local seed
+  if (gen !== navGen) return; // navigated away while awaiting
+  thread.innerHTML = '';
   thread.appendChild(arenaCard(a));
   const btn = $('arena-compete');
   if (btn) btn.onclick = () => { const cmd = 'npx ruflo bench ' + a.benchmark; if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {}); toast('Copied: ' + cmd); };

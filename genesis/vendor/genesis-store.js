@@ -523,6 +523,20 @@ export const store = {
   },
 
   arena() { return readJSON(LS.arena, SEED_ARENA); },
+  // Live arena: when federated to a node, show ITS CVE-Bench leaderboard (which
+  // includes live pod bench submissions, ADR-0035 P5) — same shape as the seed.
+  // Falls back to the local seed offline or on any fetch error.
+  async arenaLive() {
+    const base = liveNode();
+    if (!base) return this.arena();
+    try {
+      const r = await fetch(base + '/api/arena', { headers: { 'content-type': 'application/json' } });
+      if (!r.ok) return this.arena();
+      const d = await r.json();
+      if (!d || !Array.isArray(d.standings)) return this.arena();
+      return d;
+    } catch (_) { return this.arena(); }
+  },
   retort() { return readJSON(LS.retort, SEED_RETORT); },
   // Pod control plane (ADR-0035): spawned pods + Pareto-ranked configs.
   pods() {
