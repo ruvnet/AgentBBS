@@ -22,8 +22,9 @@ use agentbbs_core::identity::Identity;
 use agentbbs_core::market::{Listing, ListingBody, ListingKind, Market};
 use agentbbs_core::report::MemoryReporter;
 use agentbbs_core::{
-    ActionProposal, ApprovalGate, Bbs, Board, BudgetLedger, MaxTier, MemoryStore, OutcomeRecord,
-    PodSpec, PodStatus, ReputationLedger, Role, SignedDecision, Store,
+    ActionProposal, ApprovalGate, Bbs, Board, BudgetLedger, MaxTier, MemoryStore, ModAction,
+    ModerationLog, OutcomeRecord, PodSpec, PodStatus, ReputationLedger, Role, SignedDecision,
+    Store,
 };
 
 use axum::extract::{Path, State};
@@ -112,6 +113,8 @@ pub struct AppState {
     reputation: Mutex<ReputationLedger>,
     /// Per-pod spend ledger (ADR-0040); fed by pod-result `cost_usd`.
     budget: Mutex<BudgetLedger>,
+    /// Signed moderation log (ADR-0032); enforced on the post path.
+    moderation: Mutex<ModerationLog>,
 }
 
 impl AppState {
@@ -132,6 +135,7 @@ impl AppState {
             gate: Mutex::new(ApprovalGate::new()),
             reputation: Mutex::new(ReputationLedger::new()),
             budget: Mutex::new(BudgetLedger::new()),
+            moderation: Mutex::new(ModerationLog::new()),
         })
     }
 
@@ -358,6 +362,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/reputation", get(api_reputation))
         .route("/api/budget", get(api_budget))
         .route("/api/playbooks", get(api_playbooks))
+        .route(
+            "/api/moderation",
+            get(api_moderation_list).post(api_moderation_act),
+        )
         // Permissive CORS so a static genesis node (e.g. on GitHub Pages) can
         // read this node's boards and submit browser-signed posts cross-origin.
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -859,6 +867,18 @@ async fn api_post_signed(
     }
     let author = AgentId::from_hex(&req.author)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("author: {e}")))?;
+    // Moderation gate (ADR-0032): banned / muted / timed-out authors can't post.
+    if !state
+        .moderation
+        .lock()
+        .unwrap()
+        .can_post(&author, chrono::Utc::now())
+    {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "posting is blocked by moderation",
+        ));
+    }
     let signature = SignatureBytes::from_hex(&req.signature)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("signature: {e}")))?;
     let created_at = chrono::DateTime::parse_from_rfc3339(&req.created_at)
@@ -1301,6 +1321,49 @@ async fn api_pods_result(
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "pod not found"))?;
     pod.status = result.status;
     Ok(Json(pod.clone()))
+}
+
+/// `POST /api/moderation` — record a signed [`ModAction`] (mute/ban/timeout/
+/// lift, ADR-0032). The signature is verified before recording; forged or
+/// tampered actions are rejected. The moderator's `MODERATE` capability is a
+/// deployment policy (enforced by the operator's allowlist in a real node).
+async fn api_moderation_act(
+    State(state): State<Arc<AppState>>,
+    Json(action): Json<ModAction>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    state
+        .moderation
+        .lock()
+        .unwrap()
+        .record(action)
+        .map_err(|_| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "moderation action signature invalid",
+            )
+        })?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// `GET /api/moderation` — current standing of every moderated agent.
+async fn api_moderation_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let now = chrono::Utc::now();
+    let log = state.moderation.lock().unwrap();
+    let entries: Vec<serde_json::Value> = log
+        .targets()
+        .iter()
+        .map(|t| {
+            let st = log.status(t);
+            serde_json::json!({
+                "agent": t.to_hex(),
+                "banned": st.banned,
+                "muted": st.muted,
+                "timed_out_until": st.timed_out_until,
+                "can_post": st.can_post(now),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "moderated": entries }))
 }
 
 /// `GET /api/playbooks` — the org's versioned workflow definitions (ADR-0041):
@@ -1796,6 +1859,91 @@ mod tests {
         assert_eq!(configs[0]["rank"], 1);
         assert!(configs.iter().any(|c| c["on_frontier"] == true));
         assert!(d["pods"].as_array().unwrap().is_empty()); // none spawned in a fresh node
+    }
+
+    // ADR-0032: a signed ban blocks the author's post (403); a lift restores it.
+    #[tokio::test]
+    async fn moderation_blocks_then_restores_posting() {
+        use agentbbs_core::{Identity, ModAction, Sanction};
+        let app = router(AppState::in_memory());
+        let author = Identity::generate();
+        let mod_id = Identity::generate();
+        let signed_post = |body: &str| {
+            // Build a browser-signed post from `author` to #general.
+            let created_at = chrono::Utc::now();
+            let msg_body = agentbbs_core::MessageBody {
+                board: "general".into(),
+                parent: None,
+                subject: "(msg)".into(),
+                body: body.to_string(),
+                author: author.id(),
+                handle: "tester".into(),
+                created_at,
+            };
+            let msg = agentbbs_core::Message::sign(&author, msg_body).unwrap();
+            serde_json::json!({
+                "author": author.id().to_hex(),
+                "handle": "tester",
+                "subject": "(msg)",
+                "body": body,
+                "created_at": created_at.to_rfc3339(),
+                "signature": msg.signature.to_hex(),
+            })
+        };
+        let post = |req: serde_json::Value| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::post("/api/boards/general/signed")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let act = |a: ModAction| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::post("/api/moderation")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&a).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        // Clean author can post.
+        assert_eq!(post(signed_post("hello")).await.status(), StatusCode::OK);
+
+        // Ban → next post is forbidden.
+        let ban = ModAction::sign(
+            &mod_id,
+            author.id(),
+            Sanction::Ban,
+            "spam",
+            chrono::Utc::now(),
+        );
+        assert_eq!(act(ban).await.status(), StatusCode::OK);
+        assert_eq!(
+            post(signed_post("again")).await.status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // Lift → posting restored.
+        let lift = ModAction::sign(
+            &mod_id,
+            author.id(),
+            Sanction::Lift,
+            "appeal",
+            chrono::Utc::now(),
+        );
+        assert_eq!(act(lift).await.status(), StatusCode::OK);
+        assert_eq!(post(signed_post("back")).await.status(), StatusCode::OK);
     }
 
     // ADR-0041: /api/playbooks serves content-addressed workflow definitions.

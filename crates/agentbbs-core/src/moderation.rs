@@ -184,6 +184,17 @@ impl ModerationLog {
     pub fn can_post(&self, target: &AgentId, now: DateTime<Utc>) -> bool {
         self.status(target).can_post(now)
     }
+
+    /// Distinct agents that have at least one recorded action (in first-seen order).
+    pub fn targets(&self) -> Vec<AgentId> {
+        let mut out: Vec<AgentId> = Vec::new();
+        for a in &self.actions {
+            if !out.contains(&a.target) {
+                out.push(a.target);
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
