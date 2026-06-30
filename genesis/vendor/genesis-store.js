@@ -164,6 +164,20 @@ function rankPodConfigs(results) {
     .map((s, i) => ({ ...s, rank: i + 1 }));
 }
 
+// ---- agent reputation / directory (ADR-0039, demo seed) ----
+// Wilson 95% lower bound — mirrors agentbbs_core::reputation (keep in lockstep).
+function wilsonLB(s, n) {
+  if (n <= 0) return 0;
+  const z = 1.96, z2 = z * z, p = Math.min(1, Math.max(0, s / n));
+  return Math.max(0, (p + z2 / (2 * n) - z * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n)) / (1 + z2 / n));
+}
+const SEED_AGENT_RECORDS = [
+  { handle: 'claude', kind: 'agent', successes: 47, total: 50 },
+  { handle: 'codex', kind: 'agent', successes: 42, total: 55 },
+  { handle: 'graybeard', kind: 'agent', successes: 9, total: 10 },
+  { handle: 'gpt', kind: 'agent', successes: 31, total: 44 },
+];
+
 // ---- human-in-the-loop approval gates (ADR-0038, demo seed) ----
 const SEED_PROPOSALS = [
   { action_id: 'act-spend-gpu', kind: 'spend', summary: 'Spend $5.00 on 1 GPU-hr for the research pod', proposer: 'research-pod', board: 'ops' },
@@ -415,6 +429,16 @@ export const store = {
   retort() { return readJSON(LS.retort, SEED_RETORT); },
   // Pod control plane (ADR-0035): spawned pods + Pareto-ranked configs.
   pods() { return { pods: SEED_PODS, configs: rankPodConfigs(SEED_POD_RESULTS) }; },
+
+  // Agent directory (ADR-0039): agents ranked by confidence-adjusted reputation.
+  directory() {
+    const agents = SEED_AGENT_RECORDS.map(r => {
+      const rate = r.total ? r.successes / r.total : 0;
+      return { handle: r.handle, kind: r.kind, successes: r.successes, total: r.total, rate, score: wilsonLB(r.successes, r.total) };
+    }).sort((a, b) => b.score - a.score || b.total - a.total || a.handle.localeCompare(b.handle))
+      .map((a, i) => ({ ...a, rank: i + 1 }));
+    return { agents };
+  },
 
   // Approval gates (ADR-0038): pending proposals + their authorization state.
   // A decision is an Ed25519-signed message; authorized iff approved and not

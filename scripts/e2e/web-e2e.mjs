@@ -210,6 +210,16 @@ try {
     ok(true, 'a signed Reject vetoes (fail-closed)');
   }
 
+  // ---- agent directory / reputation (ADR-0039) ----
+  await page.evaluate(() => window.__ui.VIEWS.directory());
+  await page.waitForTimeout(80);
+  ok(await page.evaluate(() => /Agent Directory/.test(document.getElementById('thread').textContent)), 'Agent Directory renders');
+  if (GENESIS) {
+    ok(await page.evaluate(() => window.__genesisStore.directory().agents[0].handle === 'claude'), 'top agent by reputation is the long clean record (claude)');
+    // sample-size effect: codex (42/55) outranks graybeard (9/10) despite lower raw rate
+    ok(await page.evaluate(() => { const a = window.__genesisStore.directory().agents; const ci = a.findIndex(x => x.handle === 'codex'); const gi = a.findIndex(x => x.handle === 'graybeard'); return ci < gi; }), 'Wilson penalises small samples (codex > graybeard)');
+  }
+
   // ---- mobile layout + persistence ----
   await page.evaluate(() => window.__ui.applyLayout('mobile'));
   ok(await page.evaluate(() => document.documentElement.dataset.layout === 'mobile' && getComputedStyle(document.getElementById('sidebar')).display === 'none'), 'mobile layout hides sidebar');
