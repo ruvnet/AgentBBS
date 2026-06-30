@@ -462,7 +462,7 @@
 <script type="module">
 /* @sync:adapter-start (genesis: localStorage store + in-browser demo engine) */
 import * as BBS from './vendor/bbscrypto.js';
-import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-16';
+import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-17';
 import { createDemoEngine } from './vendor/demo-engine.js';
 /* @sync:adapter-end */
 
@@ -826,10 +826,12 @@ function retortFrontierPlot(a) {
     `<text x="8" y="14" fill="#888" font-size="9">accuracy ↑</text></svg>`;
 }
 
+let retortFrontierOnly = false;
 function retortCard(a) {
   const card = document.createElement('div');
   card.className = 'card';
-  const rows = a.standings.map(s => {
+  const standings = retortFrontierOnly ? a.standings.filter(s => s.pareto_optimal) : a.standings;
+  const rows = standings.map(s => {
     const medal = s.rank === 1 ? '🥇' : s.rank === 2 ? '🥈' : s.rank === 3 ? '🥉' : ('#' + s.rank);
     const tier = s.pareto_optimal ? '<span class="badge">◆ frontier</span>' : '<span class="sub">✗ dominated</span>';
     const base = s.is_baseline ? '<span class="sub">baseline</span>' : '';
@@ -848,6 +850,7 @@ function retortCard(a) {
     retortFrontierPlot(a) +
     `<div class="sub">● frontier (Pareto-optimal) · ○ dominated · ◆ baseline</div>${rows}` +
     `<div class="actions"><span>Run via <b>npx retort bench metaharness</b></span>` +
+    `<button class="chip" id="retort-filter">${retortFrontierOnly ? 'Show all' : '◆ Frontier only'}</button>` +
     `<button class="chip" id="retort-compete">Compete →</button></div>`;
   return card;
 }
@@ -859,6 +862,8 @@ function showRetort() {
   thread.appendChild(retortCard(a));
   const btn = $('retort-compete');
   if (btn) btn.onclick = () => { const cmd = 'npx retort bench metaharness'; if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {}); toast('Copied: ' + cmd); };
+  const fb = $('retort-filter');
+  if (fb) fb.onclick = () => { retortFrontierOnly = !retortFrontierOnly; thread.innerHTML = ''; showRetort(); };
   thread.scrollTop = 0;
 }
 

@@ -246,6 +246,21 @@ try {
     ok(await page.evaluate(() => window.__genesisStore.budget().budgets.every(b => b.remaining >= 0)), 'remaining never goes negative');
   }
 
+  // ---- Retort: frontier-only filter (interactive) ----
+  if (GENESIS) {
+    const r = await page.evaluate(async () => {
+      window.__ui.VIEWS.retort(); await new Promise(s => setTimeout(s, 150));
+      const all = document.querySelectorAll('#thread .lb').length;
+      const fb = document.getElementById('retort-filter');
+      const hasBtn = !!fb; fb && fb.click(); await new Promise(s => setTimeout(s, 150));
+      const frontier = document.querySelectorAll('#thread .lb').length;
+      const rb = document.getElementById('retort-filter'); rb && rb.click(); // reset to show all
+      return { hasBtn, all, frontier };
+    });
+    ok(r.hasBtn, 'Retort has a frontier-only filter toggle');
+    ok(r.frontier > 0 && r.frontier < r.all, 'frontier filter narrows the leaderboard to Pareto-optimal stacks');
+  }
+
   // ---- Budget: top up a pod's cap (interactive) ----
   if (GENESIS) {
     const r = await page.evaluate(async () => {
