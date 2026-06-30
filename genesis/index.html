@@ -91,7 +91,7 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
-    font-size: 16px; overscroll-behavior: none; overflow-x: hidden; }
+    font-size: 16px; overscroll-behavior: none; overflow: hidden; }
 
   /* ---- visibility helpers (driven by data-layout ONLY) ---- */
   .desk-only { display: none !important; }
@@ -217,7 +217,7 @@
   .row.tappable { cursor: pointer; }
 
   /* Thread */
-  main { flex: 1; overflow-y: auto; padding: 14px 14px 6px; display: flex; flex-direction: column; gap: 12px;
+  main { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 14px 6px; display: flex; flex-direction: column; gap: 12px;
     -webkit-overflow-scrolling: touch; }
   .day { text-align: center; color: var(--muted); font-size: 12px; margin: 6px 0; }
 
