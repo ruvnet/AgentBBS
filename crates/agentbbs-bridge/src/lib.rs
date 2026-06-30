@@ -82,7 +82,11 @@ pub fn is_bridged(msg: &Message) -> bool {
 /// message shape as `chat.postMessage`'s `text`/`blocks`.
 pub fn format_slack(msg: &Message) -> Value {
     let who = display_handle(msg);
-    let sig = if msg.verify().is_ok() { "✓ signed" } else { "✗ unsigned" };
+    let sig = if msg.verify().is_ok() {
+        "✓ signed"
+    } else {
+        "✗ unsigned"
+    };
     json!({
         "text": format!("*{}* in #{}  _{}_\n{}", who, msg.body.board, sig, msg.body.body),
     })
@@ -92,7 +96,11 @@ pub fn format_slack(msg: &Message) -> Value {
 /// received") trigger: a `message` carrying an Adaptive Card attachment.
 pub fn format_teams(msg: &Message) -> Value {
     let who = display_handle(msg);
-    let sig = if msg.verify().is_ok() { "✓ signed" } else { "✗ unsigned" };
+    let sig = if msg.verify().is_ok() {
+        "✓ signed"
+    } else {
+        "✗ unsigned"
+    };
     json!({
         "type": "message",
         "attachments": [{
@@ -113,7 +121,10 @@ pub fn format_teams(msg: &Message) -> Value {
 
 fn display_handle(msg: &Message) -> String {
     if msg.body.handle.is_empty() {
-        format!("@{}", &msg.body.author.to_hex()[..8.min(msg.body.author.to_hex().len())])
+        format!(
+            "@{}",
+            &msg.body.author.to_hex()[..8.min(msg.body.author.to_hex().len())]
+        )
     } else {
         msg.body.handle.clone()
     }
@@ -142,10 +153,18 @@ impl Bridge {
         };
         let mut posts = Vec::new();
         if let Some(url) = &mapping.slack_webhook {
-            posts.push(OutboundPost { target: Target::Slack, url: url.clone(), payload: format_slack(msg) });
+            posts.push(OutboundPost {
+                target: Target::Slack,
+                url: url.clone(),
+                payload: format_slack(msg),
+            });
         }
         if let Some(url) = &mapping.teams_webhook {
-            posts.push(OutboundPost { target: Target::Teams, url: url.clone(), payload: format_teams(msg) });
+            posts.push(OutboundPost {
+                target: Target::Teams,
+                url: url.clone(),
+                payload: format_teams(msg),
+            });
         }
         posts
     }
@@ -176,7 +195,10 @@ impl From<reqwest::Error> for BridgeError {
 /// Deliver a planned set of posts over HTTP. Thin wrapper over `reqwest` — the
 /// interesting decisions already happened in [`Bridge::plan`]. Returns the
 /// targets that were delivered successfully; the first transport error aborts.
-pub async fn deliver(client: &reqwest::Client, posts: &[OutboundPost]) -> Result<Vec<Target>, BridgeError> {
+pub async fn deliver(
+    client: &reqwest::Client,
+    posts: &[OutboundPost],
+) -> Result<Vec<Target>, BridgeError> {
     let mut delivered = Vec::with_capacity(posts.len());
     for p in posts {
         let resp = client.post(&p.url).json(&p.payload).send().await?;
@@ -232,11 +254,18 @@ mod tests {
         let m = msg("general", "alice", "hello teams");
         let p = format_teams(&m);
         assert_eq!(p["type"], "message");
-        assert_eq!(p["attachments"][0]["contentType"], "application/vnd.microsoft.card.adaptive");
+        assert_eq!(
+            p["attachments"][0]["contentType"],
+            "application/vnd.microsoft.card.adaptive"
+        );
         let card = &p["attachments"][0]["content"];
         assert_eq!(card["type"], "AdaptiveCard");
         let blocks = card["body"].as_array().unwrap();
-        let joined: String = blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join(" ");
+        let joined: String = blocks
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(joined.contains("hello teams"));
         assert!(joined.contains("#general"));
     }
