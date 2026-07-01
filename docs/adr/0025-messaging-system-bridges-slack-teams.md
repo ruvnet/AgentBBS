@@ -1,6 +1,7 @@
 # 25. Messaging-system bridges (Slack, Teams) via a federation peer
 
-Status: Proposed
+Status: Accepted (Phase 0 outbound + Phase 1 Slack inbound shipped; Phase 2
+Teams inbound and a Discord adapter remain)
 
 ## Context
 
@@ -85,15 +86,26 @@ Analogous to Matrix appservice "ghost/puppet" users:
   `Bridge::plan(&Message) -> Vec<OutboundPost>` (opt-in per-board allowlist +
   `bridge:` loop guard + Slack mrkdwn / Teams Adaptive-Card formatting) and a
   thin async `deliver()` over `reqwest`; 7 unit tests, clippy-clean.
-- **Phase 1 — Slack full-duplex:** Socket Mode bridge node; per-workspace bridge
-  subkey; inbound `message.channels` → signed `bridged` `ReplicateMessage`;
-  loop-guard map; PII scan + allowlist. **◐ identity model implemented** in
-  `agentbbs-bridge::inbound` — `BridgeIdentity` (deterministic per-source
-  Ed25519 subkeys via `blake3(domain‖root‖source)`), `sign_inbound` (an inbound
-  external message → a verifying, `bridge:`-marked AgentBBS message authored by
-  the source subkey), and `SeenSet` (external-id loop guard); 5 tests incl. the
-  full Slack→BBS→Slack no-echo guard. **Remaining:** the Socket Mode transport
-  that delivers events (needs a live Slack app) + PII scan on ingest.
+- **Phase 1 — Slack full-duplex:** ✓ **Implemented**, via a transport choice
+  that deviates from the original Decision above: an **Events API HTTP
+  webhook** (`POST /api/bridge/slack/events` on `agentbbs-web`) rather than
+  Socket Mode. `agentbbs-web` already runs a public HTTPS Cloud Run service,
+  so an HTTP webhook reuses that endpoint instead of standing up a second
+  always-on WebSocket process; the per-event signing-secret check the original
+  Decision wanted to avoid is exactly what makes an Internet-facing webhook
+  safe (`crates/agentbbs-web/src/slack_bridge.rs`: Slack's documented v0
+  HMAC-SHA256 scheme + 5-minute replay window). On top of the identity model
+  already in `agentbbs-bridge::inbound` — `BridgeIdentity` (deterministic
+  per-source Ed25519 subkeys via `blake3(domain‖root‖source)`), `sign_inbound`
+  (inbound external message → a verifying, `bridge:`-marked AgentBBS message
+  authored by the source subkey), `SeenSet` (external-id loop guard) — the
+  webhook handler answers the `url_verification` handshake, applies an
+  opt-in channel→board allowlist (`AGENTBBS_SLACK_CHANNEL_MAP`), dedupes on
+  Slack's `ts`, and drops bot-authored events at parse time. 10 unit tests +
+  1 route-integration test; live-verified locally against a running server
+  with real HMAC-signed requests (signature enforcement, handshake, delivery,
+  dedup, channel allowlist all confirmed). **Remaining:** PII scan on ingest
+  (ADR 0007 egress posture) — not yet wired into this path.
 - **Phase 2 — Teams inbound:** Azure Bot Service (single-tenant) + RSC; same
   bridged-signing + loop-guard model; Adaptive Card rendering.
 - Lands as a new crate (e.g. `agentbbs-bridge`) consuming `agentbbs-federation`;
