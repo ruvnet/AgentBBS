@@ -6,7 +6,7 @@
 //! so it can be unit-tested with a `TestBackend` and driven for real over an
 //! SSH PTY or the local terminal.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use std::time::Instant;
@@ -173,6 +173,12 @@ pub struct App {
     pub current_board: Option<String>,
     /// Cached messages for the current board.
     pub messages: Vec<Message>,
+    /// Per-id (`MessageId.0`) verification, computed on each message *as
+    /// fetched* — before `apply_control_messages` may substitute an edited
+    /// body — so an edited message still correctly shows as signed.
+    pub verified: HashMap<String, bool>,
+    /// Ids of messages currently showing a substituted (edited) body.
+    pub edited: HashSet<String>,
     /// Highlighted/scrolled message row.
     pub read_index: usize,
     /// Compose: subject buffer.
@@ -184,6 +190,9 @@ pub struct App {
     /// Set when compose was entered via Reply — threads the post under the
     /// target message (`MessageBody.parent`), Slack-style.
     pub compose_reply_to: Option<ReplyTarget>,
+    /// Set when compose was entered via Edit — posts a signed
+    /// `agentbbs/ctl:edit:<id>` control message instead of a normal post.
+    pub edit_target: Option<MessageId>,
     /// Per-board "last seen" message count, so the board list can show
     /// Slack-style unread badges. A board absent here has never been opened
     /// (everything on it is unread).
@@ -320,11 +329,14 @@ impl App {
             board_index: 0,
             current_board: None,
             messages: Vec::new(),
+            verified: HashMap::new(),
+            edited: HashSet::new(),
             read_index: 0,
             compose_subject: String::new(),
             compose_body: String::new(),
             compose_field: ComposeField::Subject,
             compose_reply_to: None,
+            edit_target: None,
             board_seen: HashMap::new(),
             arena: Arena::new(),
             arena_index: 0,
@@ -1022,15 +1034,98 @@ impl App {
     pub fn open_selected_board(&mut self) {
         if let Some(board) = self.boards.get(self.board_index) {
             let slug = board.slug.clone();
-            self.messages = self
+            let raw = self
                 .bbs
                 .read_board(Caps::READ, &slug, 200)
                 .unwrap_or_default();
+            // board_seen tracks the RAW count (including control messages) so
+            // a stray edit/delete from another session still registers as
+            // "something happened" for the unread badge.
+            self.board_seen.insert(slug.clone(), raw.len());
+            let (messages, verified, edited) = App::apply_control_messages(raw);
+            self.messages = messages;
+            self.verified = verified;
+            self.edited = edited;
             self.read_index = self.messages.len().saturating_sub(1);
-            self.board_seen.insert(slug.clone(), self.messages.len());
             self.current_board = Some(slug);
             self.screen = Screen::Read;
         }
+    }
+
+    /// Apply the author-only edit/delete convention: a signed control
+    /// message (`subject: "agentbbs/ctl:retract:<id>"` or
+    /// `"agentbbs/ctl:edit:<id>"`) targets an earlier message by id. No core
+    /// changes — this is the exact same client-side convention the web UI
+    /// uses (`applyControlMessages` in genesis/index.html), so a genesis
+    /// browser and this TUI resolve the same board history identically.
+    /// Author-only is enforced by comparing the *verified* signer of the
+    /// control message against the *verified* signer of the target — a
+    /// forged control message from a different key can never hide/replace
+    /// someone else's post, since `Bbs::post` already rejected any message
+    /// whose signature doesn't match its claimed author.
+    /// Returns the filtered/substituted messages, plus per-id `verified`
+    /// (computed against the message *as originally fetched*, i.e. exactly
+    /// what its signature actually covers — the same "cache the verified
+    /// flag before substituting" order the web's adapter uses) and `edited`
+    /// flags for display. Substituting an edit's body without also carrying
+    /// its own precomputed `verified` flag would make every edited message
+    /// wrongly show as unsigned, since no one ever signed "original
+    /// metadata + edited body" as one unit — the original post and the edit
+    /// control message are each independently signed and valid.
+    fn apply_control_messages(
+        messages: Vec<Message>,
+    ) -> (Vec<Message>, HashMap<String, bool>, HashSet<String>) {
+        const CTL: &str = "agentbbs/ctl:";
+        let mut retracted: HashMap<String, AgentId> = HashMap::new();
+        let mut edits: HashMap<String, (String, AgentId, chrono::DateTime<chrono::Utc>)> =
+            HashMap::new();
+        let verified: HashMap<String, bool> = messages
+            .iter()
+            .map(|m| (m.id.0.clone(), m.verify().is_ok()))
+            .collect();
+        for m in &messages {
+            let subject = &m.body.subject;
+            if let Some(tid) = subject.strip_prefix(&format!("{CTL}retract:")) {
+                let tid = if m.body.body.is_empty() {
+                    tid.to_string()
+                } else {
+                    m.body.body.clone()
+                };
+                retracted.insert(tid, m.body.author);
+            } else if let Some(tid) = subject.strip_prefix(&format!("{CTL}edit:")) {
+                let newer = edits
+                    .get(tid)
+                    .map(|(_, _, at)| *at < m.body.created_at)
+                    .unwrap_or(true);
+                if newer {
+                    edits.insert(
+                        tid.to_string(),
+                        (m.body.body.clone(), m.body.author, m.body.created_at),
+                    );
+                }
+            }
+        }
+        let mut edited = HashSet::new();
+        let out = messages
+            .into_iter()
+            .filter(|m| !m.body.subject.starts_with(CTL))
+            .filter(|m| {
+                retracted
+                    .get(&m.id.0)
+                    .map(|author| *author != m.body.author)
+                    .unwrap_or(true)
+            })
+            .map(|mut m| {
+                if let Some((text, author, _)) = edits.get(&m.id.0) {
+                    if *author == m.body.author {
+                        m.body.body = text.clone();
+                        edited.insert(m.id.0.clone());
+                    }
+                }
+                m
+            })
+            .collect();
+        (out, verified, edited)
     }
 
     /// Total messages currently on `slug` (used only for the unread badge —
@@ -1087,7 +1182,74 @@ impl App {
         self.screen = Screen::Compose;
     }
 
-    /// Post the in-progress compose buffer to the current board.
+    /// Enter compose in edit mode for the currently highlighted message —
+    /// author-only, enforced client-side here (and, more importantly,
+    /// self-enforcing on read: `apply_control_messages` only honors an edit
+    /// whose *verified* signer matches the target's verified author).
+    pub fn begin_edit(&mut self) {
+        let Some(m) = self.messages.get(self.read_index) else {
+            return;
+        };
+        if m.body.author != self.session.identity.id() {
+            self.status = "You can only edit your own messages.".into();
+            return;
+        }
+        self.edit_target = Some(m.id.clone());
+        self.compose_reply_to = None;
+        self.compose_body = m.body.body.clone();
+        self.compose_field = ComposeField::Body;
+        self.status = "Editing — Ctrl-S saves, ESC cancels.".into();
+        self.screen = Screen::Compose;
+    }
+
+    /// Delete (retract) the currently highlighted message — author-only,
+    /// same enforcement model as edit. Posts a signed
+    /// `agentbbs/ctl:retract:<id>` control message immediately (no text
+    /// input needed).
+    pub fn delete_selected(&mut self) -> Result<(), String> {
+        let Some(m) = self.messages.get(self.read_index).cloned() else {
+            return Err("no message selected".into());
+        };
+        if m.body.author != self.session.identity.id() {
+            return Err("you can only delete your own messages".into());
+        }
+        let slug = self.current_board.clone().ok_or("no board selected")?;
+        let body = agentbbs_core::MessageBody {
+            board: slug.clone(),
+            parent: None,
+            subject: format!("agentbbs/ctl:retract:{}", m.id.0),
+            body: m.id.0.clone(),
+            author: self.session.identity.id(),
+            handle: "you".to_string(),
+            created_at: chrono::Utc::now(),
+        };
+        let signed = Message::sign(&self.session.identity, body).map_err(|e| e.to_string())?;
+        self.bbs
+            .post(self.session.caps, signed)
+            .map_err(|e| e.to_string())?;
+        self.refresh_current_board(&slug);
+        Ok(())
+    }
+
+    /// Re-fetch and re-filter `slug`'s messages into `self.messages`,
+    /// clamping the read cursor. Shared by post/edit/delete so control
+    /// messages are consistently resolved after every mutation.
+    fn refresh_current_board(&mut self, slug: &str) {
+        let raw = self
+            .bbs
+            .read_board(Caps::READ, slug, 200)
+            .unwrap_or_default();
+        self.board_seen.insert(slug.to_string(), raw.len());
+        let (messages, verified, edited) = App::apply_control_messages(raw);
+        self.messages = messages;
+        self.verified = verified;
+        self.edited = edited;
+        self.read_index = self.read_index.min(self.messages.len().saturating_sub(1));
+    }
+
+    /// Post the in-progress compose buffer to the current board — a normal
+    /// post, a threaded reply, or (if `edit_target` is set) a signed
+    /// `agentbbs/ctl:edit:<id>` control message.
     pub fn submit_compose(&mut self) {
         let Some(slug) = self.current_board.clone() else {
             self.status = "No board selected.".into();
@@ -1104,36 +1266,49 @@ impl App {
             self.status = "Posting is blocked by moderation.".into();
             return;
         }
-        let subject = if self.compose_subject.trim().is_empty() {
-            "(no subject)".to_string()
+        let (subject, parent) = if let Some(target) = &self.edit_target {
+            (format!("agentbbs/ctl:edit:{}", target.0), None)
         } else {
-            self.compose_subject.clone()
+            let subject = if self.compose_subject.trim().is_empty() {
+                "(no subject)".to_string()
+            } else {
+                self.compose_subject.clone()
+            };
+            (
+                subject,
+                self.compose_reply_to.as_ref().map(|r| r.id.clone()),
+            )
         };
-        let parent = self.compose_reply_to.as_ref().map(|r| r.id.clone());
+        let handle = if self.edit_target.is_some() {
+            "you".to_string()
+        } else {
+            self.session.handle.clone()
+        };
         let body = agentbbs_core::MessageBody {
             board: slug.clone(),
             parent,
             subject,
             body: self.compose_body.clone(),
             author: self.session.identity.id(),
-            handle: self.session.handle.clone(),
+            handle,
             created_at: chrono::Utc::now(),
         };
         match Message::sign(&self.session.identity, body)
             .and_then(|m| self.bbs.post(self.session.caps, m))
         {
             Ok(_) => {
+                let was_edit = self.edit_target.is_some();
                 self.compose_subject.clear();
                 self.compose_body.clear();
                 self.compose_field = ComposeField::Subject;
                 self.compose_reply_to = None;
-                self.messages = self
-                    .bbs
-                    .read_board(Caps::READ, &slug, 200)
-                    .unwrap_or_default();
-                self.read_index = self.messages.len().saturating_sub(1);
-                self.board_seen.insert(slug, self.messages.len());
-                self.status = "Message posted and signed.".into();
+                self.edit_target = None;
+                self.refresh_current_board(&slug);
+                self.status = if was_edit {
+                    "Message edited and signed.".into()
+                } else {
+                    "Message posted and signed.".into()
+                };
                 self.screen = Screen::Read;
             }
             Err(e) => self.status = format!("Post failed: {e}"),

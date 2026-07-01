@@ -119,11 +119,17 @@ impl App {
             }
             KeyCode::Char('p') | KeyCode::Char('P') => {
                 self.compose_reply_to = None;
+                self.edit_target = None;
                 self.compose_field = ComposeField::Subject;
                 self.status = "Compose — TAB switches field, Ctrl-S sends, ESC cancels.".into();
                 self.screen = Screen::Compose;
             }
             KeyCode::Char('r') | KeyCode::Char('R') => self.begin_reply(),
+            KeyCode::Char('e') | KeyCode::Char('E') => self.begin_edit(),
+            KeyCode::Char('d') | KeyCode::Char('D') => match self.delete_selected() {
+                Ok(()) => self.status = "Message deleted.".into(),
+                Err(e) => self.status = format!("Delete failed: {e}"),
+            },
             // Slack-style quick channel switch — jump boards without
             // returning to the Boards list first.
             KeyCode::Char('[') => self.switch_board(-1),
@@ -143,6 +149,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.compose_reply_to = None;
+                self.edit_target = None;
                 self.status = "Compose cancelled.".into();
                 self.screen = Screen::Read;
             }

@@ -650,3 +650,104 @@ fn console_shows_live_diagnostics_distinct_from_sysops_event_log() {
     assert!(text.contains("SYSTEM DIAGNOSTICS"));
     assert!(text.contains("point-in-time summary"));
 }
+
+fn post(app: &mut App, subject: &str, body: &str) {
+    app.on_key(press(KeyCode::Char('P')));
+    for c in subject.chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    app.on_key(press(KeyCode::Tab));
+    for c in body.chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    app.on_key(ctrl('s'));
+}
+
+#[test]
+fn edit_own_message_replaces_its_body_via_a_signed_control_message() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('M')));
+    app.on_key(press(KeyCode::Enter));
+    post(&mut app, "hi", "original text");
+    assert_eq!(app.messages.len(), 1);
+
+    app.on_key(press(KeyCode::Char('e'))); // edit the (only) message
+    assert_eq!(app.screen, Screen::Compose);
+    assert_eq!(app.compose_body, "original text"); // pre-filled
+    for _ in 0.."original text".len() {
+        app.on_key(press(KeyCode::Backspace));
+    }
+    for c in "edited text".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    app.on_key(ctrl('s'));
+
+    assert_eq!(app.messages.len(), 1); // the control message is hidden
+    let id = &app.messages[0].id.0;
+    assert_eq!(app.messages[0].body.body, "edited text");
+    assert!(app.status.contains("edited"));
+    // The edited message must still show as verified — its own signature no
+    // longer matches the substituted body (nobody signed "old metadata +
+    // new body" as one unit), so `verified` must come from the cached
+    // per-fetch flag, not a direct `.verify()` on the substituted message.
+    assert_eq!(app.verified.get(id), Some(&true));
+    assert!(app.edited.contains(id));
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("✓sig"));
+    assert!(!text.contains("✗SIG"));
+    assert!(text.contains("(edited)"));
+}
+
+#[test]
+fn edit_is_author_only() {
+    use agentbbs_core::{MemoryStore, Presence};
+    use std::sync::Arc;
+    let presence = Arc::new(Presence::default());
+    let store: Arc<dyn agentbbs_core::Store> = Arc::new(MemoryStore::new());
+    let mut a = App::with_presence(store.clone(), presence.clone());
+    let b = App::with_presence(store.clone(), presence.clone());
+
+    a.on_key(press(KeyCode::Enter));
+    a.on_key(press(KeyCode::Char('M')));
+    a.on_key(press(KeyCode::Enter));
+    post(&mut a, "hi", "a's message");
+    let slug = a.current_board.clone().unwrap();
+
+    // Forge an edit control message signed by b, targeting a's message.
+    let target = a.messages[0].id.clone();
+    let forged = agentbbs_core::MessageBody {
+        board: slug.clone(),
+        parent: None,
+        subject: format!("agentbbs/ctl:edit:{}", target.0),
+        body: "forged edit".into(),
+        author: b.session.identity.id(),
+        handle: "you".into(),
+        created_at: chrono::Utc::now(),
+    };
+    let signed = Message::sign(&b.session.identity, forged).unwrap();
+    b.bbs.post(b.session.caps, signed).unwrap();
+
+    // a re-reads the board — the forged edit must NOT apply (author mismatch).
+    a.open_selected_board();
+    assert_eq!(a.messages.len(), 1);
+    assert_eq!(a.messages[0].body.body, "a's message");
+}
+
+#[test]
+fn delete_own_message_hides_it_and_is_author_only() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('M')));
+    app.on_key(press(KeyCode::Enter));
+    post(&mut app, "hi", "to be deleted");
+    assert_eq!(app.messages.len(), 1);
+
+    app.on_key(press(KeyCode::Char('d')));
+    assert_eq!(app.messages.len(), 0);
+    assert!(app.status.contains("deleted"));
+
+    // Store-level: the original message and the retract control message
+    // both still exist (append-only), but the filtered view hides it.
+    assert_eq!(app.bbs.store().message_count().unwrap(), 2);
+}

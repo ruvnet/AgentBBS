@@ -204,7 +204,8 @@ impl App {
 
     fn render_read(&self, frame: &mut Frame, area: Rect) {
         let title = self.current_board.clone().unwrap_or_else(|| "board".into());
-        let hint = "(P post · R reply · [ ] switch board · ↑↓ scroll · ESC back)";
+        let hint =
+            "(P post · R reply · E edit own · D delete own · [ ] switch board · ↑↓ scroll · ESC back)";
         if self.messages.is_empty() {
             let p = Paragraph::new(vec![
                 Line::from(""),
@@ -222,13 +223,25 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         for (i, m) in self.messages.iter().enumerate() {
             let marker = if i == self.read_index { "▶" } else { " " };
-            let verified = if m.verify().is_ok() {
-                "✓sig"
+            // Verified against the message *as originally fetched* (cached
+            // before any edit-body substitution), never re-derived from the
+            // possibly-substituted `m` here — an edit's own control message
+            // is independently signed, so the composite "original metadata +
+            // edited body" was never itself signed as one unit and would
+            // always fail a direct `.verify()` here despite being legitimate.
+            let ok = self.verified.get(&m.id.0).copied().unwrap_or(false);
+            let (verified, sig_style) = if ok {
+                ("✓sig", Style::default().fg(theme::GREEN))
             } else {
-                "✗SIG"
+                ("✗SIG", Style::default().fg(theme::RED))
             };
             let indent = if m.body.parent.is_some() {
                 "  ↳ "
+            } else {
+                ""
+            };
+            let edited_tag = if self.edited.contains(&m.id.0) {
+                " (edited)"
             } else {
                 ""
             };
@@ -248,7 +261,8 @@ impl App {
                     theme::chrome(),
                 ),
                 Span::raw("  "),
-                Span::styled(verified, Style::default().fg(theme::GREEN)),
+                Span::styled(verified, sig_style),
+                Span::styled(edited_tag, theme::dim()),
             ]));
             lines.push(Line::from(vec![
                 Span::raw(format!("   {indent}")),
