@@ -50,6 +50,7 @@ impl App {
             Screen::Market => self.key_market(key),
             Screen::Sysop => self.key_sysop(key),
             Screen::Palette => self.key_palette(key),
+            Screen::Appearance => self.key_appearance(key),
             Screen::Who
             | Screen::Doors
             | Screen::Federation
@@ -103,10 +104,37 @@ impl App {
     fn goto(&mut self, target: Screen) {
         match target {
             Screen::Boards => self.refresh_boards(),
+            Screen::Appearance => {
+                self.appearance_index = crate::theme::ThemeName::ALL
+                    .iter()
+                    .position(|t| *t == self.theme)
+                    .unwrap_or(0);
+            }
             Screen::Goodbye => {}
             _ => {}
         }
         self.screen = target;
+    }
+
+    fn key_appearance(&mut self, key: KeyEvent) -> Control {
+        let count = crate::theme::ThemeName::ALL.len();
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.appearance_index = self.appearance_index.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.appearance_index + 1 < count {
+                    self.appearance_index += 1;
+                }
+            }
+            KeyCode::Enter => {
+                self.theme = crate::theme::ThemeName::ALL[self.appearance_index];
+                self.status = format!("Theme set to {}.", self.theme.label());
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
+            _ => {}
+        }
+        Control::Continue
     }
 
     fn key_palette(&mut self, key: KeyEvent) -> Control {

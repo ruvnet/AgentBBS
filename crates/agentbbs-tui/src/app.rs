@@ -26,6 +26,8 @@ use agentbbs_core::report::MemoryReporter;
 use agentbbs_core::reputation::{OutcomeRecord, ReputationLedger};
 use agentbbs_core::{Bbs, Board, MemoryStore, Message, MessageBody, MessageId, Role, Store};
 
+use crate::theme::ThemeName;
+
 /// A snapshot of the message being replied to, kept alongside the compose
 /// buffer so Slack-style threaded replies don't need to re-fetch it.
 #[derive(Clone)]
@@ -102,6 +104,10 @@ pub enum Screen {
     /// Command palette (Ctrl-K, from anywhere) — filter [`MENU`] by label
     /// and jump straight to a screen.
     Palette,
+    /// Appearance picker — cycle the session's colour theme (ADR-0051,
+    /// mirrors the web's 6 `data-theme` palettes plus the TUI's own Retro
+    /// default).
+    Appearance,
     /// Sign-off screen.
     Goodbye,
 }
@@ -125,6 +131,7 @@ pub const MENU: &[(char, &str, Screen)] = &[
     ('F', "Federation", Screen::Federation),
     ('S', "Sysop Report", Screen::Sysop),
     ('E', "Console", Screen::Console),
+    ('O', "Appearance", Screen::Appearance),
     ('G', "Goodbye / Log Off", Screen::Goodbye),
 ];
 
@@ -271,6 +278,12 @@ pub struct App {
     /// Command palette: the screen to return to on Esc — wherever Ctrl-K
     /// was pressed from, not always `Main`.
     pub palette_return: Screen,
+    /// This session's active colour theme (ADR-0051 Appearance picker).
+    /// Purely cosmetic, per-session — mirrors the web's per-browser
+    /// `localStorage` theme choice, just in-memory here.
+    pub theme: ThemeName,
+    /// Highlighted row in the Appearance screen's theme list.
+    pub appearance_index: usize,
 }
 
 impl Drop for App {
@@ -379,6 +392,8 @@ impl App {
             palette_query: String::new(),
             palette_index: 0,
             palette_return: Screen::Main,
+            theme: ThemeName::default(),
+            appearance_index: 0,
         };
         app.seed_defaults();
         app.seed_arena();

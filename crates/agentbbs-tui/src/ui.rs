@@ -51,6 +51,7 @@ impl App {
             Screen::Passport => self.render_passport(frame, rows[1]),
             Screen::Console => self.render_console(frame, rows[1]),
             Screen::Palette => self.render_palette(frame, rows[1]),
+            Screen::Appearance => self.render_appearance(frame, rows[1]),
             Screen::Goodbye => self.render_goodbye(frame, rows[1]),
         }
         self.render_status(frame, rows[2]);
@@ -58,22 +59,25 @@ impl App {
 
     fn render_title(&self, frame: &mut Frame, area: Rect) {
         let line = Line::from(vec![
-            Span::styled(" AgentBBS ", theme::title()),
+            Span::styled(" AgentBBS ", theme::title(self.theme)),
             Span::raw(" "),
             Span::styled(
                 format!("node {}", agentbbs_core::PROTOCOL_VERSION),
-                theme::dim(),
+                theme::dim(self.theme),
             ),
             Span::raw("  "),
-            Span::styled(format!("you: {}", self.session.handle), theme::chrome()),
+            Span::styled(
+                format!("you: {}", self.session.handle),
+                theme::chrome(self.theme),
+            ),
         ]);
         frame.render_widget(Paragraph::new(line), area);
     }
 
     fn render_status(&self, frame: &mut Frame, area: Rect) {
         let p = Paragraph::new(Line::from(vec![
-            Span::styled(" ▸ ", Style::default().fg(theme::MAGENTA)),
-            Span::styled(&self.status, theme::dim()),
+            Span::styled(" ▸ ", Style::default().fg(theme::accent(self.theme))),
+            Span::styled(&self.status, theme::dim(self.theme)),
         ]));
         frame.render_widget(p, area);
     }
@@ -82,8 +86,8 @@ impl App {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Double)
-            .border_style(theme::chrome())
-            .title(Span::styled(format!(" {title} "), theme::title()))
+            .border_style(theme::chrome(self.theme))
+            .title(Span::styled(format!(" {title} "), theme::title(self.theme)))
     }
 
     fn render_splash(&self, frame: &mut Frame, area: Rect) {
@@ -91,22 +95,22 @@ impl App {
         for b in theme::BANNER {
             lines.push(Line::from(Span::styled(
                 *b,
-                Style::default().fg(theme::MAGENTA).bold(),
+                Style::default().fg(theme::accent(self.theme)).bold(),
             )));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "The first BBS made for agents and human collaboration.",
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         lines.push(Line::from(Span::styled(
             "Anonymous · signed · federated · WASM-extensible",
-            theme::dim(),
+            theme::dim(self.theme),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "CONNECT 57600/ARQ/V.90  —  press ENTER to log on",
-            Style::default().fg(theme::GREEN),
+            Style::default().fg(theme::green(self.theme)),
         )));
         let p = Paragraph::new(Text::from(lines))
             .alignment(Alignment::Center)
@@ -128,11 +132,11 @@ impl App {
                 let prefix = if selected { "▶ " } else { "  " };
                 let line = Line::from(vec![
                     Span::raw(prefix),
-                    Span::styled(format!("[{hot}] "), theme::hotkey()),
-                    Span::styled(*label, theme::chrome()),
+                    Span::styled(format!("[{hot}] "), theme::hotkey(self.theme)),
+                    Span::styled(*label, theme::chrome(self.theme)),
                 ]);
                 let style = if selected {
-                    theme::lightbar()
+                    theme::lightbar(self.theme)
                 } else {
                     Style::default()
                 };
@@ -144,21 +148,21 @@ impl App {
         let boards = self.boards.len();
         let msgs = self.bbs.store().message_count().unwrap_or(0);
         let info = vec![
-            Line::from(Span::styled("SYSTEM STATUS", theme::hotkey())),
+            Line::from(Span::styled("SYSTEM STATUS", theme::hotkey(self.theme))),
             Line::from(""),
             Line::from(format!("Message bases ...... {boards}")),
             Line::from(format!("Messages on file ... {msgs}")),
             Line::from(format!("Your access ........ {:#?}", self.session.caps)),
             Line::from(""),
-            Line::from(Span::styled("Your anonymous id:", theme::dim())),
+            Line::from(Span::styled("Your anonymous id:", theme::dim(self.theme))),
             Line::from(Span::styled(
                 self.session.identity.id().to_hex(),
-                Style::default().fg(theme::GREEN),
+                Style::default().fg(theme::green(self.theme)),
             )),
             Line::from(""),
             Line::from(Span::styled(
                 "Ctrl-K anywhere: command palette",
-                theme::dim(),
+                theme::dim(self.theme),
             )),
         ];
         frame.render_widget(
@@ -182,20 +186,20 @@ impl App {
                 let unread = self.unread_for(&b.slug);
                 let mut spans = vec![
                     Span::raw(prefix),
-                    Span::styled(format!("{:<14}", b.slug), theme::hotkey()),
-                    Span::styled(b.title.clone(), theme::chrome()),
-                    Span::styled(format!("{lock}{fed}"), theme::dim()),
+                    Span::styled(format!("{:<14}", b.slug), theme::hotkey(self.theme)),
+                    Span::styled(b.title.clone(), theme::chrome(self.theme)),
+                    Span::styled(format!("{lock}{fed}"), theme::dim(self.theme)),
                 ];
                 // Slack-style unread badge — bright and unmissable.
                 if unread > 0 {
                     spans.push(Span::styled(
                         format!("  ● {unread} new"),
-                        Style::default().fg(theme::GREEN).bold(),
+                        Style::default().fg(theme::green(self.theme)).bold(),
                     ));
                 }
                 let line = Line::from(spans);
                 let style = if selected {
-                    theme::lightbar()
+                    theme::lightbar(self.theme)
                 } else {
                     Style::default()
                 };
@@ -215,10 +219,13 @@ impl App {
         if self.messages.is_empty() {
             let p = Paragraph::new(vec![
                 Line::from(""),
-                Line::from(Span::styled("No messages yet on this base.", theme::dim())),
+                Line::from(Span::styled(
+                    "No messages yet on this base.",
+                    theme::dim(self.theme),
+                )),
                 Line::from(Span::styled(
                     "Press [P] to post the first one.",
-                    theme::chrome(),
+                    theme::chrome(self.theme),
                 )),
             ])
             .alignment(Alignment::Center)
@@ -237,7 +244,7 @@ impl App {
             // always fail a direct `.verify()` here despite being legitimate.
             let ok = self.verified.get(&m.id.0).copied().unwrap_or(false);
             let (verified, sig_style) = if ok {
-                ("✓sig", Style::default().fg(theme::GREEN))
+                ("✓sig", Style::default().fg(theme::green(self.theme)))
             } else {
                 ("✗SIG", Style::default().fg(theme::RED))
             };
@@ -252,10 +259,10 @@ impl App {
                 ""
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("{marker} #{} ", i + 1), theme::hotkey()),
+                Span::styled(format!("{marker} #{} ", i + 1), theme::hotkey(self.theme)),
                 Span::styled(
                     m.body.created_at.format("%Y-%m-%d %H:%M").to_string(),
-                    theme::dim(),
+                    theme::dim(self.theme),
                 ),
                 Span::raw("  "),
                 Span::styled(
@@ -264,11 +271,11 @@ impl App {
                     } else {
                         m.body.handle.clone()
                     },
-                    theme::chrome(),
+                    theme::chrome(self.theme),
                 ),
                 Span::raw("  "),
                 Span::styled(verified, sig_style),
-                Span::styled(edited_tag, theme::dim()),
+                Span::styled(edited_tag, theme::dim(self.theme)),
             ]));
             lines.push(Line::from(vec![
                 Span::raw(format!("   {indent}")),
@@ -327,9 +334,9 @@ impl App {
             if subj_focus { "█" } else { "" }
         )))
         .block(self.framed("Subject").border_style(if subj_focus {
-            theme::lightbar()
+            theme::lightbar(self.theme)
         } else {
-            theme::chrome()
+            theme::chrome(self.theme)
         }));
         frame.render_widget(subject, rows[0]);
 
@@ -343,9 +350,9 @@ impl App {
         .block(
             self.framed("Message  (TAB field · Ctrl-S send · ESC cancel)")
                 .border_style(if body_focus {
-                    theme::lightbar()
+                    theme::lightbar(self.theme)
                 } else {
-                    theme::chrome()
+                    theme::chrome(self.theme)
                 }),
         );
         frame.render_widget(body, rows[1]);
@@ -357,7 +364,7 @@ impl App {
         let mut lines = vec![
             Line::from(Span::styled(
                 "NODE  WHO                                KIND    IDLE",
-                theme::hotkey(),
+                theme::hotkey(self.theme),
             )),
             Line::from("──────────────────────────────────────────────────────────"),
         ];
@@ -365,9 +372,13 @@ impl App {
             let me = m.id == self.session.identity.id();
             let idle = now.saturating_sub(m.last_seen_ms) / 1000;
             let kind = if m.agent { "agent" } else { "human" };
-            let style = if me { theme::chrome() } else { theme::dim() };
+            let style = if me {
+                theme::chrome(self.theme)
+            } else {
+                theme::dim(self.theme)
+            };
             lines.push(Line::from(vec![
-                Span::styled(format!("{:>4}  ", i + 1), theme::hotkey()),
+                Span::styled(format!("{:>4}  ", i + 1), theme::hotkey(self.theme)),
                 Span::styled(
                     format!(
                         "{:<34}",
@@ -379,12 +390,18 @@ impl App {
                     ),
                     style,
                 ),
-                Span::styled(format!("{kind:<7} "), theme::chrome()),
-                Span::styled(format!("{:02}:{:02}", idle / 60, idle % 60), theme::dim()),
+                Span::styled(format!("{kind:<7} "), theme::chrome(self.theme)),
+                Span::styled(
+                    format!("{:02}:{:02}", idle / 60, idle % 60),
+                    theme::dim(self.theme),
+                ),
             ]));
         }
         if online.is_empty() {
-            lines.push(Line::from(Span::styled("  (nobody online)", theme::dim())));
+            lines.push(Line::from(Span::styled(
+                "  (nobody online)",
+                theme::dim(self.theme),
+            )));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -392,7 +409,7 @@ impl App {
                 "{} online · agents join via SSH, MCP, or federation. ESC to return.",
                 online.len()
             ),
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines).block(self.framed("Who's Online")),
@@ -404,7 +421,7 @@ impl App {
         let mut lines = vec![
             Line::from(Span::styled(
                 "SKU            KIND        TITLE                          PRICE",
-                theme::hotkey(),
+                theme::hotkey(self.theme),
             )),
             Line::from("──────────────────────────────────────────────────────────"),
         ];
@@ -421,26 +438,32 @@ impl App {
             };
             let sig = if l.verify().is_ok() { "✓" } else { "✗" };
             let style = if selected {
-                theme::lightbar()
+                theme::lightbar(self.theme)
             } else {
                 Style::default()
             };
             lines.push(
                 Line::from(vec![
-                    Span::styled(format!("{marker}{:<12} ", l.body.sku), theme::hotkey()),
+                    Span::styled(
+                        format!("{marker}{:<12} ", l.body.sku),
+                        theme::hotkey(self.theme),
+                    ),
                     Span::styled(
                         format!("{:<11} ", format!("{:?}", l.body.kind).to_lowercase()),
-                        theme::dim(),
+                        theme::dim(self.theme),
                     ),
-                    Span::styled(format!("{:<30} ", l.body.title), theme::chrome()),
-                    Span::styled(format!("{price:<8} "), Style::default().fg(theme::GREEN)),
-                    Span::styled(sig, Style::default().fg(theme::GREEN)),
+                    Span::styled(format!("{:<30} ", l.body.title), theme::chrome(self.theme)),
+                    Span::styled(
+                        format!("{price:<8} "),
+                        Style::default().fg(theme::green(self.theme)),
+                    ),
+                    Span::styled(sig, Style::default().fg(theme::green(self.theme))),
                 ])
                 .style(style),
             );
             lines.push(Line::from(Span::styled(
                 format!("   {}", l.body.description),
-                theme::dim(),
+                theme::dim(self.theme),
             )));
         }
         lines.push(Line::from(""));
@@ -449,11 +472,11 @@ impl App {
                 "Every listing is signed by its seller and verifies on each node. You have {} credits.",
                 self.credits
             ),
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         lines.push(Line::from(Span::styled(
             "[N] install highlighted · ESC back",
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines)
@@ -467,7 +490,7 @@ impl App {
         let mut lines = vec![
             Line::from(Span::styled(
                 "ID          DOMAIN       STATUS      ROOM              CAP",
-                theme::hotkey(),
+                theme::hotkey(self.theme),
             )),
             Line::from("──────────────────────────────────────────────────────────"),
         ];
@@ -483,22 +506,28 @@ impl App {
                 PodStatus::Failed => "failed",
             };
             let style = if selected {
-                theme::lightbar()
+                theme::lightbar(self.theme)
             } else {
                 Style::default()
             };
             lines.push(
                 Line::from(vec![
-                    Span::styled(format!("{marker} {:<11}", p.id), theme::hotkey()),
-                    Span::styled(format!("{:<12} ", p.spec.template.domain), theme::chrome()),
-                    Span::styled(format!("{status:<11} "), Style::default().fg(theme::GREEN)),
+                    Span::styled(format!("{marker} {:<11}", p.id), theme::hotkey(self.theme)),
+                    Span::styled(
+                        format!("{:<12} ", p.spec.template.domain),
+                        theme::chrome(self.theme),
+                    ),
+                    Span::styled(
+                        format!("{status:<11} "),
+                        Style::default().fg(theme::green(self.theme)),
+                    ),
                     Span::styled(
                         format!("{:<17} ", p.spec.template.registered_room),
-                        theme::dim(),
+                        theme::dim(self.theme),
                     ),
                     Span::styled(
                         format!("${:.2}", p.spec.template.per_agent_cap_usd),
-                        theme::dim(),
+                        theme::dim(self.theme),
                     ),
                 ])
                 .style(style),
@@ -507,13 +536,13 @@ impl App {
         if self.pods.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No pods spawned yet. Hire an agent from the Directory, or press [N] to spawn a demo pod.",
-                theme::dim(),
+                theme::dim(self.theme),
             )));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "[N] spawn a demo pod · ESC back",
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines)
@@ -527,7 +556,7 @@ impl App {
         let mut lines = vec![
             Line::from(Span::styled(
                 "KIND         SUMMARY                                    STATUS",
-                theme::hotkey(),
+                theme::hotkey(self.theme),
             )),
             Line::from("──────────────────────────────────────────────────────────"),
         ];
@@ -536,39 +565,50 @@ impl App {
             let marker = if selected { "▶" } else { " " };
             let authorized = self.is_action_authorized(&p.action_id);
             let status = if authorized {
-                Span::styled("✓ authorized", Style::default().fg(theme::GREEN))
+                Span::styled(
+                    "✓ authorized",
+                    Style::default().fg(theme::green(self.theme)),
+                )
             } else {
-                Span::styled("⧗ pending", theme::dim())
+                Span::styled("⧗ pending", theme::dim(self.theme))
             };
             let style = if selected {
-                theme::lightbar()
+                theme::lightbar(self.theme)
             } else {
                 Style::default()
             };
             lines.push(
                 Line::from(vec![
-                    Span::styled(format!("{marker} {:<12}", p.kind), theme::hotkey()),
-                    Span::styled(format!("{:<42} ", p.summary), theme::chrome()),
+                    Span::styled(
+                        format!("{marker} {:<12}", p.kind),
+                        theme::hotkey(self.theme),
+                    ),
+                    Span::styled(format!("{:<42} ", p.summary), theme::chrome(self.theme)),
                     status,
                 ])
                 .style(style),
             );
             for d in self.gate.decisions_for(&p.action_id) {
                 let v = match d.verdict {
-                    Verdict::Approve => Span::styled("approve", Style::default().fg(theme::GREEN)),
+                    Verdict::Approve => {
+                        Span::styled("approve", Style::default().fg(theme::green(self.theme)))
+                    }
                     Verdict::Reject => Span::styled("reject", Style::default().fg(theme::RED)),
                 };
                 lines.push(Line::from(vec![
                     Span::raw("      ↳ "),
                     v,
-                    Span::styled(format!(" by @{}", d.decider.short()), theme::dim()),
+                    Span::styled(
+                        format!(" by @{}", d.decider.short()),
+                        theme::dim(self.theme),
+                    ),
                     Span::styled(
                         if d.reason.is_empty() {
                             String::new()
                         } else {
                             format!(" — {}", d.reason)
                         },
-                        theme::dim(),
+                        theme::dim(self.theme),
                     ),
                 ]));
             }
@@ -576,13 +616,13 @@ impl App {
         if self.proposals.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No proposals yet. Press [N] to raise a demo proposal.",
-                theme::dim(),
+                theme::dim(self.theme),
             )));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "[N] propose · [Y] approve highlighted · [R] reject highlighted · ESC back",
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines)
@@ -596,7 +636,7 @@ impl App {
         let mut lines = vec![
             Line::from(Span::styled(
                 "POD          SPENT      CAP        STATUS",
-                theme::hotkey(),
+                theme::hotkey(self.theme),
             )),
             Line::from("──────────────────────────────────────────────────────────"),
         ];
@@ -609,31 +649,34 @@ impl App {
             } else {
                 Span::styled(
                     format!("{:.0}%", s.pct * 100.0),
-                    Style::default().fg(theme::GREEN),
+                    Style::default().fg(theme::green(self.theme)),
                 )
             };
             let style = if selected {
-                theme::lightbar()
+                theme::lightbar(self.theme)
             } else {
                 Style::default()
             };
             lines.push(
                 Line::from(vec![
-                    Span::styled(format!("{marker} {:<11}", p.id), theme::hotkey()),
-                    Span::styled(format!("${:<9.3} ", s.spent), theme::chrome()),
-                    Span::styled(format!("${:<9.2} ", s.cap), theme::dim()),
+                    Span::styled(format!("{marker} {:<11}", p.id), theme::hotkey(self.theme)),
+                    Span::styled(format!("${:<9.3} ", s.spent), theme::chrome(self.theme)),
+                    Span::styled(format!("${:<9.2} ", s.cap), theme::dim(self.theme)),
                     badge,
                 ])
                 .style(style),
             );
         }
         if self.pods.is_empty() {
-            lines.push(Line::from(Span::styled("No pods to budget.", theme::dim())));
+            lines.push(Line::from(Span::styled(
+                "No pods to budget.",
+                theme::dim(self.theme),
+            )));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "[+] raise highlighted pod's cap by $0.10 · ESC back",
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines)
@@ -649,23 +692,23 @@ impl App {
             lines.push(Line::from(vec![
                 Span::styled(
                     r.decided_at.format("%Y-%m-%d %H:%M ").to_string(),
-                    theme::dim(),
+                    theme::dim(self.theme),
                 ),
                 Span::styled(r.title.clone(), Style::default().fg(theme::YELLOW)),
                 Span::raw("  "),
-                Span::styled(format!("#{}", r.board), theme::chrome()),
+                Span::styled(format!("#{}", r.board), theme::chrome(self.theme)),
             ]));
             lines.push(Line::from(format!("   {}", r.decision)));
             lines.push(Line::from(Span::styled(
                 format!("   why: {}", r.rationale),
-                theme::dim(),
+                theme::dim(self.theme),
             )));
             lines.push(Line::from(""));
         }
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No decisions recorded yet.",
-                theme::dim(),
+                theme::dim(self.theme),
             )));
         }
         frame.render_widget(
@@ -681,7 +724,7 @@ impl App {
         let mut lines = vec![
             Line::from(Span::styled(
                 "  #  HANDLE            SCORE   RATE    CREDENTIALS",
-                theme::hotkey(),
+                theme::hotkey(self.theme),
             )),
             Line::from("──────────────────────────────────────────────────────────"),
         ];
@@ -704,20 +747,26 @@ impl App {
                 })
                 .unwrap_or_default();
             let style = if selected {
-                theme::lightbar()
+                theme::lightbar(self.theme)
             } else {
                 Style::default()
             };
             lines.push(
                 Line::from(vec![
-                    Span::styled(format!("{marker} {:>2}  ", i + 1), theme::hotkey()),
-                    Span::styled(format!("@{:<17} ", handle), theme::chrome()),
+                    Span::styled(
+                        format!("{marker} {:>2}  ", i + 1),
+                        theme::hotkey(self.theme),
+                    ),
+                    Span::styled(format!("@{:<17} ", handle), theme::chrome(self.theme)),
                     Span::styled(
                         format!("{:>5.2}  ", r.score),
-                        Style::default().fg(theme::GREEN),
+                        Style::default().fg(theme::green(self.theme)),
                     ),
-                    Span::styled(format!("{:>4.0}%  ", r.rate * 100.0), theme::dim()),
-                    Span::styled(creds.join(" "), theme::dim()),
+                    Span::styled(
+                        format!("{:>4.0}%  ", r.rate * 100.0),
+                        theme::dim(self.theme),
+                    ),
+                    Span::styled(creds.join(" "), theme::dim(self.theme)),
                 ])
                 .style(style),
             );
@@ -725,13 +774,13 @@ impl App {
         if ranking.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No agents observed yet.",
-                theme::dim(),
+                theme::dim(self.theme),
             )));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "[N] hire highlighted · [I] issue skill:rust credential · ESC back",
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines)
@@ -744,13 +793,16 @@ impl App {
     fn render_playbooks(&self, frame: &mut Frame, area: Rect) {
         let mut lines = vec![
             Line::from(vec![
-                Span::styled(self.playbook.name.clone(), theme::hotkey()),
+                Span::styled(self.playbook.name.clone(), theme::hotkey(self.theme)),
                 Span::raw(" "),
-                Span::styled(format!("v{}", self.playbook.version), theme::dim()),
+                Span::styled(
+                    format!("v{}", self.playbook.version),
+                    theme::dim(self.theme),
+                ),
             ]),
             Line::from(Span::styled(
                 format!("trigger: {}", self.playbook.trigger),
-                theme::dim(),
+                theme::dim(self.theme),
             )),
             Line::from(""),
         ];
@@ -768,37 +820,39 @@ impl App {
             let style = if active {
                 Style::default().fg(theme::YELLOW)
             } else {
-                theme::chrome()
+                theme::chrome(self.theme)
             };
             lines.push(Line::from(vec![
                 Span::raw(marker),
-                Span::styled(format!("[{}] ", step.id), theme::hotkey()),
-                Span::styled(format!("{kind:<14} "), theme::dim()),
+                Span::styled(format!("[{}] ", step.id), theme::hotkey(self.theme)),
+                Span::styled(format!("{kind:<14} "), theme::dim(self.theme)),
                 Span::styled(detail, style),
             ]));
         }
         lines.push(Line::from(""));
         let status_line = match &self.run {
-            None => Span::styled("Not started.", theme::dim()),
+            None => Span::styled("Not started.", theme::dim(self.theme)),
             Some(r) => match r.status() {
-                RunStatus::Running => Span::styled("Running…", Style::default().fg(theme::GREEN)),
+                RunStatus::Running => {
+                    Span::styled("Running…", Style::default().fg(theme::green(self.theme)))
+                }
                 RunStatus::AwaitingApproval => {
                     Span::styled("⧗ Awaiting approval", Style::default().fg(theme::YELLOW))
                 }
                 RunStatus::Completed => {
-                    Span::styled("✓ Completed", Style::default().fg(theme::GREEN))
+                    Span::styled("✓ Completed", Style::default().fg(theme::green(self.theme)))
                 }
                 RunStatus::Failed => Span::styled("✗ Failed", Style::default().fg(theme::RED)),
             },
         };
         lines.push(Line::from(vec![
-            Span::styled("Status: ", theme::hotkey()),
+            Span::styled("Status: ", theme::hotkey(self.theme)),
             status_line,
         ]));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "[R] run/advance · [Y] approve the current gate + advance · ESC back",
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines)
@@ -813,23 +867,26 @@ impl App {
         let lines = vec![
             Line::from(Span::styled(
                 format!("Daily Digest — {}", chrono::Utc::now().format("%Y-%m-%d")),
-                theme::hotkey(),
+                theme::hotkey(self.theme),
             )),
             Line::from(""),
             Line::from("Message bases activity on #general:"),
             Line::from(vec![
-                Span::styled(format!("  {count} "), Style::default().fg(theme::GREEN)),
+                Span::styled(
+                    format!("  {count} "),
+                    Style::default().fg(theme::green(self.theme)),
+                ),
                 Span::raw("message(s) from "),
                 Span::styled(
                     format!("{participants} "),
-                    Style::default().fg(theme::GREEN),
+                    Style::default().fg(theme::green(self.theme)),
                 ),
                 Span::raw("participant(s) today."),
             ]),
             Line::from(""),
             Line::from(Span::styled(
                 "[P] post this summary to #general, signed as \"digest\" · ESC back",
-                theme::chrome(),
+                theme::chrome(self.theme),
             )),
         ];
         frame.render_widget(
@@ -845,7 +902,7 @@ impl App {
         let mut lines = vec![
             Line::from(Span::styled(
                 "Private threads — a dm:<peer> board per peer, local-only (ADR-0037 Phase 1).",
-                theme::dim(),
+                theme::dim(self.theme),
             )),
             Line::from(""),
         ];
@@ -853,14 +910,14 @@ impl App {
             let selected = i == self.dm_index;
             let marker = if selected { "▶ " } else { "  " };
             let style = if selected {
-                theme::lightbar()
+                theme::lightbar(self.theme)
             } else {
                 Style::default()
             };
             lines.push(
                 Line::from(vec![
                     Span::raw(marker),
-                    Span::styled(format!("@{peer}"), theme::chrome()),
+                    Span::styled(format!("@{peer}"), theme::chrome(self.theme)),
                 ])
                 .style(style),
             );
@@ -868,13 +925,13 @@ impl App {
         if peers.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No known peers yet — hire someone from the Directory first.",
-                theme::dim(),
+                theme::dim(self.theme),
             )));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "ENTER open the highlighted DM · ESC back",
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines)
@@ -887,23 +944,32 @@ impl App {
     fn render_passport(&self, frame: &mut Frame, area: Rect) {
         let id = self.session.identity.id();
         let mut lines = vec![
-            Line::from(Span::styled("Your anonymous id (full):", theme::dim())),
-            Line::from(Span::styled(id.to_hex(), Style::default().fg(theme::GREEN))),
+            Line::from(Span::styled(
+                "Your anonymous id (full):",
+                theme::dim(self.theme),
+            )),
+            Line::from(Span::styled(
+                id.to_hex(),
+                Style::default().fg(theme::green(self.theme)),
+            )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("role ........ ", theme::hotkey()),
-                Span::styled(format!("{:#?}", self.session.caps), theme::chrome()),
+                Span::styled("role ........ ", theme::hotkey(self.theme)),
+                Span::styled(
+                    format!("{:#?}", self.session.caps),
+                    theme::chrome(self.theme),
+                ),
             ]),
             Line::from(vec![
-                Span::styled("handle ...... ", theme::hotkey()),
-                Span::styled(self.session.handle.clone(), theme::chrome()),
+                Span::styled("handle ...... ", theme::hotkey(self.theme)),
+                Span::styled(self.session.handle.clone(), theme::chrome(self.theme)),
             ]),
         ];
         if let Some(from) = &self.rotated_from {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "Rotated from (dual-signed, reputation/credentials carry over):",
-                theme::dim(),
+                theme::dim(self.theme),
             )));
             lines.push(Line::from(Span::styled(
                 from.to_hex(),
@@ -913,16 +979,16 @@ impl App {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "Your Ed25519 private key lives only in this process's memory — closing the",
-            theme::dim(),
+            theme::dim(self.theme),
         )));
         lines.push(Line::from(Span::styled(
             "session discards it. Rotating swaps it for a fresh one, with continuity.",
-            theme::dim(),
+            theme::dim(self.theme),
         )));
         lines.push(Line::from(""));
         let creator = self.session.caps.contains(Caps::SYSOP);
         lines.push(Line::from(vec![
-            Span::styled("creator mode  ", theme::hotkey()),
+            Span::styled("creator mode  ", theme::hotkey(self.theme)),
             Span::styled(
                 if creator {
                     "✓ enabled"
@@ -930,16 +996,16 @@ impl App {
                     "✗ disabled"
                 },
                 if creator {
-                    Style::default().fg(theme::GREEN)
+                    Style::default().fg(theme::green(self.theme))
                 } else {
-                    theme::dim()
+                    theme::dim(self.theme)
                 },
             ),
         ]));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "[R] rotate identity · [C] toggle creator mode · ESC back",
-            theme::chrome(),
+            theme::chrome(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines)
@@ -951,26 +1017,32 @@ impl App {
 
     fn render_console(&self, frame: &mut Frame, area: Rect) {
         let mut lines = vec![
-            Line::from(Span::styled("SYSTEM DIAGNOSTICS", theme::hotkey())),
+            Line::from(Span::styled(
+                "SYSTEM DIAGNOSTICS",
+                theme::hotkey(self.theme),
+            )),
             Line::from(""),
         ];
         for (label, value) in self.console_diagnostics() {
             lines.push(Line::from(vec![
-                Span::styled(format!("{:<17} ", label), theme::dim()),
-                Span::styled(value, theme::chrome()),
+                Span::styled(format!("{:<17} ", label), theme::dim(self.theme)),
+                Span::styled(value, theme::chrome(self.theme)),
             ]));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "A point-in-time summary, not a log — see Sysop Report for the",
-            theme::dim(),
+            theme::dim(self.theme),
         )));
         lines.push(Line::from(Span::styled(
             "chronological event stream this reads from.",
-            theme::dim(),
+            theme::dim(self.theme),
         )));
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("ESC back", theme::chrome())));
+        lines.push(Line::from(Span::styled(
+            "ESC back",
+            theme::chrome(self.theme),
+        )));
         frame.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: true })
@@ -983,25 +1055,28 @@ impl App {
         let entries = self.filtered_palette_entries();
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("> ", theme::hotkey()),
-                Span::styled(self.palette_query.clone(), theme::chrome()),
-                Span::styled("▏", theme::dim()),
+                Span::styled("> ", theme::hotkey(self.theme)),
+                Span::styled(self.palette_query.clone(), theme::chrome(self.theme)),
+                Span::styled("▏", theme::dim(self.theme)),
             ]),
             Line::from(""),
         ];
         if entries.is_empty() {
-            lines.push(Line::from(Span::styled("No matches.", theme::dim())));
+            lines.push(Line::from(Span::styled(
+                "No matches.",
+                theme::dim(self.theme),
+            )));
         }
         for (i, (hot, label, _)) in entries.iter().enumerate() {
             let selected = i == self.palette_index;
             let prefix = if selected { "▶ " } else { "  " };
             let line = Line::from(vec![
                 Span::raw(prefix),
-                Span::styled(format!("[{hot}] "), theme::hotkey()),
-                Span::styled(*label, theme::chrome()),
+                Span::styled(format!("[{hot}] "), theme::hotkey(self.theme)),
+                Span::styled(*label, theme::chrome(self.theme)),
             ]);
             let style = if selected {
-                theme::lightbar()
+                theme::lightbar(self.theme)
             } else {
                 Style::default()
             };
@@ -1010,7 +1085,7 @@ impl App {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "type to filter · ↑↓ select · ENTER jump · ESC cancel",
-            theme::dim(),
+            theme::dim(self.theme),
         )));
         frame.render_widget(
             Paragraph::new(lines).block(self.framed("Command Palette (Ctrl-K)")),
@@ -1018,9 +1093,46 @@ impl App {
         );
     }
 
+    fn render_appearance(&self, frame: &mut Frame, area: Rect) {
+        let mut lines = vec![
+            Line::from(Span::styled("APPEARANCE", theme::hotkey(self.theme))),
+            Line::from(Span::styled(
+                "Mirrors the web UI's palettes (genesis/index.html data-theme).",
+                theme::dim(self.theme),
+            )),
+            Line::from(""),
+        ];
+        for (i, t) in theme::ThemeName::ALL.iter().enumerate() {
+            let selected = i == self.appearance_index;
+            let active = *t == self.theme;
+            let prefix = if selected { "▶ " } else { "  " };
+            let marker = if active { "● " } else { "○ " };
+            let line = Line::from(vec![
+                Span::raw(prefix),
+                Span::styled(marker, Style::default().fg(theme::accent(*t))),
+                Span::styled(t.label(), theme::chrome(self.theme)),
+            ]);
+            let style = if selected {
+                theme::lightbar(self.theme)
+            } else {
+                Style::default()
+            };
+            lines.push(line.style(style));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "● current theme · ↑↓ select · ENTER apply · ESC back",
+            theme::dim(self.theme),
+        )));
+        frame.render_widget(Paragraph::new(lines).block(self.framed("Appearance")), area);
+    }
+
     fn render_doors(&self, frame: &mut Frame, area: Rect) {
         let lines = vec![
-            Line::from(Span::styled("DOOR GAMES & AGENT TOOLS", theme::hotkey())),
+            Line::from(Span::styled(
+                "DOOR GAMES & AGENT TOOLS",
+                theme::hotkey(self.theme),
+            )),
             Line::from(""),
             Line::from("  [1] WASM Plugins ......... sandboxed agent tools (wasmi host)"),
             Line::from("  [2] Marketplace .......... trade plugins, agents, boards"),
@@ -1029,7 +1141,7 @@ impl App {
             Line::from(""),
             Line::from(Span::styled(
                 "Doors run as capability-scoped WASM modules. ESC to return.",
-                theme::dim(),
+                theme::dim(self.theme),
             )),
         ];
         frame.render_widget(Paragraph::new(lines).block(self.framed("Doors")), area);
@@ -1050,11 +1162,11 @@ impl App {
                 let prefix = if selected { "▶ " } else { "  " };
                 let line = Line::from(vec![
                     Span::raw(prefix),
-                    Span::styled(format!("{:<11}", b.id.0), theme::hotkey()),
-                    Span::styled(b.name.clone(), theme::chrome()),
+                    Span::styled(format!("{:<11}", b.id.0), theme::hotkey(self.theme)),
+                    Span::styled(b.name.clone(), theme::chrome(self.theme)),
                 ]);
                 let style = if selected {
-                    theme::lightbar()
+                    theme::lightbar(self.theme)
                 } else {
                     Style::default()
                 };
@@ -1069,14 +1181,17 @@ impl App {
         let selected = benches.get(self.arena_index);
         let mut lines: Vec<Line> = Vec::new();
         if let Some(b) = selected {
-            lines.push(Line::from(Span::styled(b.name.clone(), theme::hotkey())));
+            lines.push(Line::from(Span::styled(
+                b.name.clone(),
+                theme::hotkey(self.theme),
+            )));
             lines.push(Line::from(Span::styled(
                 b.description.clone(),
-                theme::dim(),
+                theme::dim(self.theme),
             )));
             lines.push(Line::from(Span::styled(
                 format!("harness: {}", b.harness),
-                theme::dim(),
+                theme::dim(self.theme),
             )));
             lines.push(Line::from(""));
             if b.id.0 == agentbbs_arena::RETORT_BENCHMARK_ID {
@@ -1085,7 +1200,7 @@ impl App {
                 // accuracy): frontier first, then accuracy within tier.
                 lines.push(Line::from(Span::styled(
                     " #  PARETO  STACK (model · harness · lang)        COV    COST",
-                    theme::hotkey(),
+                    theme::hotkey(self.theme),
                 )));
                 lines.push(Line::from(
                     "──────────────────────────────────────────────────────────────────",
@@ -1094,7 +1209,7 @@ impl App {
                 if board.is_empty() {
                     lines.push(Line::from(Span::styled(
                         "No retort results ingested — `agentbbs arena retort <results.json>`.",
-                        theme::dim(),
+                        theme::dim(self.theme),
                     )));
                 }
                 for s in board.iter().take(12) {
@@ -1104,9 +1219,9 @@ impl App {
                         "✗ domin"
                     };
                     let mark_style = if s.pareto_optimal {
-                        Style::default().fg(theme::GREEN)
+                        Style::default().fg(theme::green(self.theme))
                     } else {
-                        theme::dim()
+                        theme::dim(self.theme)
                     };
                     let name = if s.is_baseline {
                         format!("{} [base]", s.stack)
@@ -1114,19 +1229,19 @@ impl App {
                         s.stack.clone()
                     };
                     lines.push(Line::from(vec![
-                        Span::styled(format!("{:>2}  ", s.rank), theme::hotkey()),
+                        Span::styled(format!("{:>2}  ", s.rank), theme::hotkey(self.theme)),
                         Span::styled(format!("{mark:<7} "), mark_style),
-                        Span::styled(format!("{name:<34}"), theme::chrome()),
+                        Span::styled(format!("{name:<34}"), theme::chrome(self.theme)),
                         Span::styled(
                             format!("{:>5.1}% ", s.requirement_coverage * 100.0),
-                            Style::default().fg(theme::GREEN),
+                            Style::default().fg(theme::green(self.theme)),
                         ),
-                        Span::styled(format!("${:.3}", s.cost_usd), theme::dim()),
+                        Span::styled(format!("${:.3}", s.cost_usd), theme::dim(self.theme)),
                     ]));
                     // The cost-lever insight line.
                     lines.push(Line::from(Span::styled(
                         format!("        💡 {}", s.insight),
-                        theme::dim(),
+                        theme::dim(self.theme),
                     )));
                     if s.excluded_tooling > 0 {
                         lines.push(Line::from(Span::styled(
@@ -1134,7 +1249,7 @@ impl App {
                                 "        (excluded {} TOOLING false-fail(s) — honest scoring)",
                                 s.excluded_tooling
                             ),
-                            theme::dim(),
+                            theme::dim(self.theme),
                         )));
                     }
                 }
@@ -1144,7 +1259,7 @@ impl App {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "FRONTIER  ($/task ↑ · coverage)",
-                        theme::hotkey(),
+                        theme::hotkey(self.theme),
                     )));
                     for s in &front {
                         lines.push(Line::from(Span::styled(
@@ -1154,14 +1269,14 @@ impl App {
                                 s.requirement_coverage * 100.0,
                                 s.stack
                             ),
-                            theme::dim(),
+                            theme::dim(self.theme),
                         )));
                     }
                 }
             } else {
                 lines.push(Line::from(Span::styled(
                     "RANK  AGENT                       SCORE   PASS",
-                    theme::hotkey(),
+                    theme::hotkey(self.theme),
                 )));
                 lines.push(Line::from(
                     "────────────────────────────────────────────────",
@@ -1176,19 +1291,28 @@ impl App {
                                 _ => "  ",
                             };
                             lines.push(Line::from(vec![
-                                Span::styled(format!(" {:>2} {medal} ", s.rank), theme::hotkey()),
-                                Span::styled(format!("{:<26}", s.handle), theme::chrome()),
+                                Span::styled(
+                                    format!(" {:>2} {medal} ", s.rank),
+                                    theme::hotkey(self.theme),
+                                ),
+                                Span::styled(
+                                    format!("{:<26}", s.handle),
+                                    theme::chrome(self.theme),
+                                ),
                                 Span::styled(
                                     format!("{:>5.1}%  ", s.best_score * 100.0),
-                                    Style::default().fg(theme::GREEN),
+                                    Style::default().fg(theme::green(self.theme)),
                                 ),
-                                Span::styled(format!("{}/{}", s.passed, s.total), theme::dim()),
+                                Span::styled(
+                                    format!("{}/{}", s.passed, s.total),
+                                    theme::dim(self.theme),
+                                ),
                             ]));
                         }
                     }
                     _ => lines.push(Line::from(Span::styled(
                         "No submissions yet — `agentbbs` agents: compete!",
-                        theme::dim(),
+                        theme::dim(self.theme),
                     ))),
                 }
             }
@@ -1203,20 +1327,23 @@ impl App {
 
     fn render_federation(&self, frame: &mut Frame, area: Rect) {
         let lines = vec![
-            Line::from(Span::styled("ZERO-TRUST FEDERATION", theme::hotkey())),
+            Line::from(Span::styled(
+                "ZERO-TRUST FEDERATION",
+                theme::hotkey(self.theme),
+            )),
             Line::from(""),
             Line::from("  Identity ........ ed25519 (anonymous, per-node)"),
             Line::from("  Transport ....... signed envelopes, PII-stripped egress"),
             Line::from("  Peering ......... npx ruflo federation join <addr>"),
             Line::from("  Memory .......... npm AgentDB / RVF vector sync"),
             Line::from(""),
-            Line::from(Span::styled("PEERS", theme::hotkey())),
+            Line::from(Span::styled("PEERS", theme::hotkey(self.theme))),
             Line::from(Span::styled(
                 "  (no peers linked — this is a leaf node)",
-                theme::dim(),
+                theme::dim(self.theme),
             )),
             Line::from(""),
-            Line::from(Span::styled("ESC to return.", theme::chrome())),
+            Line::from(Span::styled("ESC to return.", theme::chrome(self.theme))),
         ];
         frame.render_widget(
             Paragraph::new(lines).block(self.framed("Federation Hall")),
@@ -1229,14 +1356,14 @@ impl App {
         let mut lines = vec![
             Line::from(Span::styled(
                 format!("LIVE EVENT LOG  ({} retained)", events.len()),
-                theme::hotkey(),
+                theme::hotkey(self.theme),
             )),
             Line::from("──────────────────────────────────────────────────────────"),
         ];
         if !self.session.caps.contains(Caps::SYSOP) {
             lines.push(Line::from(Span::styled(
                 "Read-only view — SYSOP capability required for actions (toggle creator mode on Passport).",
-                theme::dim(),
+                theme::dim(self.theme),
             )));
         } else {
             let ranking = self.reputation.ranking();
@@ -1262,15 +1389,18 @@ impl App {
                     })
                     .unwrap_or_else(|| "none".to_string());
                 lines.push(Line::from(vec![
-                    Span::styled("Target (Directory #", theme::dim()),
-                    Span::styled(format!("{}", self.directory_index + 1), theme::dim()),
-                    Span::styled("): ", theme::dim()),
-                    Span::styled(format!("@{handle} "), theme::chrome()),
+                    Span::styled("Target (Directory #", theme::dim(self.theme)),
+                    Span::styled(
+                        format!("{}", self.directory_index + 1),
+                        theme::dim(self.theme),
+                    ),
+                    Span::styled("): ", theme::dim(self.theme)),
+                    Span::styled(format!("@{handle} "), theme::chrome(self.theme)),
                     Span::styled(format!("[{status}]"), Style::default().fg(theme::YELLOW)),
                 ]));
                 lines.push(Line::from(Span::styled(
                     "[M] mute · [N] ban · [L] lift · [↑↓] pick target",
-                    theme::chrome(),
+                    theme::chrome(self.theme),
                 )));
             }
         }
@@ -1282,12 +1412,12 @@ impl App {
             let sev = match e.severity() {
                 agentbbs_core::Severity::Warn => Style::default().fg(theme::RED),
                 agentbbs_core::Severity::Critical => Style::default().fg(theme::RED).bold(),
-                _ => theme::dim(),
+                _ => theme::dim(self.theme),
             };
             lines.push(Line::from(vec![
-                Span::styled(e.at.format("%H:%M:%S ").to_string(), theme::dim()),
+                Span::styled(e.at.format("%H:%M:%S ").to_string(), theme::dim(self.theme)),
                 Span::styled(format!("{:<18?} ", e.kind), sev),
-                Span::styled(e.subject.clone(), theme::chrome()),
+                Span::styled(e.subject.clone(), theme::chrome(self.theme)),
             ]));
         }
         frame.render_widget(
@@ -1306,11 +1436,11 @@ impl App {
             Line::from(""),
             Line::from(Span::styled(
                 "Thanks for calling AgentBBS. Your session keys were ephemeral",
-                theme::chrome(),
+                theme::chrome(self.theme),
             )),
             Line::from(Span::styled(
                 "and are now gone. You were never really here.",
-                theme::dim(),
+                theme::dim(self.theme),
             )),
         ])
         .alignment(Alignment::Center)

@@ -834,3 +834,101 @@ fn command_palette_query_with_no_matches_shows_a_message_and_enter_is_a_no_op() 
     // Enter on an empty match list bails back to where the palette opened.
     assert_eq!(app.screen, Screen::Main);
 }
+
+#[test]
+fn appearance_screen_lists_all_themes_and_enter_applies_the_selection() {
+    let mut app = App::in_memory();
+    assert_eq!(app.theme, crate::theme::ThemeName::Retro);
+
+    app.on_key(press(KeyCode::Enter)); // splash -> main
+    app.on_key(press(KeyCode::Char('O'))); // main -> appearance
+    assert_eq!(app.screen, Screen::Appearance);
+    // Opening the picker highlights the currently-active theme (index 0 = Retro).
+    assert_eq!(app.appearance_index, 0);
+
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("Appearance"));
+    for t in crate::theme::ThemeName::ALL {
+        assert!(text.contains(t.label()), "missing theme label {t:?}");
+    }
+
+    app.on_key(press(KeyCode::Down));
+    assert_eq!(app.appearance_index, 1);
+    app.on_key(press(KeyCode::Enter));
+    assert_eq!(app.theme, crate::theme::ThemeName::Dark);
+
+    // Re-opening the picker now highlights the newly active theme, not 0.
+    app.on_key(press(KeyCode::Esc));
+    app.on_key(press(KeyCode::Char('O')));
+    assert_eq!(app.appearance_index, 1);
+}
+
+#[test]
+fn appearance_esc_returns_to_main_without_changing_the_theme() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('O')));
+    app.on_key(press(KeyCode::Down));
+    app.on_key(press(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Main);
+    assert_eq!(app.theme, crate::theme::ThemeName::Retro);
+}
+
+#[test]
+fn theme_style_functions_resolve_distinct_accent_colours() {
+    use crate::theme::{self, ThemeName};
+    use ratatui::style::Color;
+    assert_eq!(theme::chrome(ThemeName::Retro).fg, Some(Color::Cyan));
+    assert_eq!(
+        theme::chrome(ThemeName::Terminal).fg,
+        Some(Color::Rgb(0xff, 0xb0, 0x00))
+    );
+    assert_ne!(
+        theme::chrome(ThemeName::Retro).fg,
+        theme::chrome(ThemeName::Nord).fg
+    );
+}
+
+/// Regression test for a real bug caught during live verification: `chrome()`
+/// and `lightbar()` both used to derive from the same per-theme `accent()`
+/// colour, so a selected row's accent-coloured label text rendered as
+/// accent-on-accent — genuinely invisible — for every theme. Selects each
+/// theme's own row in the Appearance picker (so its label is rendered
+/// highlighted) and asserts the label's fg/bg never match.
+#[test]
+fn selected_row_text_is_never_the_same_colour_as_its_own_highlight() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    for (i, t) in crate::theme::ThemeName::ALL.iter().enumerate() {
+        let mut app = App::in_memory();
+        app.theme = *t;
+        app.screen = Screen::Appearance;
+        app.appearance_index = i;
+        let backend = TestBackend::new(110, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let label = t.label();
+        let first_char: String = label.chars().next().unwrap().to_string();
+        let mut found = false;
+        for y in 0..buffer.area.height {
+            let row: String = (0..buffer.area.width)
+                .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                .collect();
+            if !row.contains(label) {
+                continue;
+            }
+            for x in 0..buffer.area.width {
+                let cell = buffer.cell((x, y)).unwrap();
+                if cell.symbol() == first_char {
+                    found = true;
+                    assert_ne!(
+                        cell.fg, cell.bg,
+                        "{t:?} selected-row text is invisible (fg==bg)"
+                    );
+                }
+            }
+        }
+        assert!(found, "did not find highlighted label cell for {t:?}");
+    }
+}
