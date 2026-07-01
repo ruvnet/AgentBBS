@@ -55,7 +55,8 @@ impl App {
             Screen::Collab => self.key_collab(key),
             Screen::Drafts => self.key_drafts(key),
             Screen::Decisions => self.key_decisions(key),
-            Screen::Who | Screen::Doors | Screen::Console => self.key_panel(key),
+            Screen::Who => self.key_who(key),
+            Screen::Doors | Screen::Console => self.key_panel(key),
             Screen::Goodbye => {
                 self.should_quit = true;
                 Control::Quit
@@ -530,6 +531,36 @@ impl App {
             KeyCode::Char('+') => {
                 self.topup_selected_pod(0.10);
                 self.status = "Raised cap by $0.10.".into();
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
+            _ => {}
+        }
+        Control::Continue
+    }
+
+    fn key_who(&mut self, key: KeyEvent) -> Control {
+        let count = self.presence.online(self.now_ms()).len();
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.who_index = self.who_index.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.who_index + 1 < count {
+                    self.who_index += 1;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('m') | KeyCode::Char('M') => {
+                let target = self
+                    .presence
+                    .online(self.now_ms())
+                    .get(self.who_index)
+                    .filter(|m| m.id != self.session.identity.id())
+                    .map(|m| m.handle.clone());
+                match target {
+                    Some(handle) => {
+                        self.open_dm(&handle);
+                        self.status = format!("Opened DM with @{handle}.");
+                    }
+                    None => self.status = "Select someone else online to DM.".into(),
+                }
             }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
             _ => {}

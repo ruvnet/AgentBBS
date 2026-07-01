@@ -161,6 +161,54 @@ fn who_panel_renders_real_presence() {
 }
 
 #[test]
+fn who_online_lets_you_dm_the_highlighted_user() {
+    use agentbbs_core::{MemoryStore, Presence};
+    use std::sync::Arc;
+    let presence = Arc::new(Presence::default());
+    let store: Arc<dyn agentbbs_core::Store> = Arc::new(MemoryStore::new());
+    let mut a = App::with_presence(store.clone(), presence.clone());
+    let b = App::with_presence(store.clone(), presence.clone());
+
+    a.on_key(press(KeyCode::Enter));
+    a.on_key(press(KeyCode::Char('W')));
+    assert_eq!(a.screen, Screen::Who);
+
+    // Two sessions online: self (a) and b. Move off self to reach b —
+    // presence order isn't guaranteed to put self first, so drive by handle.
+    let online = a.presence.online(a.now_ms());
+    let b_pos = online
+        .iter()
+        .position(|m| m.id == b.session.identity.id())
+        .unwrap();
+    for _ in 0..b_pos {
+        a.on_key(press(KeyCode::Down));
+    }
+    assert_eq!(a.who_index, b_pos);
+
+    a.on_key(press(KeyCode::Char('M')));
+    assert_eq!(a.screen, Screen::Read);
+    assert_eq!(
+        a.current_board.as_deref(),
+        Some(format!("dm:{}", b.session.handle)).as_deref()
+    );
+    assert!(a.status.contains(&b.session.handle));
+}
+
+#[test]
+fn who_online_selecting_yourself_is_a_no_op_not_a_self_dm() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('W')));
+    assert_eq!(app.who_index, 0); // solo session — only "you" is online
+    let boards_before = app.boards.len();
+
+    app.on_key(press(KeyCode::Char('M')));
+    assert_eq!(app.screen, Screen::Who); // stayed put, no DM board created
+    assert_eq!(app.boards.len(), boards_before);
+    assert!(app.status.contains("someone else"));
+}
+
+#[test]
 fn marketplace_renders_signed_listings() {
     let mut app = App::in_memory();
     app.on_key(press(KeyCode::Enter));

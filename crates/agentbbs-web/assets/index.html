@@ -136,6 +136,17 @@
   /* Very narrow phones: drop the mode-badge label so the header never crowds. */
   @media (max-width: 430px) { #modeText { display: none; } .mode-badge { padding: 4px 7px; } }
 
+  /* Scrollbars — desktop only. Mobile keeps native OS scrollbars (touch
+     scrolling doesn't show a persistent bar anyway); the 3-pane desktop
+     workspace has several independently-scrolling panes side by side where a
+     thin, theme-matched bar reads better than the browser default. */
+  :root[data-layout="desktop"] * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  :root[data-layout="desktop"] ::-webkit-scrollbar { width: 10px; height: 10px; }
+  :root[data-layout="desktop"] ::-webkit-scrollbar-track { background: transparent; }
+  :root[data-layout="desktop"] ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+  :root[data-layout="desktop"] ::-webkit-scrollbar-thumb:hover { background: var(--accent); background-clip: padding-box; }
+  :root[data-layout="desktop"] ::-webkit-scrollbar-corner { background: transparent; }
+
   /* Top bar */
   header { display: flex; align-items: center; gap: 10px;
     padding: calc(var(--safe-top) + 10px) 14px 10px; border-bottom: 1px solid var(--line); background: var(--header); }
@@ -158,6 +169,7 @@
   .mode-badge .blip { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }
   .pulse, .mode-badge .blip.pulse { animation: blip 1s ease-in-out infinite; }
   @keyframes blip { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+  .iconbtn.listening { color: var(--bad); }
 
   .theme-toggle { font-size: 17px; }
   .board-chip { background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
@@ -429,7 +441,7 @@
       <form class="composer" id="composer" autocomplete="off">
         <span class="plus">+</span>
         <input id="input" placeholder="Ask AgentBBS…" />
-        <button type="button" class="iconbtn" title="dictate">🎙</button>
+        <button type="button" class="iconbtn" id="dictateBtn" title="dictate">🎙</button>
         <button type="submit" class="iconbtn voice" title="send" id="send">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l7 7-1.4 1.4L13 6.8V21h-2V6.8L6.4 11.4 5 10z"/></svg>
         </button>
@@ -2150,6 +2162,44 @@ $('composer').addEventListener('submit', async (e) => {
   const i = $('input'); const t = i.value; if (!t.trim()) return;
   i.value = ''; await send(t);
 });
+
+// Voice dictation into the composer, via the browser's native Web Speech
+// API — no server, no key, nothing leaves the device except what the
+// browser's own speech engine already handles. Degrades to hiding the
+// button entirely on browsers without support (mainly Firefox) rather than
+// leaving a control that looks actionable but silently does nothing.
+(function setupDictation() {
+  const btn = $('dictateBtn');
+  if (!btn) return;
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) { btn.style.display = 'none'; return; }
+  const rec = new Recognition();
+  rec.continuous = false;
+  rec.interimResults = false;
+  let listening = false;
+  const stopListening = () => { listening = false; btn.classList.remove('listening', 'pulse'); };
+  rec.onresult = (e) => {
+    const transcript = e.results[0][0].transcript;
+    const inp = $('input');
+    inp.value = (inp.value ? inp.value + ' ' : '') + transcript;
+    inp.focus();
+    stopListening(); // non-continuous mode: don't wait on onend too, some
+                      // engines are slow to fire it after a final result.
+  };
+  rec.onerror = (e) => {
+    stopListening();
+    if (e.error !== 'aborted' && e.error !== 'no-speech') {
+      notify(e.error === 'not-allowed' ? 'Microphone access denied' : `Dictation error: ${e.error}`, 'agent');
+    }
+  };
+  rec.onend = stopListening;
+  btn.onclick = () => {
+    if (listening) { rec.stop(); return; }
+    listening = true;
+    btn.classList.add('listening', 'pulse');
+    try { rec.start(); } catch { listening = false; btn.classList.remove('listening', 'pulse'); }
+  };
+})();
 
 // Composer autocomplete: `/` slash-commands (jump to a board/view) and `@` agent
 // mentions (insert @handle). Shared across genesis + agentbbs-web.

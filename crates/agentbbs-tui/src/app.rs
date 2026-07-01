@@ -391,6 +391,8 @@ pub struct App {
     pub credential_claim_editing: bool,
     /// The claim text being typed, when `credential_claim_editing`.
     pub credential_claim_input: String,
+    /// Highlighted row in the Who's Online screen.
+    pub who_index: usize,
 }
 
 impl Drop for App {
@@ -561,6 +563,7 @@ impl App {
             decision_rationale_input: String::new(),
             credential_claim_editing: false,
             credential_claim_input: String::new(),
+            who_index: 0,
         };
         app.seed_defaults();
         app.seed_arena();

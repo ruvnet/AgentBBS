@@ -371,15 +371,17 @@ impl App {
         ];
         for (i, m) in online.iter().enumerate() {
             let me = m.id == self.session.identity.id();
+            let selected = i == self.who_index;
             let idle = now.saturating_sub(m.last_seen_ms) / 1000;
             let kind = if m.agent { "agent" } else { "human" };
+            let marker = if selected { "▶ " } else { "  " };
             let style = if me {
                 theme::chrome(self.theme)
             } else {
                 theme::dim(self.theme)
             };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:>4}  ", i + 1), theme::hotkey(self.theme)),
+            let line = Line::from(vec![
+                Span::styled(format!("{marker}{:>2}  ", i + 1), theme::hotkey(self.theme)),
                 Span::styled(
                     format!(
                         "{:<34}",
@@ -396,7 +398,12 @@ impl App {
                     format!("{:02}:{:02}", idle / 60, idle % 60),
                     theme::dim(self.theme),
                 ),
-            ]));
+            ]);
+            lines.push(if selected && !me {
+                line.style(theme::lightbar(self.theme))
+            } else {
+                line
+            });
         }
         if online.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -407,7 +414,7 @@ impl App {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!(
-                "{} online · agents join via SSH, MCP, or federation. ESC to return.",
+                "{} online · ↑↓ select · ENTER/M dm the highlighted user · ESC back",
                 online.len()
             ),
             theme::chrome(self.theme),
