@@ -1164,3 +1164,127 @@ fn collab_repo_editing_esc_cancels_without_changing_the_stored_repo() {
     assert!(!app.collab_repo_editing);
     assert_eq!(app.collab_repo, "already/set");
 }
+
+// ADR-0049: Agent Inbox — human-confirmed agent-drafted replies. The TUI has
+// no HTTP client, so drafting always uses the offline scripted responder
+// (ported verbatim from the web's own fallback) — never a live LLM call.
+
+#[test]
+fn begin_draft_composes_a_pending_draft_from_the_selected_message() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter)); // -> main
+    app.on_key(press(KeyCode::Char('M'))); // -> boards
+    app.on_key(press(KeyCode::Enter)); // open first board -> read
+    post(&mut app, "dinner?", "can we meet for dinner Tuesday");
+    assert_eq!(app.screen, Screen::Read);
+
+    app.on_key(press(KeyCode::Char('A')));
+    assert_eq!(app.drafts.pending().len(), 1);
+    let d = app.drafts.pending()[0].clone();
+    assert_eq!(d.agent, "claude");
+    assert!(d.body.contains("Tuesday 7:30pm")); // scripted_reply's "dinner" branch
+    assert!(d.in_reply_to.is_some());
+    assert!(app.status.contains("Agent Inbox"));
+
+    let text = screen_text(&app, 110, 30);
+    assert!(!text.is_empty()); // Read screen still shown; Drafts is a separate screen
+}
+
+#[test]
+fn drafts_screen_lists_pending_and_shows_the_full_body_for_the_selected_one() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('M')));
+    app.on_key(press(KeyCode::Enter));
+    post(&mut app, "bug report", "found a bug, can you review");
+    app.on_key(press(KeyCode::Char('A')));
+
+    app.on_key(press(KeyCode::Esc)); // read -> boards
+    app.on_key(press(KeyCode::Esc)); // boards -> main
+    app.on_key(press(KeyCode::Char('N'))); // main -> drafts
+    assert_eq!(app.screen, Screen::Drafts);
+
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("Agent Inbox"));
+    assert!(text.contains("@claude"));
+    assert!(text.contains("suggested fix")); // scripted_reply's "bug" branch, full body shown
+}
+
+#[test]
+fn draft_send_signs_under_the_reviewers_own_key_and_removes_it_from_pending() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('M')));
+    app.on_key(press(KeyCode::Enter));
+    let slug = app.current_board.clone().unwrap();
+    post(&mut app, "hello", "just saying hi");
+    app.on_key(press(KeyCode::Char('A')));
+    assert_eq!(app.drafts.pending().len(), 1);
+
+    app.screen = Screen::Drafts;
+    app.draft_index = 0;
+    let before = app.bbs.store().message_count().unwrap();
+    app.on_key(press(KeyCode::Char('S')));
+
+    assert_eq!(
+        app.drafts.pending().len(),
+        0,
+        "sent draft leaves the pending queue"
+    );
+    let after = app.bbs.store().message_count().unwrap();
+    assert_eq!(after, before + 1);
+    let sent = app
+        .bbs
+        .read_board(agentbbs_core::caps::Caps::READ, &slug, 10)
+        .unwrap();
+    let posted = sent.last().unwrap();
+    // Signed under the reviewer's own key, never the drafting agent's identity.
+    assert_eq!(posted.body.author, app.session.identity.id());
+    assert!(posted.verify().is_ok());
+}
+
+#[test]
+fn draft_discard_removes_it_without_posting_anything() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('M')));
+    app.on_key(press(KeyCode::Enter));
+    post(&mut app, "hi", "checking the arena cve-bench score");
+    app.on_key(press(KeyCode::Char('A')));
+
+    app.screen = Screen::Drafts;
+    app.draft_index = 0;
+    let before = app.bbs.store().message_count().unwrap();
+    app.on_key(press(KeyCode::Char('D')));
+
+    assert_eq!(app.drafts.pending().len(), 0);
+    assert_eq!(app.bbs.store().message_count().unwrap(), before);
+}
+
+#[test]
+fn draft_edit_flow_revises_the_body_and_marks_it_edited() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('M')));
+    app.on_key(press(KeyCode::Enter));
+    post(&mut app, "hi", "generic question here");
+    app.on_key(press(KeyCode::Char('A')));
+
+    app.screen = Screen::Drafts;
+    app.draft_index = 0;
+    app.on_key(press(KeyCode::Char('E')));
+    assert!(app.draft_editing);
+    assert!(!app.draft_edit_input.is_empty()); // pre-filled with the current body
+
+    // Replace it entirely.
+    app.draft_edit_input.clear();
+    for c in "a hand-revised reply".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    app.on_key(press(KeyCode::Enter));
+
+    assert!(!app.draft_editing);
+    let d = app.drafts.pending()[0].clone();
+    assert_eq!(d.body, "a hand-revised reply");
+    assert_eq!(d.status, agentbbs_core::DraftStatus::Edited);
+}

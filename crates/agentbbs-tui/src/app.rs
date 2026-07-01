@@ -111,6 +111,9 @@ pub enum Screen {
     /// Cross-repo collaboration — Jujutsu status/diff/log (ADR-0036/0051).
     /// GitHub issues/PRs are a separate slice (need a repo-input prompt).
     Collab,
+    /// Agent Inbox — human-confirmed agent-drafted replies awaiting review
+    /// (ADR-0049).
+    Drafts,
     /// Sign-off screen.
     Goodbye,
 }
@@ -157,6 +160,7 @@ pub const MENU: &[(char, &str, Screen)] = &[
     ('E', "Console", Screen::Console),
     ('O', "Appearance", Screen::Appearance),
     ('U', "Collab (jj)", Screen::Collab),
+    ('N', "Agent Inbox (Drafts)", Screen::Drafts),
     ('G', "Goodbye / Log Off", Screen::Goodbye),
 ];
 
@@ -338,6 +342,14 @@ pub struct App {
     pub collab_gh_issues: Option<Result<String, String>>,
     /// Cached `gh pr list --repo <repo>` result.
     pub collab_gh_prs: Option<Result<String, String>>,
+    /// Agent-drafted replies awaiting human review (ADR-0049).
+    pub drafts: agentbbs_core::DraftQueue,
+    /// Highlighted row in the Drafts screen.
+    pub draft_index: usize,
+    /// Whether the Drafts screen is editing the selected draft's body.
+    pub draft_editing: bool,
+    /// The draft body being typed, when `draft_editing`.
+    pub draft_edit_input: String,
 }
 
 impl Drop for App {
@@ -388,6 +400,29 @@ pub(crate) fn format_federation_join_status(addr: &str, result: &Result<String, 
         Ok(out) => format!("Joined peer {addr}: {}", out.trim()),
         Err(e) => format!("Federation join failed: {e}"),
     }
+}
+
+/// The offline scripted-responder fallback, ported verbatim from the web's
+/// own `scripted_reply` (`agentbbs-web/src/lib.rs`) — same keyword→body
+/// mapping, so the same drafted text shows up whether the reply is composed
+/// by the web (offline mode) or the TUI. The TUI has no HTTP client, so it
+/// only ever uses this path — never the live meta-llm gateway the web calls
+/// when a key is configured (ADR-0049's "offline / default" responder mode,
+/// itself a first-class fully-tested mode, not a lesser fallback).
+pub(crate) fn scripted_reply(text: &str) -> String {
+    let t = text.to_ascii_lowercase();
+    if t.contains("time") || t.contains("schedule") || t.contains("dinner") || t.contains("meet")
+    {
+        "✓ Approved the request on my side\n• Lining open evenings up against yours…\n✓ Two slots work — proposing Tuesday 7:30pm"
+    } else if t.contains("bug") || t.contains("fix") || t.contains("review") || t.contains("error")
+    {
+        "✓ Pulled the diff and built it\n• Running the test suite + clippy…\n✓ Found one issue — posted a suggested fix"
+    } else if t.contains("bench") || t.contains("cve") || t.contains("arena") {
+        "✓ Queued the run via npx ruflo\n• Executing cve-bench in the sandbox…\n✓ Scored 80% (32/40) — submitted to the Arena"
+    } else {
+        "✓ On it — gathering context from the boards\n• Drafting a response…\n✓ Done — see the thread below"
+    }
+    .to_string()
 }
 
 impl App {
@@ -472,6 +507,10 @@ impl App {
             collab_repo_input: String::new(),
             collab_gh_issues: None,
             collab_gh_prs: None,
+            drafts: agentbbs_core::DraftQueue::new(),
+            draft_index: 0,
+            draft_editing: false,
+            draft_edit_input: String::new(),
         };
         app.seed_defaults();
         app.seed_arena();
@@ -1491,6 +1530,109 @@ impl App {
             .map_err(|e| e.to_string())?;
         self.refresh_current_board(&slug);
         Ok(())
+    }
+
+    /// Ask an agent to draft a reply to the currently highlighted message
+    /// (ADR-0049 Agent Inbox). Runs the same scan-before-draft gate the
+    /// web's `/api/drafts` route does (`agentbbs_core::tools::draft_reply`)
+    /// — a `Malicious`-flagged inbound is refused, never queued. Never posts
+    /// anything itself; the draft sits in `self.drafts` until reviewed on
+    /// the Drafts screen.
+    pub fn begin_draft(&mut self) {
+        let (Some(m), Some(board)) = (
+            self.messages.get(self.read_index).cloned(),
+            self.current_board.clone(),
+        ) else {
+            self.status = "No message selected to draft a reply to.".into();
+            return;
+        };
+        let context = m.body.body.clone();
+        let agent = "claude";
+        let subject = format!("looped in {agent}");
+        let body = scripted_reply(&context);
+        match agentbbs_core::tools::draft_reply(
+            &board,
+            Some(m.id.0.clone()),
+            agent,
+            &subject,
+            &body,
+            &context,
+            chrono::Utc::now(),
+        ) {
+            Ok(draft) => {
+                self.drafts.add(draft);
+                self.status = "Draft ready — see Agent Inbox (N) to review.".into();
+            }
+            Err(e) => self.status = format!("Draft refused: {e}"),
+        }
+    }
+
+    /// Clamp `draft_index` after the pending list shrinks (send/discard).
+    fn clamp_draft_index(&mut self) {
+        let len = self.drafts.pending().len();
+        if self.draft_index >= len {
+            self.draft_index = len.saturating_sub(1);
+        }
+    }
+
+    /// Send the highlighted pending draft: signs and posts it under the
+    /// session's own identity — never the drafting agent's (ADR-0049) — via
+    /// `tools::send_draft`, which re-scans the final body right before it
+    /// becomes a real signed message. Marks the draft `Sent` on success.
+    pub fn send_selected_draft(&mut self) {
+        let Some(draft) = self
+            .drafts
+            .pending()
+            .get(self.draft_index)
+            .map(|d| (*d).clone())
+        else {
+            self.status = "No draft selected.".into();
+            return;
+        };
+        match agentbbs_core::tools::send_draft(
+            &self.bbs,
+            self.session.caps,
+            &self.session.identity,
+            &draft,
+        ) {
+            Ok(_) => {
+                self.drafts.mark_sent(&draft.id);
+                self.status = "Draft sent — signed under your own key.".into();
+                self.refresh_current_board(&draft.target);
+                self.clamp_draft_index();
+            }
+            Err(e) => self.status = format!("Send failed: {e}"),
+        }
+    }
+
+    /// Discard the highlighted pending draft without sending it.
+    pub fn discard_selected_draft(&mut self) {
+        let Some(id) = self
+            .drafts
+            .pending()
+            .get(self.draft_index)
+            .map(|d| d.id.clone())
+        else {
+            return;
+        };
+        self.drafts.discard(&id);
+        self.status = "Draft discarded.".into();
+        self.clamp_draft_index();
+    }
+
+    /// Revise the highlighted pending draft's body before sending (marks it
+    /// `Edited`).
+    pub fn edit_selected_draft(&mut self, new_body: &str) {
+        let Some(id) = self
+            .drafts
+            .pending()
+            .get(self.draft_index)
+            .map(|d| d.id.clone())
+        else {
+            return;
+        };
+        self.drafts.edit(&id, new_body);
+        self.status = "Draft edited.".into();
     }
 
     /// Re-fetch and re-filter `slug`'s messages into `self.messages`,

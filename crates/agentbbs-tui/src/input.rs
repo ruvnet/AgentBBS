@@ -53,6 +53,7 @@ impl App {
             Screen::Appearance => self.key_appearance(key),
             Screen::Federation => self.key_federation(key),
             Screen::Collab => self.key_collab(key),
+            Screen::Drafts => self.key_drafts(key),
             Screen::Who | Screen::Doors | Screen::Decisions | Screen::Console => {
                 self.key_panel(key)
             }
@@ -206,6 +207,57 @@ impl App {
         Control::Continue
     }
 
+    fn key_drafts(&mut self, key: KeyEvent) -> Control {
+        if self.draft_editing {
+            match key.code {
+                KeyCode::Esc => {
+                    self.draft_editing = false;
+                    self.draft_edit_input.clear();
+                }
+                KeyCode::Enter => {
+                    let body = self.draft_edit_input.clone();
+                    self.draft_editing = false;
+                    self.draft_edit_input.clear();
+                    self.edit_selected_draft(&body);
+                }
+                KeyCode::Backspace => {
+                    self.draft_edit_input.pop();
+                }
+                KeyCode::Char(c) => self.draft_edit_input.push(c),
+                _ => {}
+            }
+            return Control::Continue;
+        }
+        let count = self.drafts.pending().len();
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.draft_index = self.draft_index.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.draft_index + 1 < count {
+                    self.draft_index += 1;
+                }
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => self.send_selected_draft(),
+            KeyCode::Char('d') | KeyCode::Char('D') => self.discard_selected_draft(),
+            KeyCode::Char('e') | KeyCode::Char('E') => {
+                let current = self
+                    .drafts
+                    .pending()
+                    .get(self.draft_index)
+                    .map(|d| d.body.clone());
+                if let Some(body) = current {
+                    self.draft_editing = true;
+                    self.draft_edit_input = body;
+                    self.status = "Editing draft — ENTER saves, ESC cancels.".into();
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
+            _ => {}
+        }
+        Control::Continue
+    }
+
     fn key_appearance(&mut self, key: KeyEvent) -> Control {
         let count = crate::theme::ThemeName::ALL.len();
         match key.code {
@@ -292,6 +344,7 @@ impl App {
                 Ok(()) => self.status = "Message deleted.".into(),
                 Err(e) => self.status = format!("Delete failed: {e}"),
             },
+            KeyCode::Char('a') | KeyCode::Char('A') => self.begin_draft(),
             // Slack-style quick channel switch — jump boards without
             // returning to the Boards list first.
             KeyCode::Char('[') => self.switch_board(-1),

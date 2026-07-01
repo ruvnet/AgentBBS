@@ -53,6 +53,7 @@ impl App {
             Screen::Palette => self.render_palette(frame, rows[1]),
             Screen::Appearance => self.render_appearance(frame, rows[1]),
             Screen::Collab => self.render_collab(frame, rows[1]),
+            Screen::Drafts => self.render_drafts(frame, rows[1]),
             Screen::Goodbye => self.render_goodbye(frame, rows[1]),
         }
         self.render_status(frame, rows[2]);
@@ -215,8 +216,7 @@ impl App {
 
     fn render_read(&self, frame: &mut Frame, area: Rect) {
         let title = self.current_board.clone().unwrap_or_else(|| "board".into());
-        let hint =
-            "(P post · R reply · E edit own · D delete own · [ ] switch board · ↑↓ scroll · ESC back)";
+        let hint = "(P post · R reply · A ask agent to draft · E edit own · D delete own · [ ] switch board · ↑↓ scroll · ESC back)";
         if self.messages.is_empty() {
             let p = Paragraph::new(vec![
                 Line::from(""),
@@ -1494,6 +1494,93 @@ impl App {
             Paragraph::new(lines)
                 .wrap(Wrap { trim: true })
                 .block(self.framed("Collab (Jujutsu / GitHub)")),
+            area,
+        );
+    }
+
+    fn render_drafts(&self, frame: &mut Frame, area: Rect) {
+        let pending = self.drafts.pending();
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "AGENT INBOX — replies drafted for your review, never posted unsupervised",
+                theme::hotkey(self.theme),
+            )),
+            Line::from(""),
+        ];
+        if self.draft_editing {
+            lines.push(Line::from(Span::styled(
+                "Editing draft body:",
+                theme::hotkey(self.theme),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled(self.draft_edit_input.clone(), theme::chrome(self.theme)),
+                Span::styled("▏", theme::dim(self.theme)),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "ENTER saves · ESC cancels",
+                theme::dim(self.theme),
+            )));
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: true })
+                    .block(self.framed("Agent Inbox")),
+                area,
+            );
+            return;
+        }
+        if pending.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "(no drafts pending — from Read, press A on a message to ask an agent for a reply)",
+                theme::dim(self.theme),
+            )));
+        }
+        for (i, d) in pending.iter().enumerate() {
+            let selected = i == self.draft_index;
+            let marker = if selected { "▶" } else { " " };
+            let flag = if d.flagged { " ⚠ flagged" } else { "" };
+            let status = match d.status {
+                agentbbs_core::DraftStatus::Edited => " (edited)",
+                _ => "",
+            };
+            let header = Line::from(vec![
+                Span::styled(
+                    format!("{marker} @{:<10}", d.agent),
+                    theme::hotkey(self.theme),
+                ),
+                Span::styled(format!("{:<28}", d.subject), theme::chrome(self.theme)),
+                Span::styled(format!("→ {}", d.target), theme::dim(self.theme)),
+                Span::styled(format!("{status}{flag}"), Style::default().fg(theme::RED)),
+            ]);
+            lines.push(if selected {
+                header.style(theme::lightbar(self.theme))
+            } else {
+                header
+            });
+            if selected {
+                for line in d.body.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {line}"),
+                        theme::chrome(self.theme),
+                    )));
+                }
+            } else {
+                let preview = d.body.lines().next().unwrap_or("").to_string();
+                lines.push(Line::from(Span::styled(
+                    format!("    {preview}"),
+                    theme::dim(self.theme),
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "[S] send (signs under your own key) · [E] edit · [D] discard · ↑↓ select · ESC back",
+            theme::dim(self.theme),
+        )));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: true })
+                .block(self.framed("Agent Inbox")),
             area,
         );
     }
