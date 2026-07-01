@@ -269,7 +269,9 @@ impl App {
                 Span::styled(m.body.subject.clone(), Style::default().fg(theme::YELLOW)),
             ]));
             for bl in m.body.body.lines() {
-                lines.push(Line::from(format!("   {indent}{bl}")));
+                let mut spans = vec![Span::raw(format!("   {indent}"))];
+                spans.extend(markdown_spans(bl));
+                lines.push(Line::from(spans));
             }
             lines.push(Line::from(""));
         }
@@ -1270,4 +1272,47 @@ impl App {
         .block(self.framed("Log Off"));
         frame.render_widget(p, area);
     }
+}
+
+/// Minimal inline markdown → styled spans for one line of message body:
+/// `**bold**` and `` `code` `` are styled, their markers stripped;
+/// everything else renders as-is. Deliberately narrow (no headers, lists,
+/// links, code fences) — matches the web's `mdToHtml` for the two markers
+/// that actually show up in normal chat, without a full CommonMark parser.
+fn markdown_spans(text: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let bold_pos = rest.find("**");
+        let code_pos = rest.find('`');
+        let next_bold_closer = bold_pos.and_then(|b| rest[b + 2..].find("**").map(|e| (b, e)));
+        let next_code_closer = code_pos.and_then(|c| rest[c + 1..].find('`').map(|e| (c, e)));
+        match (next_bold_closer, next_code_closer) {
+            (Some((b, e)), other) if other.is_none_or(|(c, _)| b <= c) => {
+                if b > 0 {
+                    spans.push(Span::raw(rest[..b].to_string()));
+                }
+                spans.push(Span::styled(
+                    rest[b + 2..b + 2 + e].to_string(),
+                    Style::default().bold(),
+                ));
+                rest = &rest[b + 2 + e + 2..];
+            }
+            (other, Some((c, e))) if other.is_none_or(|(b, _)| c < b) => {
+                if c > 0 {
+                    spans.push(Span::raw(rest[..c].to_string()));
+                }
+                spans.push(Span::styled(
+                    rest[c + 1..c + 1 + e].to_string(),
+                    Style::default().fg(theme::YELLOW),
+                ));
+                rest = &rest[c + 1 + e + 1..];
+            }
+            _ => {
+                spans.push(Span::raw(rest.to_string()));
+                break;
+            }
+        }
+    }
+    spans
 }

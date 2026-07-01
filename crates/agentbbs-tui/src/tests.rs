@@ -751,3 +751,26 @@ fn delete_own_message_hides_it_and_is_author_only() {
     // both still exist (append-only), but the filtered view hides it.
     assert_eq!(app.bbs.store().message_count().unwrap(), 2);
 }
+
+#[test]
+fn markdown_bold_and_code_markers_are_stripped_when_rendered() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('M')));
+    app.on_key(press(KeyCode::Enter));
+    post(
+        &mut app,
+        "md",
+        "run **cargo test** then check `agentbbs-tui` builds",
+    );
+
+    let text = screen_text(&app, 120, 30);
+    // The literal markers must be gone from the rendered output...
+    assert!(!text.contains("**cargo test**"));
+    assert!(!text.contains("`agentbbs-tui`"));
+    // ...but the enclosed content must still be there.
+    assert!(text.contains("cargo test"));
+    assert!(text.contains("agentbbs-tui"));
+    assert!(text.contains("run"));
+    assert!(text.contains("then check"));
+}
