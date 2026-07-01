@@ -3,11 +3,11 @@
 //! Reads newline-delimited signed `Message` JSON on stdin, plans the outbound
 //! mirror for each (per-board allowlist + loop guard, see the lib), and either
 //! prints the planned POSTs (`--dry-run`) or delivers them to the configured
-//! Slack/Teams webhooks.
+//! Slack/Teams/Discord webhooks.
 //!
 //! ```text
 //! agentbbs-bridge --config bridge.json [--dry-run]
-//! # bridge.json: {"mappings":[{"board":"general","slack_webhook":"https://hooks.slack.com/..."}]}
+//! # bridge.json: {"mappings":[{"board":"general","slack_webhook":"https://hooks.slack.com/...","discord_webhook":"https://discord.com/api/webhooks/..."}]}
 //! cat messages.ndjson | agentbbs-bridge --config bridge.json --dry-run
 //! ```
 

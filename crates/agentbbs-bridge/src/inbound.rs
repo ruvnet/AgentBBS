@@ -169,6 +169,7 @@ mod tests {
                 board: "general".into(),
                 slack_webhook: Some("https://hooks.slack.com/x".into()),
                 teams_webhook: None,
+                discord_webhook: None,
             }],
         });
         // The full loop guard: an inbound message the bridge itself signed must

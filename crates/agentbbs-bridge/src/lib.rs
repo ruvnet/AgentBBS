@@ -1,18 +1,29 @@
-//! AgentBBS → Slack / Microsoft Teams **outbound** bridge (ADR-0025, Phase 0).
+//! AgentBBS → Slack / Microsoft Teams / Discord **outbound** bridge
+//! (Slack/Teams: ADR-0025 Phase 0; Discord reuses the identical mechanism —
+//! it isn't its own ADR, just a third `Target` on the same generic
+//! board→webhook mapping).
 //!
 //! Phase 0 is a one-way mirror: a board's messages are pushed to a configured
-//! Slack Incoming Webhook and/or a Microsoft Teams Workflows ("when a Teams
-//! webhook request is received") URL. It is **opt-in per board** (only boards
-//! present in the config are mirrored) and loop-guarded (messages that
-//! originated from a bridge are never re-mirrored).
+//! Slack Incoming Webhook, a Microsoft Teams Workflows ("when a Teams webhook
+//! request is received") URL, and/or a Discord webhook URL. It is **opt-in
+//! per board** (only boards present in the config are mirrored) and
+//! loop-guarded (messages that originated from a bridge are never
+//! re-mirrored).
 //!
 //! The testable logic — board→target mapping, the allowlist, the loop guard,
 //! and payload formatting — is a pure, synchronous function ([`Bridge::plan`]).
 //! Network delivery ([`deliver`]) is a thin async wrapper over `reqwest`, so the
 //! interesting behavior is unit-tested without touching the network.
 //!
-//! Inbound (Slack/Teams → AgentBBS) and the bridge-signing identity model are
-//! Phase 1+ (see ADR-0025) and intentionally out of scope here.
+//! Inbound is platform-specific: Slack's is live (ADR-0025 Phase 1, in
+//! `agentbbs-web`'s `/api/bridge/slack/events`). Teams and Discord inbound are
+//! NOT implemented — Teams needs Azure Bot Service registration + JWT
+//! validation, and Discord has no simple stateless webhook for regular
+//! channel messages (only slash-command interactions); receiving normal
+//! messages needs a persistent Gateway WebSocket bot connection, a materially
+//! different transport from the HTTP-push model this module's inbound side
+//! uses. Both are deliberately out of scope here — this module is outbound
+//! (all three platforms) plus Slack inbound only.
 
 use agentbbs_core::Message;
 use serde::Deserialize;
@@ -29,6 +40,7 @@ pub mod irc;
 pub enum Target {
     Slack,
     Teams,
+    Discord,
 }
 
 impl fmt::Display for Target {
@@ -36,6 +48,7 @@ impl fmt::Display for Target {
         f.write_str(match self {
             Target::Slack => "slack",
             Target::Teams => "teams",
+            Target::Discord => "discord",
         })
     }
 }
@@ -58,6 +71,8 @@ pub struct BoardMapping {
     pub slack_webhook: Option<String>,
     #[serde(default)]
     pub teams_webhook: Option<String>,
+    #[serde(default)]
+    pub discord_webhook: Option<String>,
 }
 
 /// The bridge configuration: the set of board→webhook mappings.
@@ -124,6 +139,27 @@ pub fn format_teams(msg: &Message) -> Value {
     })
 }
 
+/// Discord webhook payload (the "Execute Webhook" JSON body): an embed
+/// carrying author/board/signature as structured fields, matching how Teams
+/// uses a card rather than Slack's flat text — Discord embeds render with
+/// the same author/description/footer layout Discord users already expect
+/// from other bridge bots.
+pub fn format_discord(msg: &Message) -> Value {
+    let who = display_handle(msg);
+    let sig = if msg.verify().is_ok() {
+        "✓ signed"
+    } else {
+        "✗ unsigned"
+    };
+    json!({
+        "embeds": [{
+            "author": { "name": who },
+            "description": msg.body.body,
+            "footer": { "text": format!("#{} · {}", msg.body.board, sig) },
+        }]
+    })
+}
+
 fn display_handle(msg: &Message) -> String {
     if msg.body.handle.is_empty() {
         format!(
@@ -169,6 +205,13 @@ impl Bridge {
                 target: Target::Teams,
                 url: url.clone(),
                 payload: format_teams(msg),
+            });
+        }
+        if let Some(url) = &mapping.discord_webhook {
+            posts.push(OutboundPost {
+                target: Target::Discord,
+                url: url.clone(),
+                payload: format_discord(msg),
             });
         }
         posts
@@ -239,6 +282,7 @@ mod tests {
                 board: "general".into(),
                 slack_webhook: Some("https://hooks.slack.com/services/T/B/X".into()),
                 teams_webhook: Some("https://prod.westus.logic.azure.com/workflows/abc".into()),
+                discord_webhook: Some("https://discord.com/api/webhooks/123/abc".into()),
             }],
         }
     }
@@ -276,14 +320,16 @@ mod tests {
     }
 
     #[test]
-    fn plan_posts_to_both_configured_targets() {
+    fn plan_posts_to_all_three_configured_targets() {
         let b = Bridge::new(cfg());
         let posts = b.plan(&msg("general", "alice", "hi"));
-        assert_eq!(posts.len(), 2);
+        assert_eq!(posts.len(), 3);
         assert_eq!(posts[0].target, Target::Slack);
         assert!(posts[0].url.contains("hooks.slack.com"));
         assert_eq!(posts[1].target, Target::Teams);
         assert!(posts[1].url.contains("logic.azure.com"));
+        assert_eq!(posts[2].target, Target::Discord);
+        assert!(posts[2].url.contains("discord.com"));
     }
 
     #[test]
@@ -299,11 +345,39 @@ mod tests {
                 board: "general".into(),
                 slack_webhook: Some("https://hooks.slack.com/services/x".into()),
                 teams_webhook: None,
+                discord_webhook: None,
             }],
         });
         let posts = b.plan(&msg("general", "alice", "hi"));
         assert_eq!(posts.len(), 1);
         assert_eq!(posts[0].target, Target::Slack);
+    }
+
+    #[test]
+    fn discord_payload_is_an_embed_with_author_body_and_footer() {
+        let m = msg("general", "alice", "hello discord");
+        let p = format_discord(&m);
+        let embed = &p["embeds"][0];
+        assert_eq!(embed["author"]["name"], "alice");
+        assert_eq!(embed["description"], "hello discord");
+        let footer = embed["footer"]["text"].as_str().unwrap();
+        assert!(footer.contains("#general"));
+        assert!(footer.contains("✓ signed")); // it's a real signed message
+    }
+
+    #[test]
+    fn only_discord_configured_receives_a_post() {
+        let b = Bridge::new(BridgeConfig {
+            mappings: vec![BoardMapping {
+                board: "general".into(),
+                slack_webhook: None,
+                teams_webhook: None,
+                discord_webhook: Some("https://discord.com/api/webhooks/1/x".into()),
+            }],
+        });
+        let posts = b.plan(&msg("general", "alice", "hi"));
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].target, Target::Discord);
     }
 
     #[test]
