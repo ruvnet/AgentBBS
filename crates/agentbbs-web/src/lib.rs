@@ -12,6 +12,8 @@
 //! any PII.
 #![forbid(unsafe_code)]
 
+mod slack_bridge;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -129,6 +131,9 @@ pub struct AppState {
     /// Daily live-LLM call budget guard (UTC-date, count) — caps aggregate cog_
     /// spend from anonymous public (Pages) traffic. Env `AGENTBBS_LLM_DAILY_MAX`.
     llm_day: Mutex<(String, u32)>,
+    /// Loop guard for the Slack inbound bridge (ADR-0025 Phase 1) — dedupes
+    /// on Slack's own `ts` so a retried webhook delivery never double-posts.
+    slack_seen: Mutex<agentbbs_bridge::SeenSet>,
 }
 
 impl AppState {
@@ -156,6 +161,7 @@ impl AppState {
             rotation: Mutex::new(agentbbs_core::RotationChain::new()),
             drafts: Mutex::new(agentbbs_core::DraftQueue::new()),
             llm_day: Mutex::new((String::new(), 0)),
+            slack_seen: Mutex::new(agentbbs_bridge::SeenSet::new()),
         })
     }
 
@@ -426,6 +432,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/collab/jujutsu/status", get(api_collab_jj_status))
         .route("/api/collab/jujutsu/diff", get(api_collab_jj_diff))
         .route("/api/collab/jujutsu/log", get(api_collab_jj_log))
+        .route("/api/bridge/slack/events", post(api_slack_events))
         .route("/api/postguard", post(api_postguard))
         .route("/api/agent-reply", post(api_agent_reply))
         .route("/api/playbooks/run", post(api_playbook_run))
@@ -1873,6 +1880,100 @@ async fn api_collab_jj_log(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let limit: u32 = q.get("limit").and_then(|s| s.parse().ok()).unwrap_or(10);
     collab_result(collab_jj().log(limit).await)
+}
+
+// ---- Slack inbound bridge (ADR-0025 Phase 1) ----
+//
+// Reuses the exact BridgeIdentity/sign_inbound/SeenSet shape the IRC bridge
+// already ships (agentbbs-bridge, ADR-0031 Phase 1). Unlike the IRC bridge
+// (a private TCP listener), this is an Internet-facing webhook, so every
+// request is signature-verified before anything else happens — see
+// `slack_bridge::verify_signature`.
+
+/// `POST /api/bridge/slack/events` — Slack Events API webhook. Verifies the
+/// request signature, answers the one-time `url_verification` handshake,
+/// and bridge-signs+posts allowlisted channel messages. Always returns `200`
+/// for signature-valid requests (even when a message wasn't bridged — wrong
+/// channel, missing config) so Slack doesn't retry-storm a soft skip; only a
+/// bad/missing signature is rejected.
+async fn api_slack_events(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let secret = std::env::var("AGENTBBS_SLACK_SIGNING_SECRET").unwrap_or_default();
+    if secret.is_empty() {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slack bridge not configured",
+        ));
+    }
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+    };
+    let ts = header("x-slack-request-timestamp");
+    let sig = header("x-slack-signature");
+    if !slack_bridge::verify_signature(&secret, ts, &body, sig, chrono::Utc::now()) {
+        return Err(api_error(StatusCode::UNAUTHORIZED, "invalid signature"));
+    }
+    let payload: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid json: {e}")))?;
+    match slack_bridge::parse_event(&payload) {
+        slack_bridge::SlackEvent::UrlVerification { challenge } => {
+            Ok(Json(serde_json::json!({ "challenge": challenge })))
+        }
+        slack_bridge::SlackEvent::Message(msg) => {
+            deliver_slack_message(&state, msg);
+            Ok(Json(serde_json::json!({ "ok": true })))
+        }
+        slack_bridge::SlackEvent::Ignored => Ok(Json(serde_json::json!({ "ok": true }))),
+    }
+}
+
+/// Bridge-sign and post a validated Slack message if its channel is
+/// allowlisted (`AGENTBBS_SLACK_CHANNEL_MAP`) and the bridge identity is
+/// configured (`AGENTBBS_SLACK_BRIDGE_SEED_HEX`). Soft-fails (logs, doesn't
+/// error the webhook response) on any missing config or post failure — the
+/// same "never let one caller's traffic 500 a shared endpoint" posture as
+/// the rest of this file's best-effort recording paths.
+fn deliver_slack_message(state: &AppState, msg: slack_bridge::SlackMessage) {
+    let Ok(channel_map_spec) = std::env::var("AGENTBBS_SLACK_CHANNEL_MAP") else {
+        tracing::debug!("slack bridge: AGENTBBS_SLACK_CHANNEL_MAP not set, dropping message");
+        return;
+    };
+    let channel_map = slack_bridge::parse_channel_map(&channel_map_spec);
+    let Some(board) = channel_map.get(&msg.channel) else {
+        return; // not an allowlisted channel — silent, not an error
+    };
+    let Ok(seed_hex) = std::env::var("AGENTBBS_SLACK_BRIDGE_SEED_HEX") else {
+        tracing::warn!("slack bridge: AGENTBBS_SLACK_BRIDGE_SEED_HEX not set, dropping message");
+        return;
+    };
+    let Some(seed) = slack_bridge::parse_seed_hex(&seed_hex) else {
+        tracing::warn!("slack bridge: AGENTBBS_SLACK_BRIDGE_SEED_HEX is not valid 64-hex-char");
+        return;
+    };
+    let identity = agentbbs_bridge::BridgeIdentity::from_seed(seed);
+    let ext_id = format!("slack:{}:{}", msg.team_id, msg.ts);
+    if state.slack_seen.lock().unwrap().seen_or_record(&ext_id) {
+        return; // duplicate delivery — Slack retries on a slow 200
+    }
+    let inbound = agentbbs_bridge::Inbound {
+        platform: "slack".to_string(),
+        workspace: msg.team_id,
+        user_id: msg.user.clone(),
+        display_name: msg.user,
+        text: msg.text,
+        external_msg_id: ext_id,
+        board: board.clone(),
+    };
+    let signed = agentbbs_bridge::sign_inbound(&identity, &inbound, chrono::Utc::now());
+    if let Err(e) = state.bbs.post(Role::Agent.caps(), signed) {
+        tracing::warn!(error = %e, board = %board, "slack bridge: post failed");
+    }
 }
 
 /// `GET /api/credentials` — every currently-valid signed credential on file
@@ -3995,5 +4096,75 @@ mod tests {
             .unwrap()
             .iter()
             .any(|e| e["kind"] == "Post"));
+    }
+
+    // ADR-0025 Phase 1: Slack inbound bridge route wiring. Owns
+    // AGENTBBS_SLACK_SIGNING_SECRET / AGENTBBS_SLACK_CHANNEL_MAP for its
+    // duration — no other test touches these, matching the single-owner env
+    // var idiom used by `pods_gateway_url_and_config`.
+    #[tokio::test]
+    async fn slack_events_route_rejects_unconfigured_bad_sig_and_verifies_challenge() {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let sign = |secret: &str, ts: &str, body: &str| -> String {
+            let base = format!("v0:{ts}:{body}");
+            let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+            mac.update(base.as_bytes());
+            format!("v0={}", hex::encode(mac.finalize().into_bytes()))
+        };
+
+        // Unconfigured: no signing secret set at all.
+        std::env::remove_var("AGENTBBS_SLACK_SIGNING_SECRET");
+        let app = router(AppState::in_memory());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/bridge/slack/events")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // Configured, but a forged/wrong signature.
+        std::env::set_var("AGENTBBS_SLACK_SIGNING_SECRET", "test-signing-secret");
+        let body = r#"{"type":"url_verification","challenge":"abc123"}"#;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/bridge/slack/events")
+                    .header("content-type", "application/json")
+                    .header("x-slack-request-timestamp", "1699999999")
+                    .header("x-slack-signature", "v0=deadbeef")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Correctly signed url_verification handshake is echoed back.
+        let now = chrono::Utc::now();
+        let ts = now.timestamp().to_string();
+        let sig = sign("test-signing-secret", &ts, body);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/bridge/slack/events")
+                    .header("content-type", "application/json")
+                    .header("x-slack-request-timestamp", &ts)
+                    .header("x-slack-signature", &sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["challenge"], "abc123");
+
+        std::env::remove_var("AGENTBBS_SLACK_SIGNING_SECRET");
     }
 }

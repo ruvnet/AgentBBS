@@ -176,14 +176,18 @@ name = "agentbbs-web"
 version = "0.1.0"
 dependencies = [
  "agentbbs-arena",
+ "agentbbs-bridge",
  "agentbbs-core",
  "agentbbs-federation",
  "axum",
  "chrono",
+ "hex",
+ "hmac 0.12.1",
  "http-body-util",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tower",
  "tower-http",

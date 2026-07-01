@@ -16,6 +16,7 @@ path = "src/main.rs"
 agentbbs-core = { path = "../agentbbs-core" }
 agentbbs-arena = { path = "../agentbbs-arena" }
 agentbbs-federation = { path = "../agentbbs-federation" }
+agentbbs-bridge = { path = "../agentbbs-bridge" }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
@@ -26,6 +27,9 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
