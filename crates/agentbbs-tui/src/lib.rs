@@ -237,4 +237,108 @@ mod tests {
         assert!(text.contains("Marketplace"));
         assert!(text.contains("Echo Door"));
     }
+
+    #[test]
+    fn unread_badge_appears_when_another_session_posts_and_clears_on_open() {
+        use agentbbs_core::{MemoryStore, Presence};
+        use std::sync::Arc;
+        let presence = Arc::new(Presence::default());
+        let store: Arc<dyn agentbbs_core::Store> = Arc::new(MemoryStore::new());
+        let mut a = App::with_presence(store.clone(), presence.clone());
+        let mut b = App::with_presence(store.clone(), presence.clone());
+
+        // `a` opens the first board (list order is alphabetical by slug,
+        // not seed order) — this marks it seen at 0 messages.
+        a.on_key(press(KeyCode::Enter));
+        a.on_key(press(KeyCode::Char('M')));
+        a.on_key(press(KeyCode::Enter));
+        let slug = a.current_board.clone().unwrap();
+        assert_eq!(a.unread_for(&slug), 0);
+
+        // `b` posts to that same shared board.
+        b.on_key(press(KeyCode::Enter));
+        b.on_key(press(KeyCode::Char('M')));
+        b.on_key(press(KeyCode::Enter));
+        assert_eq!(b.current_board.as_deref(), Some(slug.as_str()));
+        b.on_key(press(KeyCode::Char('P')));
+        for c in "from b".chars() {
+            b.on_key(press(KeyCode::Char(c)));
+        }
+        b.on_key(press(KeyCode::Tab));
+        for c in "hello a".chars() {
+            b.on_key(press(KeyCode::Char(c)));
+        }
+        b.on_key(ctrl('s'));
+
+        // `a` hasn't re-opened the board — unread_for recomputes live against
+        // the shared store, so it must reflect b's post without a refresh.
+        assert_eq!(a.unread_for(&slug), 1);
+        let boards_text = {
+            a.screen = Screen::Boards;
+            screen_text(&a, 110, 30)
+        };
+        assert!(boards_text.contains("1 new"));
+
+        // Re-opening the board marks it seen again.
+        a.board_index = 0;
+        a.open_selected_board();
+        assert_eq!(a.unread_for(&slug), 0);
+    }
+
+    #[test]
+    fn reply_threads_the_post_and_shows_indicator() {
+        let mut app = App::in_memory();
+        app.on_key(press(KeyCode::Enter));
+        app.on_key(press(KeyCode::Char('M')));
+        app.on_key(press(KeyCode::Enter));
+        app.on_key(press(KeyCode::Char('P')));
+        for c in "root".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        app.on_key(press(KeyCode::Tab));
+        for c in "the original message".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        app.on_key(ctrl('s'));
+        let root_id = app.messages.last().unwrap().id.clone();
+
+        // Reply to the highlighted (only) message.
+        app.on_key(press(KeyCode::Char('r')));
+        assert_eq!(app.screen, Screen::Compose);
+        assert!(app.compose_subject.starts_with("Re: "));
+        assert!(app.compose_reply_to.is_some());
+        for c in "a threaded reply".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        app.on_key(ctrl('s'));
+
+        assert!(app.compose_reply_to.is_none()); // cleared after send
+        let reply = app.messages.last().unwrap();
+        assert_eq!(reply.body.parent.as_ref(), Some(&root_id));
+        let text = screen_text(&app, 110, 30);
+        assert!(text.contains('↳')); // thread indicator rendered
+    }
+
+    #[test]
+    fn quick_switch_jumps_boards_while_reading() {
+        let mut app = App::in_memory();
+        app.on_key(press(KeyCode::Enter));
+        app.on_key(press(KeyCode::Char('M')));
+        app.on_key(press(KeyCode::Enter)); // opens board_index 0
+        let slugs: Vec<String> = app.boards.iter().map(|b| b.slug.clone()).collect();
+        assert_eq!(app.current_board.as_deref(), Some(slugs[0].as_str()));
+
+        app.on_key(press(KeyCode::Char(']'))); // next board
+        assert_eq!(app.screen, Screen::Read); // stays in Read, no trip back to Boards
+        assert_eq!(app.current_board.as_deref(), Some(slugs[1].as_str()));
+
+        app.on_key(press(KeyCode::Char('['))); // back
+        assert_eq!(app.current_board.as_deref(), Some(slugs[0].as_str()));
+
+        app.on_key(press(KeyCode::Char('['))); // wraps to the last board
+        assert_eq!(
+            app.current_board.as_deref(),
+            Some(slugs[slugs.len() - 1].as_str())
+        );
+    }
 }

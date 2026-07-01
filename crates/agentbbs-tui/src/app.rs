@@ -6,6 +6,7 @@
 //! so it can be unit-tested with a `TestBackend` and driven for real over an
 //! SSH PTY or the local terminal.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use std::time::Instant;
@@ -16,7 +17,16 @@ use agentbbs_core::identity::Identity;
 use agentbbs_core::market::{Listing, ListingBody, ListingKind, Market};
 use agentbbs_core::presence::Presence;
 use agentbbs_core::report::MemoryReporter;
-use agentbbs_core::{Bbs, Board, MemoryStore, Message, Role, Store};
+use agentbbs_core::{Bbs, Board, MemoryStore, Message, MessageId, Role, Store};
+
+/// A snapshot of the message being replied to, kept alongside the compose
+/// buffer so Slack-style threaded replies don't need to re-fetch it.
+#[derive(Clone)]
+pub struct ReplyTarget {
+    pub id: MessageId,
+    pub handle: String,
+    pub subject: String,
+}
 
 /// Which screen is currently focused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +125,13 @@ pub struct App {
     pub compose_body: String,
     /// Compose: focused field.
     pub compose_field: ComposeField,
+    /// Set when compose was entered via Reply — threads the post under the
+    /// target message (`MessageBody.parent`), Slack-style.
+    pub compose_reply_to: Option<ReplyTarget>,
+    /// Per-board "last seen" message count, so the board list can show
+    /// Slack-style unread badges. A board absent here has never been opened
+    /// (everything on it is unread).
+    pub board_seen: HashMap<String, usize>,
     /// The benchmark competition arena + leaderboard.
     pub arena: Arena,
     /// Highlighted benchmark row in the Arena screen.
@@ -170,6 +187,8 @@ impl App {
             compose_subject: String::new(),
             compose_body: String::new(),
             compose_field: ComposeField::Subject,
+            compose_reply_to: None,
+            board_seen: HashMap::new(),
             arena: Arena::new(),
             arena_index: 0,
             presence,
@@ -349,9 +368,64 @@ impl App {
                 .read_board(Caps::READ, &slug, 200)
                 .unwrap_or_default();
             self.read_index = self.messages.len().saturating_sub(1);
+            self.board_seen.insert(slug.clone(), self.messages.len());
             self.current_board = Some(slug);
             self.screen = Screen::Read;
         }
+    }
+
+    /// Total messages currently on `slug` (used only for the unread badge —
+    /// board sizes are small at this demo scale, so re-fetching to count is
+    /// fine; no need for a dedicated `Store` count-by-board method).
+    fn board_count(&self, slug: &str) -> usize {
+        self.bbs
+            .read_board(Caps::READ, slug, usize::MAX)
+            .map(|v| v.len())
+            .unwrap_or(0)
+    }
+
+    /// Unread count for `slug`: 0 for a board you're currently looking at or
+    /// have fully read; > 0 once someone else posts on a shared node while
+    /// you're elsewhere — the same "unread channel" signal Slack shows.
+    pub fn unread_for(&self, slug: &str) -> usize {
+        let total = self.board_count(slug);
+        let seen = self.board_seen.get(slug).copied().unwrap_or(0);
+        total.saturating_sub(seen)
+    }
+
+    /// Jump to the previous (`delta < 0`) or next (`delta > 0`) board while
+    /// reading, without returning to the Boards list — Slack-style quick
+    /// channel switching (bound to `[` / `]`).
+    pub fn switch_board(&mut self, delta: i32) {
+        if self.boards.is_empty() {
+            return;
+        }
+        let len = self.boards.len() as i32;
+        let idx = self.board_index as i32;
+        self.board_index = (idx + delta).rem_euclid(len) as usize;
+        self.open_selected_board();
+    }
+
+    /// Enter compose in reply-to mode for the currently highlighted message
+    /// in the Read screen — threads the post via `MessageBody.parent`.
+    pub fn begin_reply(&mut self) {
+        let Some(m) = self.messages.get(self.read_index) else {
+            return;
+        };
+        let handle = if m.body.handle.is_empty() {
+            m.body.author.short().to_string()
+        } else {
+            m.body.handle.clone()
+        };
+        self.compose_reply_to = Some(ReplyTarget {
+            id: m.id.clone(),
+            handle,
+            subject: m.body.subject.clone(),
+        });
+        self.compose_subject = format!("Re: {}", m.body.subject);
+        self.compose_field = ComposeField::Body;
+        self.status = "Replying — TAB switches field, Ctrl-S sends, ESC cancels.".into();
+        self.screen = Screen::Compose;
     }
 
     /// Post the in-progress compose buffer to the current board.
@@ -369,9 +443,10 @@ impl App {
         } else {
             self.compose_subject.clone()
         };
+        let parent = self.compose_reply_to.as_ref().map(|r| r.id.clone());
         let body = agentbbs_core::MessageBody {
             board: slug.clone(),
-            parent: None,
+            parent,
             subject,
             body: self.compose_body.clone(),
             author: self.session.identity.id(),
@@ -385,11 +460,13 @@ impl App {
                 self.compose_subject.clear();
                 self.compose_body.clear();
                 self.compose_field = ComposeField::Subject;
+                self.compose_reply_to = None;
                 self.messages = self
                     .bbs
                     .read_board(Caps::READ, &slug, 200)
                     .unwrap_or_default();
                 self.read_index = self.messages.len().saturating_sub(1);
+                self.board_seen.insert(slug, self.messages.len());
                 self.status = "Message posted and signed.".into();
                 self.screen = Screen::Read;
             }

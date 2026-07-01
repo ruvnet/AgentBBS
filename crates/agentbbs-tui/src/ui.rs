@@ -160,12 +160,21 @@ impl App {
                 let prefix = if selected { "▶ " } else { "  " };
                 let lock = if b.locked { " 🔒" } else { "" };
                 let fed = if b.federated { " ⇄" } else { "" };
-                let line = Line::from(vec![
+                let unread = self.unread_for(&b.slug);
+                let mut spans = vec![
                     Span::raw(prefix),
                     Span::styled(format!("{:<14}", b.slug), theme::hotkey()),
                     Span::styled(b.title.clone(), theme::chrome()),
                     Span::styled(format!("{lock}{fed}"), theme::dim()),
-                ]);
+                ];
+                // Slack-style unread badge — bright and unmissable.
+                if unread > 0 {
+                    spans.push(Span::styled(
+                        format!("  ● {unread} new"),
+                        Style::default().fg(theme::GREEN).bold(),
+                    ));
+                }
+                let line = Line::from(spans);
                 let style = if selected {
                     theme::lightbar()
                 } else {
@@ -182,6 +191,7 @@ impl App {
 
     fn render_read(&self, frame: &mut Frame, area: Rect) {
         let title = self.current_board.clone().unwrap_or_else(|| "board".into());
+        let hint = "(P post · R reply · [ ] switch board · ↑↓ scroll · ESC back)";
         if self.messages.is_empty() {
             let p = Paragraph::new(vec![
                 Line::from(""),
@@ -192,7 +202,7 @@ impl App {
                 )),
             ])
             .alignment(Alignment::Center)
-            .block(self.framed(&format!("{title}  (P post · ESC back)")));
+            .block(self.framed(&format!("{title}  {hint}")));
             frame.render_widget(p, area);
             return;
         }
@@ -203,6 +213,11 @@ impl App {
                 "✓sig"
             } else {
                 "✗SIG"
+            };
+            let indent = if m.body.parent.is_some() {
+                "  ↳ "
+            } else {
+                ""
             };
             lines.push(Line::from(vec![
                 Span::styled(format!("{marker} #{} ", i + 1), theme::hotkey()),
@@ -222,28 +237,53 @@ impl App {
                 Span::raw("  "),
                 Span::styled(verified, Style::default().fg(theme::GREEN)),
             ]));
-            lines.push(Line::from(Span::styled(
-                format!("   {}", m.body.subject),
-                Style::default().fg(theme::YELLOW),
-            )));
+            lines.push(Line::from(vec![
+                Span::raw(format!("   {indent}")),
+                Span::styled(m.body.subject.clone(), Style::default().fg(theme::YELLOW)),
+            ]));
             for bl in m.body.body.lines() {
-                lines.push(Line::from(format!("   {bl}")));
+                lines.push(Line::from(format!("   {indent}{bl}")));
             }
             lines.push(Line::from(""));
         }
         frame.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
-                .block(self.framed(&format!("{title}  (P post · ↑↓ scroll · ESC back)"))),
+                .block(self.framed(&format!("{title}  {hint}"))),
             area,
         );
     }
 
     fn render_compose(&self, frame: &mut Frame, area: Rect) {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(3)])
-            .split(area);
+        let reply_line = self.compose_reply_to.as_ref().map(|r| {
+            Line::from(Span::styled(
+                format!("  ↳ replying to {}: {}", r.handle, r.subject),
+                Style::default().fg(theme::YELLOW),
+            ))
+        });
+        let rows = if reply_line.is_some() {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Length(3),
+                    Constraint::Min(3),
+                ])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(0),
+                    Constraint::Length(3),
+                    Constraint::Min(3),
+                ])
+                .split(area)
+        };
+        if let Some(line) = reply_line {
+            frame.render_widget(Paragraph::new(line), rows[0]);
+        }
+        let rows = &rows[1..];
 
         let subj_focus = self.compose_field == ComposeField::Subject;
         let subject = Paragraph::new(Line::from(format!(

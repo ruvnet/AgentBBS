@@ -106,10 +106,16 @@ impl App {
                 }
             }
             KeyCode::Char('p') | KeyCode::Char('P') => {
+                self.compose_reply_to = None;
                 self.compose_field = ComposeField::Subject;
                 self.status = "Compose — TAB switches field, Ctrl-S sends, ESC cancels.".into();
                 self.screen = Screen::Compose;
             }
+            KeyCode::Char('r') | KeyCode::Char('R') => self.begin_reply(),
+            // Slack-style quick channel switch — jump boards without
+            // returning to the Boards list first.
+            KeyCode::Char('[') => self.switch_board(-1),
+            KeyCode::Char(']') => self.switch_board(1),
             KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Boards,
             _ => {}
         }
@@ -124,6 +130,7 @@ impl App {
         }
         match key.code {
             KeyCode::Esc => {
+                self.compose_reply_to = None;
                 self.status = "Compose cancelled.".into();
                 self.screen = Screen::Read;
             }
