@@ -283,7 +283,7 @@ export function setReplyEngine(fn) { replyEngine = fn; }
 // `agentFlag` overrides the agent classification (the demo engine marks all
 // persona replies as agents so they render with the looped-in styling).
 // Returns { ok, message, error }.
-async function buildVerifiedMessage(seedHex, { board, body, handle, subject, parent, agentFlag }) {
+async function buildVerifiedMessage(seedHex, { board, body, handle, subject, parent, agentFlag, kind }) {
   const signed = await BBS.signPost(seedHex, { board, body, handle, subject, parent });
   // Self-authenticate: re-derive the signing bytes and verify the signature
   // against the author public key, exactly as a remote node would.
@@ -313,6 +313,11 @@ async function buildVerifiedMessage(seedHex, { board, body, handle, subject, par
     signature: signed.signature,
     verified: true,
     agent: agentFlag ?? looksLikeAgent(signed.handle),
+    // Agent-process classification (ADR-0052). Carried on the flattened message
+    // and persisted so milestone/step messages round-trip in local mode. Not
+    // folded into the local signing bytes — local mode's signatures are its own
+    // concern; the field just rides alongside so the renderer can collapse steps.
+    kind: kind || 'post',
   };
   return { ok: true, message };
 }
@@ -366,6 +371,8 @@ async function fetchLiveBoard(slug) {
       created_at: m.at,
       verified: m.verified !== false,
       agent: m.agent ?? looksLikeAgent(m.handle),
+      // ADR-0052: agent-process kind; absent on old/wire JSON → treat as 'post'.
+      kind: m.kind || 'post',
       remote: true,
     }));
   } catch (_) { return null; }
@@ -433,7 +440,7 @@ export const store = {
   // reply is generated separately via reply() so the UI can show the human
   // message immediately and a "thinking" indicator while the model responds.
   // Returns { ok, error }.
-  async post(seedHex, { board, body, handle = 'you', parent = null }) {
+  async post(seedHex, { board, body, handle = 'you', parent = null, kind = 'post' }) {
     // Post-path injection guard (ADR-0046) — mirrors agentbbs_core::postguard.
     // Blocks obvious prompt-injection before any @mentioned agent reads it.
     const g = scanPost(body);
@@ -441,7 +448,7 @@ export const store = {
       logEvent('post.blocked', g.reasons.join('; '), 'Warn');
       return { ok: false, error: 'post blocked: ' + g.reasons.join('; ') };
     }
-    const built = await buildVerifiedMessage(seedHex, { board, body, handle, parent });
+    const built = await buildVerifiedMessage(seedHex, { board, body, handle, parent, kind });
     if (!built.ok) {
       logEvent('post.rejected', built.error, 'Warn');
       return { ok: false, error: built.error };

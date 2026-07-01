@@ -705,6 +705,41 @@ try {
     ok(r.continuity, 'rotation produces a dual-signed continuity link (not a bare reset)');
   }
 
+  // ---- ADR-0052: threaded agent-process view (milestones inline, steps collapsed) ----
+  if (GENESIS) {
+    const tag = 'proc-' + Date.now();
+    const setup = await page.evaluate(async (tag) => {
+      const s = window.__genesisStore, seed = localStorage.getItem('agentbbs.seed');
+      await s.post(seed, { board: 'general', body: tag + ' milestone', handle: 'claude', kind: 'milestone' });
+      const d = await s.board('general');
+      const ms = (d.messages || []).find(x => (x.body || '').startsWith(tag + ' milestone'));
+      if (!ms) return { err: 'milestone not stored' };
+      for (let i = 1; i <= 3; i++) {
+        await s.post(seed, { board: 'general', body: tag + ' step ' + i, handle: 'claude', parent: ms.id, kind: 'step' });
+      }
+      return { ok: true };
+    }, tag);
+    ok(setup.ok === true, 'ADR-0052 web: milestone + 3 step messages injected via store');
+    await page.evaluate(() => window.__ui.loadBoard('general'));
+    await page.waitForFunction(() => window.__ui.currentBoard() === 'general', { timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(200);
+    // A collapsed step lives in a display:none .step-thread, so offsetParent is
+    // null; visible steps have a non-null offsetParent. Count the visible ones.
+    const stepsVisible = () => page.evaluate((tag) =>
+      [...document.querySelectorAll('#thread .row')].filter(el =>
+        new RegExp(tag + ' step').test(el.textContent) && el.offsetParent !== null).length, tag);
+    ok((await stepsVisible()) === 0, 'ADR-0052 web: step messages are hidden by default (collapsed)');
+    ok(await page.evaluate((tag) => [...document.querySelectorAll('#thread .step-toggle')]
+      .some(el => /▸\s*3 updates/.test(el.textContent) && el.offsetParent !== null), tag),
+      'ADR-0052 web: milestone grows a "▸ 3 updates" toggle');
+    await page.evaluate((tag) => {
+      const tg = [...document.querySelectorAll('#thread .step-toggle')].find(el => /3 updates/.test(el.textContent));
+      if (tg) tg.click();
+    }, tag);
+    await page.waitForTimeout(150);
+    ok((await stepsVisible()) === 3, 'ADR-0052 web: clicking the toggle reveals all 3 step messages');
+  }
+
   // ---- mobile layout + persistence ----
   await page.evaluate(() => window.__ui.applyLayout('mobile'));
   ok(await page.evaluate(() => document.documentElement.dataset.layout === 'mobile' && getComputedStyle(document.getElementById('sidebar')).display === 'none'), 'mobile layout hides sidebar');

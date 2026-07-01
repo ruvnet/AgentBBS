@@ -291,6 +291,14 @@
   .loop { display: inline-flex; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--line);
     border-radius: 999px; padding: 3px 10px 3px 4px; font-size: 12px; color: var(--fg); }
 
+  /* Collapsed agent-process step thread (ADR-0052): a Milestone's granular
+     Step children are hidden behind a "▸ N update(s)" toggle, default collapsed;
+     expanding reveals them nested with the same ↳ / indent language as replies. */
+  .step-toggle { align-self: flex-start; margin-left: var(--reply-indent, 22px); cursor: pointer; user-select: none;
+    color: var(--muted); font-size: 12.5px; padding: 2px 6px; border-left: 2px solid var(--accentSoft); }
+  .step-toggle:hover { color: var(--accent); }
+  .step-thread { display: flex; flex-direction: column; gap: 8px; }
+
   /* Result card (Arena leaderboard etc.) */
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; align-self: stretch; }
   .card h3 { margin: 0; padding: 14px 16px 4px; font-size: 16px; }
@@ -480,7 +488,7 @@
 <script type="module">
 /* @sync:adapter-start (genesis: localStorage store + in-browser demo engine) */
 import * as BBS from './vendor/bbscrypto.js';
-import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-27';
+import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-28';
 import { createDemoEngine } from './vendor/demo-engine.js';
 /* @sync:adapter-end */
 
@@ -801,11 +809,40 @@ async function loadBoard(slug, { keepScroll } = {}) {
   const ids = new Set(msgs.map(m => m.id));
   const byParent = new Map();
   msgs.forEach(m => { if (m.parent && ids.has(m.parent)) { (byParent.get(m.parent) || byParent.set(m.parent, []).get(m.parent)).push(m); } });
-  const renderThread = (m, depth) => {
+  // Threaded agent-process view (ADR-0052): `Step`-kind children (m.kind ==
+  // 'step') are NOT shown inline; instead their parent grows a "▸ N update(s)"
+  // toggle (N = direct Step children) that expands an indented, chronological
+  // list — steps nest recursively. Ordinary `Post` replies stay always-visible.
+  // A Step whose parent isn't on the board is an orphan and is rendered inline
+  // as a normal message (handled by the top-level loop below) so nothing is lost.
+  // Filter/collapse rule: the board filter sets each node's own `display`, but a
+  // collapsed step lives inside a `display:none` .step-thread, so a filter match
+  // can't force-reveal it — expansion stays a deliberate click. The toggle node
+  // carries its steps' text so filtering by a step term keeps the toggle visible.
+  const renderThread = (m, depth, container) => {
+    const host = container || thread;
     const el = renderMessage(m, depth);
-    thread.appendChild(el);
+    host.appendChild(el);
     nodes.push({ el, text: ((m.body || '') + ' ' + (m.handle || '') + ' ' + (m.subject || '')).toLowerCase() });
-    (byParent.get(m.id) || []).forEach(r => renderThread(r, depth + 1));
+    const kids = byParent.get(m.id) || [];
+    const stepKids = kids.filter(r => r.kind === 'step');
+    kids.filter(r => r.kind !== 'step').forEach(r => renderThread(r, depth + 1, container));
+    if (stepKids.length) {
+      const box = document.createElement('div');
+      box.className = 'step-thread';
+      box.style.display = 'none';
+      const toggle = document.createElement('div');
+      toggle.className = 'step-toggle';
+      toggle.style.setProperty('--reply-indent', ((depth + 1) * 22) + 'px');
+      const n = stepKids.length;
+      const label = () => `${box.style.display === 'none' ? '▸' : '▾'} ${n} update${n === 1 ? '' : 's'}`;
+      toggle.textContent = label();
+      toggle.onclick = () => { box.style.display = box.style.display === 'none' ? '' : 'none'; toggle.textContent = label(); };
+      stepKids.forEach(r => renderThread(r, depth + 1, box));
+      host.appendChild(toggle);
+      host.appendChild(box);
+      nodes.push({ el: toggle, text: ('updates ' + stepKids.map(s => (s.body || '')).join(' ')).toLowerCase() });
+    }
   };
   msgs.forEach(m => { if (!(m.parent && ids.has(m.parent))) renderThread(m, 0); });
   if (!keepScroll) thread.scrollTop = thread.scrollHeight;

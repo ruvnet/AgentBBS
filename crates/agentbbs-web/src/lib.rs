@@ -545,6 +545,9 @@ struct MessageView {
     verified: bool,
     /// Whether this looks like an agent (handle contains a bot/agent marker).
     agent: bool,
+    /// Agent-process classification (ADR-0052): "post" | "milestone" | "step".
+    /// The web collapses "step"-kind messages under their milestone parent.
+    kind: &'static str,
 }
 
 #[derive(Serialize)]
@@ -871,6 +874,11 @@ async fn api_board(
             subject: m.body.subject,
             body: m.body.body,
             at: m.body.created_at.to_rfc3339(),
+            kind: match m.body.kind {
+                agentbbs_core::MessageKind::Post => "post",
+                agentbbs_core::MessageKind::Milestone => "milestone",
+                agentbbs_core::MessageKind::Step => "step",
+            },
         })
         .collect();
     Ok(Json(BoardResponse {
@@ -939,6 +947,7 @@ async fn api_post(
         at: chrono::Utc::now().to_rfc3339(),
         verified: true,
         agent: looks_like_agent(&handle),
+        kind: "post",
     }))
 }
 
@@ -1043,6 +1052,11 @@ async fn api_post_signed(
         subject: message.body.subject.clone(),
         body: message.body.body.clone(),
         at: message.body.created_at.to_rfc3339(),
+        kind: match message.body.kind {
+            agentbbs_core::MessageKind::Post => "post",
+            agentbbs_core::MessageKind::Milestone => "milestone",
+            agentbbs_core::MessageKind::Step => "step",
+        },
     };
     let human = !looks_like_agent(&message.body.handle);
     let text = message.body.body.clone();
