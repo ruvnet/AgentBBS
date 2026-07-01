@@ -356,6 +356,79 @@ fn decisions_screen_shows_the_seeded_records() {
 }
 
 #[test]
+fn record_decision_signs_and_adds_it_to_the_log() {
+    let mut app = App::in_memory();
+    let before = app.decisions.all().len();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('C'))); // -> decisions
+    app.on_key(press(KeyCode::Char('N')));
+    assert!(app.decision_editing);
+
+    for c in "Adopt Discord outbound".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    app.on_key(press(KeyCode::Tab));
+    for c in "Mirror boards to Discord via webhook".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    app.on_key(press(KeyCode::Tab));
+    for c in "Users already use Discord for the community".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    app.on_key(ctrl('s'));
+
+    assert!(!app.decision_editing);
+    assert_eq!(app.decisions.all().len(), before + 1);
+    let recorded = app
+        .decisions
+        .all()
+        .into_iter()
+        .find(|d| d.title == "Adopt Discord outbound")
+        .unwrap();
+    assert_eq!(recorded.decision, "Mirror boards to Discord via webhook");
+    assert_eq!(
+        recorded.rationale,
+        "Users already use Discord for the community"
+    );
+    assert_eq!(recorded.decided_by, app.session.identity.id());
+    assert!(recorded.verify().is_ok());
+    assert!(app.status.contains("Adopt Discord outbound"));
+
+    let text = screen_text(&app, 120, 30);
+    assert!(text.contains("Adopt Discord outbound"));
+}
+
+#[test]
+fn record_decision_requires_title_and_decision() {
+    let mut app = App::in_memory();
+    let before = app.decisions.all().len();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('C')));
+    app.on_key(press(KeyCode::Char('N')));
+    app.on_key(ctrl('s')); // submit with everything empty
+    assert!(app.decision_editing); // stays open — nothing was recorded
+    assert_eq!(app.decisions.all().len(), before);
+    assert!(app.status.contains("required"));
+}
+
+#[test]
+fn record_decision_esc_cancels_and_clears_the_inputs() {
+    let mut app = App::in_memory();
+    let before = app.decisions.all().len();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('C')));
+    app.on_key(press(KeyCode::Char('N')));
+    for c in "throwaway".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    app.on_key(press(KeyCode::Esc));
+    assert!(!app.decision_editing);
+    assert!(app.decision_title_input.is_empty());
+    assert_eq!(app.decisions.all().len(), before);
+    assert_eq!(app.screen, Screen::Decisions);
+}
+
+#[test]
 fn directory_ranks_seeded_agents_by_wilson_score() {
     let mut app = App::in_memory();
     app.on_key(press(KeyCode::Enter));

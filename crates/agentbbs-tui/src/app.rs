@@ -139,6 +139,27 @@ impl CollabView {
     }
 }
 
+/// Which field is focused while recording a new decision (ADR-0045) —
+/// mirrors the web's title/what/why three-input form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DecisionField {
+    #[default]
+    Title,
+    Decision,
+    Rationale,
+}
+
+impl DecisionField {
+    /// The next field, Tab-cycling back to `Title` after `Rationale`.
+    pub fn next(&self) -> DecisionField {
+        match self {
+            DecisionField::Title => DecisionField::Decision,
+            DecisionField::Decision => DecisionField::Rationale,
+            DecisionField::Rationale => DecisionField::Title,
+        }
+    }
+}
+
 /// The lettered main-menu commands, in display order.
 pub const MENU: &[(char, &str, Screen)] = &[
     ('M', "Message Bases", Screen::Boards),
@@ -355,6 +376,16 @@ pub struct App {
     pub dm_new_editing: bool,
     /// The handle being typed, when `dm_new_editing`.
     pub dm_new_input: String,
+    /// Whether the Decisions screen is composing a new decision record.
+    pub decision_editing: bool,
+    /// Which of the three inputs is focused, when `decision_editing`.
+    pub decision_field: DecisionField,
+    /// Decision title being typed.
+    pub decision_title_input: String,
+    /// "What was decided" being typed.
+    pub decision_body_input: String,
+    /// "Why" (rationale) being typed.
+    pub decision_rationale_input: String,
 }
 
 impl Drop for App {
@@ -518,6 +549,11 @@ impl App {
             draft_edit_input: String::new(),
             dm_new_editing: false,
             dm_new_input: String::new(),
+            decision_editing: false,
+            decision_field: DecisionField::default(),
+            decision_title_input: String::new(),
+            decision_body_input: String::new(),
+            decision_rationale_input: String::new(),
         };
         app.seed_defaults();
         app.seed_arena();
@@ -1640,6 +1676,45 @@ impl App {
         };
         self.drafts.edit(&id, new_body);
         self.status = "Draft edited.".into();
+    }
+
+    /// Record a new decision from the three in-progress input buffers
+    /// (ADR-0045) — signed with the session's own identity, exactly like the
+    /// web's `store.recordDecision`. Title and decision text are required;
+    /// rationale may be empty. Attaches to `current_board`, defaulting to
+    /// `"general"` when no board is open yet (matches the web's `current ||
+    /// 'general'`).
+    pub fn submit_decision(&mut self) {
+        let title = self.decision_title_input.trim().to_string();
+        let decision = self.decision_body_input.trim().to_string();
+        let rationale = self.decision_rationale_input.trim().to_string();
+        if title.is_empty() || decision.is_empty() {
+            self.status = "Title and decision are required.".into();
+            return;
+        }
+        let board = self
+            .current_board
+            .clone()
+            .unwrap_or_else(|| "general".to_string());
+        let record = agentbbs_core::DecisionRecord::new(
+            &self.session.identity,
+            title.clone(),
+            decision,
+            rationale,
+            board,
+            chrono::Utc::now(),
+        );
+        match self.decisions.add(record) {
+            Ok(()) => {
+                self.decision_editing = false;
+                self.decision_title_input.clear();
+                self.decision_body_input.clear();
+                self.decision_rationale_input.clear();
+                self.decision_field = DecisionField::default();
+                self.status = format!("Decision recorded: {title}");
+            }
+            Err(e) => self.status = format!("Record failed: {e}"),
+        }
     }
 
     /// Re-fetch and re-filter `slug`'s messages into `self.messages`,

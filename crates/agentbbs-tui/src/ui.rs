@@ -688,7 +688,56 @@ impl App {
     }
 
     fn render_decisions(&self, frame: &mut Frame, area: Rect) {
+        use crate::app::DecisionField;
         let mut lines: Vec<Line> = Vec::new();
+        if self.decision_editing {
+            let field_line = |label: &str, value: &str, active: bool, theme_self: &App| {
+                let style = if active {
+                    theme::lightbar(theme_self.theme)
+                } else {
+                    theme::chrome(theme_self.theme)
+                };
+                Line::from(vec![
+                    Span::styled(format!("{label}: "), theme::hotkey(theme_self.theme)),
+                    Span::styled(value.to_string(), style),
+                ])
+            };
+            lines.push(Line::from(Span::styled(
+                "RECORD A DECISION",
+                theme::hotkey(self.theme),
+            )));
+            lines.push(Line::from(""));
+            lines.push(field_line(
+                "Title",
+                &self.decision_title_input,
+                self.decision_field == DecisionField::Title,
+                self,
+            ));
+            lines.push(field_line(
+                "Decision",
+                &self.decision_body_input,
+                self.decision_field == DecisionField::Decision,
+                self,
+            ));
+            lines.push(field_line(
+                "Rationale",
+                &self.decision_rationale_input,
+                self.decision_field == DecisionField::Rationale,
+                self,
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "TAB switches field · Ctrl-S records · ESC cancels",
+                theme::dim(self.theme),
+            )));
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: true })
+                    .block(self.framed("Decision Records")),
+                area,
+            );
+            return;
+        }
         for r in self.decisions.all() {
             lines.push(Line::from(vec![
                 Span::styled(
@@ -712,10 +761,14 @@ impl App {
                 theme::dim(self.theme),
             )));
         }
+        lines.push(Line::from(Span::styled(
+            "[N] record a decision · ESC back",
+            theme::dim(self.theme),
+        )));
         frame.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
-                .block(self.framed("Decision Records  (ESC back)")),
+                .block(self.framed("Decision Records")),
             area,
         );
     }

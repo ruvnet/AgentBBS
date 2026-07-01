@@ -54,9 +54,8 @@ impl App {
             Screen::Federation => self.key_federation(key),
             Screen::Collab => self.key_collab(key),
             Screen::Drafts => self.key_drafts(key),
-            Screen::Who | Screen::Doors | Screen::Decisions | Screen::Console => {
-                self.key_panel(key)
-            }
+            Screen::Decisions => self.key_decisions(key),
+            Screen::Who | Screen::Doors | Screen::Console => self.key_panel(key),
             Screen::Goodbye => {
                 self.should_quit = true;
                 Control::Quit
@@ -251,6 +250,57 @@ impl App {
                     self.draft_edit_input = body;
                     self.status = "Editing draft — ENTER saves, ESC cancels.".into();
                 }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
+            _ => {}
+        }
+        Control::Continue
+    }
+
+    fn key_decisions(&mut self, key: KeyEvent) -> Control {
+        use crate::app::DecisionField;
+        if self.decision_editing {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                self.submit_decision();
+                return Control::Continue;
+            }
+            match key.code {
+                KeyCode::Esc => {
+                    self.decision_editing = false;
+                    self.decision_title_input.clear();
+                    self.decision_body_input.clear();
+                    self.decision_rationale_input.clear();
+                    self.decision_field = DecisionField::default();
+                    self.status = "Decision cancelled.".into();
+                }
+                KeyCode::Tab => self.decision_field = self.decision_field.next(),
+                KeyCode::Backspace => match self.decision_field {
+                    DecisionField::Title => {
+                        self.decision_title_input.pop();
+                    }
+                    DecisionField::Decision => {
+                        self.decision_body_input.pop();
+                    }
+                    DecisionField::Rationale => {
+                        self.decision_rationale_input.pop();
+                    }
+                },
+                KeyCode::Char(c) => match self.decision_field {
+                    DecisionField::Title => self.decision_title_input.push(c),
+                    DecisionField::Decision => self.decision_body_input.push(c),
+                    DecisionField::Rationale => self.decision_rationale_input.push(c),
+                },
+                _ => {}
+            }
+            return Control::Continue;
+        }
+        match key.code {
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.decision_editing = true;
+                self.decision_field = DecisionField::default();
+                self.status =
+                    "Recording a decision — TAB switches field, Ctrl-S records, ESC cancels."
+                        .into();
             }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
             _ => {}
