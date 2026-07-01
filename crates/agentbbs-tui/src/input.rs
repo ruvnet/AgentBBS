@@ -51,11 +51,10 @@ impl App {
             Screen::Sysop => self.key_sysop(key),
             Screen::Palette => self.key_palette(key),
             Screen::Appearance => self.key_appearance(key),
-            Screen::Who
-            | Screen::Doors
-            | Screen::Federation
-            | Screen::Decisions
-            | Screen::Console => self.key_panel(key),
+            Screen::Federation => self.key_federation(key),
+            Screen::Who | Screen::Doors | Screen::Decisions | Screen::Console => {
+                self.key_panel(key)
+            }
             Screen::Goodbye => {
                 self.should_quit = true;
                 Control::Quit
@@ -110,10 +109,56 @@ impl App {
                     .position(|t| *t == self.theme)
                     .unwrap_or(0);
             }
+            Screen::Federation => {
+                self.federation_editing = false;
+                self.federation_input.clear();
+                // Deliberately does NOT auto-refresh: `npx ruflo federation
+                // status` is a real subprocess call that may need network
+                // access to resolve the package — press [R] explicitly
+                // rather than freezing the UI on every visit to this screen.
+            }
             Screen::Goodbye => {}
             _ => {}
         }
         self.screen = target;
+    }
+
+    fn key_federation(&mut self, key: KeyEvent) -> Control {
+        if self.federation_editing {
+            match key.code {
+                KeyCode::Esc => {
+                    self.federation_editing = false;
+                    self.federation_input.clear();
+                }
+                KeyCode::Enter => {
+                    let addr = self.federation_input.trim().to_string();
+                    self.federation_editing = false;
+                    self.federation_input.clear();
+                    if addr.is_empty() {
+                        self.status = "Peer address cannot be empty.".into();
+                    } else {
+                        self.federation_join(&addr);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.federation_input.pop();
+                }
+                KeyCode::Char(c) => self.federation_input.push(c),
+                _ => {}
+            }
+            return Control::Continue;
+        }
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Char('J') => {
+                self.federation_editing = true;
+                self.federation_input.clear();
+                self.status = "Peer address — ENTER to join, ESC to cancel.".into();
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => self.federation_refresh_status(),
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
+            _ => {}
+        }
+        Control::Continue
     }
 
     fn key_appearance(&mut self, key: KeyEvent) -> Control {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::format_federation_join_status;
 use agentbbs_core::caps::Caps;
 use agentbbs_core::{Message, MessageBody};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -931,4 +932,85 @@ fn selected_row_text_is_never_the_same_colour_as_its_own_highlight() {
         }
         assert!(found, "did not find highlighted label cell for {t:?}");
     }
+}
+
+// ADR-0051: Federation screen gets a real `npx ruflo federation join/status`
+// action instead of a hardcoded "no peers linked" panel. None of these tests
+// invoke the real subprocess (`federation_join`/`federation_refresh_status`
+// are never called) — matching the established rule that automated tests
+// never spawn a real CommandRunner. `format_federation_join_status` is a
+// pure function tested directly with synthetic results, exactly like the
+// web's `collab_result`.
+
+#[test]
+fn federation_join_status_formats_ok_and_err_results() {
+    assert_eq!(
+        format_federation_join_status("100.1.2.3:7443", &Ok("linked ok".to_string())),
+        "Joined peer 100.1.2.3:7443: linked ok"
+    );
+    assert_eq!(
+        format_federation_join_status("100.1.2.3:7443", &Ok("  \n".to_string())),
+        "Joined peer 100.1.2.3:7443."
+    );
+    assert_eq!(
+        format_federation_join_status(
+            "100.1.2.3:7443",
+            &Err("spawn npx: No such file or directory".to_string())
+        ),
+        "Federation join failed: spawn npx: No such file or directory"
+    );
+}
+
+#[test]
+fn federation_screen_entry_does_not_touch_status_and_j_opens_editing() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter)); // splash -> main
+    app.on_key(press(KeyCode::Char('F'))); // main -> federation
+    assert_eq!(app.screen, Screen::Federation);
+    // Entering the screen must never trigger the real subprocess call.
+    assert!(app.federation_status.is_none());
+
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("Federation Hall"));
+    assert!(text.contains("not checked yet"));
+    assert!(!text.contains("no peers linked")); // the old hardcoded panel is gone
+
+    app.on_key(press(KeyCode::Char('J')));
+    assert!(app.federation_editing);
+    for c in "100.1.2.3:7443".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    assert_eq!(app.federation_input, "100.1.2.3:7443");
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("100.1.2.3:7443"));
+
+    // Esc cancels — does not call federation_join, clears the input.
+    app.on_key(press(KeyCode::Esc));
+    assert!(!app.federation_editing);
+    assert!(app.federation_input.is_empty());
+    assert!(app.federation_status.is_none());
+}
+
+#[test]
+fn federation_panel_renders_a_real_error_honestly_when_status_is_set() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('F')));
+    // Simulate what a real failed `npx ruflo federation status` call would
+    // leave behind, without actually spawning a process.
+    app.federation_status = Some(Err("spawn npx: No such file or directory".to_string()));
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("spawn npx: No such file or directory"));
+    assert!(text.contains("real subprocess error"));
+}
+
+#[test]
+fn federation_panel_renders_real_status_output_when_set() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('F')));
+    app.federation_status = Some(Ok("mode: leaf\npeers: 0".to_string()));
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("mode: leaf"));
+    assert!(text.contains("peers: 0"));
 }

@@ -1326,7 +1326,7 @@ impl App {
     }
 
     fn render_federation(&self, frame: &mut Frame, area: Rect) {
-        let lines = vec![
+        let mut lines = vec![
             Line::from(Span::styled(
                 "ZERO-TRUST FEDERATION",
                 theme::hotkey(self.theme),
@@ -1334,19 +1334,62 @@ impl App {
             Line::from(""),
             Line::from("  Identity ........ ed25519 (anonymous, per-node)"),
             Line::from("  Transport ....... signed envelopes, PII-stripped egress"),
-            Line::from("  Peering ......... npx ruflo federation join <addr>"),
             Line::from("  Memory .......... npm AgentDB / RVF vector sync"),
             Line::from(""),
-            Line::from(Span::styled("PEERS", theme::hotkey(self.theme))),
             Line::from(Span::styled(
-                "  (no peers linked — this is a leaf node)",
-                theme::dim(self.theme),
+                "STATUS (npx ruflo federation status)",
+                theme::hotkey(self.theme),
             )),
-            Line::from(""),
-            Line::from(Span::styled("ESC to return.", theme::chrome(self.theme))),
         ];
+        match &self.federation_status {
+            None => lines.push(Line::from(Span::styled(
+                "  (not checked yet — press R; this runs a real npx subprocess)",
+                theme::dim(self.theme),
+            ))),
+            Some(Ok(out)) if out.trim().is_empty() => lines.push(Line::from(Span::styled(
+                "  (empty response)",
+                theme::dim(self.theme),
+            ))),
+            Some(Ok(out)) => {
+                for line in out.lines().take(8) {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {line}"),
+                        theme::chrome(self.theme),
+                    )));
+                }
+            }
+            Some(Err(e)) => {
+                lines.push(Line::from(Span::styled(
+                    format!("  ✗ {e}"),
+                    Style::default().fg(theme::RED),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  (real subprocess error — ruflo/npx isn't available here; not faked)",
+                    theme::dim(self.theme),
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        if self.federation_editing {
+            lines.push(Line::from(vec![
+                Span::styled("Peer address: ", theme::hotkey(self.theme)),
+                Span::styled(self.federation_input.clone(), theme::chrome(self.theme)),
+                Span::styled("▏", theme::dim(self.theme)),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "ENTER to join · ESC to cancel",
+                theme::dim(self.theme),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "[J] join a peer (npx ruflo federation join <addr>) · [R] refresh · ESC back",
+                theme::dim(self.theme),
+            )));
+        }
         frame.render_widget(
-            Paragraph::new(lines).block(self.framed("Federation Hall")),
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: true })
+                .block(self.framed("Federation Hall")),
             area,
         );
     }

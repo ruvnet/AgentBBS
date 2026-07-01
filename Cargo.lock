@@ -153,10 +153,12 @@ version = "0.1.0"
 dependencies = [
  "agentbbs-arena",
  "agentbbs-core",
+ "agentbbs-federation",
  "chrono",
  "crossterm",
  "ratatui",
  "serde_json",
+ "tokio",
  "unicode-width 0.2.2",
 ]
 

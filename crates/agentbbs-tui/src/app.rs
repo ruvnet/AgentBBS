@@ -284,6 +284,15 @@ pub struct App {
     pub theme: ThemeName,
     /// Highlighted row in the Appearance screen's theme list.
     pub appearance_index: usize,
+    /// Result of the last `npx ruflo federation status|join` call — `Err`
+    /// holds the real subprocess error (e.g. `npx` missing) verbatim, never
+    /// faked, matching the web's Collab honesty posture (ADR-0036).
+    /// `None` until the Federation screen has been opened at least once.
+    pub federation_status: Option<Result<String, String>>,
+    /// Whether the Federation screen is prompting for a peer address to join.
+    pub federation_editing: bool,
+    /// The peer address being typed, when `federation_editing`.
+    pub federation_input: String,
 }
 
 impl Drop for App {
@@ -322,6 +331,18 @@ fn demo_playbook() -> Playbook {
             },
         ],
     )
+}
+
+/// Format the one-line status shown after a federation-join attempt. A pure
+/// function of the (already-produced) result, so it's testable without
+/// spawning a real `npx` subprocess — mirrors the web's `collab_result`
+/// (`agentbbs-web/src/lib.rs`), which is tested the same way.
+pub(crate) fn format_federation_join_status(addr: &str, result: &Result<String, String>) -> String {
+    match result {
+        Ok(out) if out.trim().is_empty() => format!("Joined peer {addr}."),
+        Ok(out) => format!("Joined peer {addr}: {}", out.trim()),
+        Err(e) => format!("Federation join failed: {e}"),
+    }
 }
 
 impl App {
@@ -394,6 +415,9 @@ impl App {
             palette_return: Screen::Main,
             theme: ThemeName::default(),
             appearance_index: 0,
+            federation_status: None,
+            federation_editing: false,
+            federation_input: String::new(),
         };
         app.seed_defaults();
         app.seed_arena();
@@ -854,6 +878,48 @@ impl App {
             .filter(|(_, label, _)| q.is_empty() || label.to_ascii_lowercase().contains(&q))
             .copied()
             .collect()
+    }
+
+    /// A fresh `RufloAdapter` plus a throwaway blocking tokio runtime — the
+    /// TUI's event loop is otherwise fully synchronous, so there's no
+    /// ambient runtime to reuse for these one-off `npx ruflo federation …`
+    /// calls.
+    fn federation_runtime() -> Result<
+        (
+            tokio::runtime::Runtime,
+            agentbbs_federation::RufloAdapter<agentbbs_federation::TokioCommandRunner>,
+        ),
+        String,
+    > {
+        let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
+        let adapter =
+            agentbbs_federation::RufloAdapter::new(agentbbs_federation::TokioCommandRunner::new());
+        Ok((rt, adapter))
+    }
+
+    /// Refresh the Federation screen's live status via `npx ruflo federation
+    /// status`. Called on entry to the screen and on demand (`R`).
+    pub fn federation_refresh_status(&mut self) {
+        self.federation_status = Some(match Self::federation_runtime() {
+            Ok((rt, adapter)) => rt
+                .block_on(adapter.federation_status())
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e),
+        });
+    }
+
+    /// Join a peer via `npx ruflo federation join <addr>`. Surfaces the real
+    /// subprocess result/error in both `self.status` (one-line) and
+    /// `self.federation_status` (full body, shown in the panel).
+    pub fn federation_join(&mut self, addr: &str) {
+        let result = match Self::federation_runtime() {
+            Ok((rt, adapter)) => rt
+                .block_on(adapter.federation_join(addr))
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e),
+        };
+        self.status = format_federation_join_status(addr, &result);
+        self.federation_status = Some(result);
     }
 
     /// Install a marketplace listing by SKU — a local-only credit ledger, no
