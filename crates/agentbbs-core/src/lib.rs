@@ -49,7 +49,7 @@ pub mod tools;
 pub mod wallet;
 
 pub use approval::{ActionProposal, ApprovalGate, SignedDecision, Verdict};
-pub use board::{Board, Message, MessageBody, MessageId};
+pub use board::{Board, Message, MessageBody, MessageId, MessageKind};
 pub use budget::{BudgetLedger, BudgetStatus};
 pub use caps::{Caps, Role};
 pub use credential::{Credential, CredentialStore};

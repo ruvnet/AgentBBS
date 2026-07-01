@@ -24,7 +24,9 @@ use agentbbs_core::pod::{MaxTier, PodSpec, PodStatus, PodTemplate};
 use agentbbs_core::presence::Presence;
 use agentbbs_core::report::MemoryReporter;
 use agentbbs_core::reputation::{OutcomeRecord, ReputationLedger};
-use agentbbs_core::{Bbs, Board, MemoryStore, Message, MessageBody, MessageId, Role, Store};
+use agentbbs_core::{
+    Bbs, Board, MemoryStore, Message, MessageBody, MessageId, MessageKind, Role, Store,
+};
 
 use crate::theme::ThemeName;
 
@@ -889,6 +891,7 @@ impl App {
             author: self.session.identity.id(),
             handle: "digest".to_string(),
             created_at: chrono::Utc::now(),
+            kind: MessageKind::Post,
         };
         let msg = Message::sign(&self.session.identity, body).map_err(|e| e.to_string())?;
         self.bbs
@@ -1576,6 +1579,7 @@ impl App {
             author: self.session.identity.id(),
             handle: "you".to_string(),
             created_at: chrono::Utc::now(),
+            kind: MessageKind::Post,
         };
         let signed = Message::sign(&self.session.identity, body).map_err(|e| e.to_string())?;
         self.bbs
@@ -1788,6 +1792,7 @@ impl App {
             author: self.session.identity.id(),
             handle,
             created_at: chrono::Utc::now(),
+            kind: MessageKind::Post,
         };
         match Message::sign(&self.session.identity, body)
             .and_then(|m| self.bbs.post(self.session.caps, m))

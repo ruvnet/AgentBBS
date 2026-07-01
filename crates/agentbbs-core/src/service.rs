@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::board::{Board, Message, MessageBody, MessageId};
+use crate::board::{Board, Message, MessageBody, MessageId, MessageKind};
 use crate::caps::{require, Caps};
 use crate::error::{Error, Result};
 use crate::identity::AgentId;
@@ -118,6 +118,7 @@ impl Bbs {
             author: identity.id(),
             handle: String::new(),
             created_at: chrono::Utc::now(),
+            kind: MessageKind::Post,
         };
         let message = Message::sign(identity, body)?;
         self.post(caps, message)

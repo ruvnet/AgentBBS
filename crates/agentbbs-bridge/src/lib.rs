@@ -259,7 +259,7 @@ pub async fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentbbs_core::{Identity, Message, MessageBody};
+    use agentbbs_core::{Identity, Message, MessageBody, MessageKind};
     use chrono::Utc;
 
     fn msg(board: &str, handle: &str, body: &str) -> Message {
@@ -272,6 +272,7 @@ mod tests {
             author: id.id(),
             handle: handle.to_string(),
             created_at: Utc::now(),
+            kind: MessageKind::Post,
         };
         Message::sign(&id, body).unwrap()
     }

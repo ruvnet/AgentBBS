@@ -70,6 +70,37 @@ impl Board {
     }
 }
 
+/// How a message participates in a long-running agent process (ADR-0052).
+///
+/// `Post` is the default and reproduces the exact pre-ADR-0052 signing bytes,
+/// so every historical message and every ordinary post/reply hashes and
+/// verifies byte-for-byte as before. `Milestone`/`Step` classify a message as a
+/// major, always-visible update vs. a granular sub-step that nests (via
+/// [`MessageBody::parent`]) under its milestone and is collapsed by default in
+/// both frontends.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MessageKind {
+    /// Ordinary post or reply — the only kind before ADR-0052.
+    #[default]
+    Post,
+    /// A major, always-visible update in an agent process.
+    Milestone,
+    /// A granular sub-step, nested and collapsed under its milestone by default.
+    Step,
+}
+
+impl MessageKind {
+    /// Stable discriminant folded into the v2 signing bytes. Never renumber —
+    /// these values are part of the content-addressed hash for non-`Post` kinds.
+    fn discriminant(self) -> &'static str {
+        match self {
+            MessageKind::Post => "post",
+            MessageKind::Milestone => "milestone",
+            MessageKind::Step => "step",
+        }
+    }
+}
+
 /// The author-supplied, pre-signature body of a message. Kept separate from
 /// the signed [`Message`] so the canonical signing bytes are unambiguous.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,6 +119,10 @@ pub struct MessageBody {
     pub handle: String,
     /// Authoring timestamp (author's clock).
     pub created_at: DateTime<Utc>,
+    /// Agent-process classification (ADR-0052). Defaults to [`MessageKind::Post`];
+    /// absent from old stored/wire JSON, which deserializes to `Post`.
+    #[serde(default)]
+    pub kind: MessageKind,
 }
 
 impl MessageBody {
@@ -97,8 +132,20 @@ impl MessageBody {
     pub fn signing_bytes(&self) -> Vec<u8> {
         // A compact, explicit canonical form. Newlines separate fields; the
         // body is length-prefixed so embedded newlines can't forge fields.
+        //
+        // Versioning (ADR-0052): a `Post`-kind message emits the exact v1 byte
+        // sequence — no `kind` field at all — so every message authored before
+        // ADR-0052 (and every ordinary post/reply after it) hashes and verifies
+        // byte-for-byte unchanged. Only a non-`Post` kind switches to the v2
+        // tag and appends the kind discriminant after `parent`. Verifiers must
+        // branch on the leading tag, never assume v1 unconditionally.
+        let is_v2 = self.kind != MessageKind::Post;
         let mut out = Vec::with_capacity(self.body.len() + 128);
-        out.extend_from_slice(b"agentbbs.msg.v1\n");
+        out.extend_from_slice(if is_v2 {
+            b"agentbbs.msg.v2\n"
+        } else {
+            b"agentbbs.msg.v1\n"
+        });
         out.extend_from_slice(self.board.as_bytes());
         out.push(b'\n');
         out.extend_from_slice(
@@ -109,6 +156,10 @@ impl MessageBody {
                 .as_bytes(),
         );
         out.push(b'\n');
+        if is_v2 {
+            out.extend_from_slice(self.kind.discriminant().as_bytes());
+            out.push(b'\n');
+        }
         out.extend_from_slice(self.subject.as_bytes());
         out.push(b'\n');
         out.extend_from_slice(self.author.to_hex().as_bytes());
@@ -184,6 +235,7 @@ mod tests {
             author,
             handle: "wildcat".into(),
             created_at: Utc::now(),
+            kind: MessageKind::Post,
         }
     }
 
@@ -215,5 +267,119 @@ mod tests {
         let id = Identity::generate();
         let b = body(id.id());
         assert_eq!(b.id(), b.id());
+    }
+
+    // ---- ADR-0052: MessageKind + v1/v2 signing bytes ----
+
+    #[test]
+    fn post_kind_signs_byte_identical_to_v1() {
+        // A Post-kind body must reproduce the *exact* pre-ADR-0052 v1 bytes, so
+        // every historical message's hash/signature is unchanged. Rebuild the
+        // historical v1 layout by hand and assert byte equality — a stronger
+        // guarantee than a tag check (and immune to the body text happening to
+        // contain a word like "post").
+        let id = Identity::generate();
+        let b = body(id.id());
+        assert_eq!(b.kind, MessageKind::Post);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"agentbbs.msg.v1\n");
+        expected.extend_from_slice(b.board.as_bytes());
+        expected.push(b'\n');
+        expected.extend_from_slice(b"-"); // parent: None
+        expected.push(b'\n');
+        expected.extend_from_slice(b.subject.as_bytes());
+        expected.push(b'\n');
+        expected.extend_from_slice(b.author.to_hex().as_bytes());
+        expected.push(b'\n');
+        expected.extend_from_slice(b.handle.as_bytes());
+        expected.push(b'\n');
+        expected.extend_from_slice(b.created_at.to_rfc3339().as_bytes());
+        expected.push(b'\n');
+        expected.extend_from_slice(format!("{}:", b.body.len()).as_bytes());
+        expected.extend_from_slice(b.body.as_bytes());
+
+        assert_eq!(b.signing_bytes(), expected);
+    }
+
+    #[test]
+    fn milestone_and_step_use_v2_tag_with_discriminant() {
+        let id = Identity::generate();
+        for (kind, disc) in [
+            (MessageKind::Milestone, "milestone"),
+            (MessageKind::Step, "step"),
+        ] {
+            let mut b = body(id.id());
+            b.kind = kind;
+            let bytes = b.signing_bytes();
+            assert!(bytes.starts_with(b"agentbbs.msg.v2\n"));
+            assert!(
+                String::from_utf8_lossy(&bytes).contains(disc),
+                "v2 bytes must carry the {disc} discriminant"
+            );
+        }
+    }
+
+    #[test]
+    fn kind_changes_the_content_id() {
+        // kind is part of the content-addressed hash for non-Post kinds, so
+        // flipping it must change the id (and thus the signature domain).
+        let id = Identity::generate();
+        let post = body(id.id());
+        let mut milestone = body(id.id());
+        milestone.kind = MessageKind::Milestone;
+        assert_ne!(post.id(), milestone.id());
+    }
+
+    #[test]
+    fn milestone_and_step_messages_sign_and_verify() {
+        let id = Identity::generate();
+        for kind in [MessageKind::Milestone, MessageKind::Step] {
+            let mut b = body(id.id());
+            b.kind = kind;
+            let msg = Message::sign(&id, b).unwrap();
+            assert!(msg.verify().is_ok());
+        }
+    }
+
+    #[test]
+    fn milestone_with_step_children_round_trips_via_parent() {
+        // A Milestone anchors a process; its Steps point back via `parent`,
+        // exactly like reply threading. Verify the whole thread signs/verifies
+        // and each step's parent resolves to the milestone id.
+        let id = Identity::generate();
+        let mut m = body(id.id());
+        m.kind = MessageKind::Milestone;
+        m.subject = "process started".into();
+        let milestone = Message::sign(&id, m).unwrap();
+
+        let mut steps = Vec::new();
+        for n in 0..3 {
+            let mut s = body(id.id());
+            s.kind = MessageKind::Step;
+            s.parent = Some(milestone.id.clone());
+            s.subject = format!("step {n}");
+            steps.push(Message::sign(&id, s).unwrap());
+        }
+
+        assert!(milestone.verify().is_ok());
+        for step in &steps {
+            assert!(step.verify().is_ok());
+            assert_eq!(step.body.parent.as_ref(), Some(&milestone.id));
+        }
+    }
+
+    #[test]
+    fn v1_json_without_kind_deserializes_to_post() {
+        // Old stored/wire JSON predates the `kind` field; serde(default) must
+        // fill it as Post so historical bodies still hash to the v1 bytes.
+        let id = Identity::generate();
+        let json = format!(
+            r#"{{"board":"general","parent":null,"subject":"hello","body":"hi","author":"{}","handle":"w","created_at":"2020-01-01T00:00:00Z"}}"#,
+            id.id().to_hex()
+        );
+        let b: MessageBody = serde_json::from_str(&json).unwrap();
+        assert_eq!(b.kind, MessageKind::Post);
+        assert!(b.signing_bytes().starts_with(b"agentbbs.msg.v1\n"));
     }
 }

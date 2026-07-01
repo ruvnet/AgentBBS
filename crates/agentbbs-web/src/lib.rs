@@ -266,6 +266,7 @@ impl AppState {
             author: identity.id(),
             handle: handle.to_string(),
             created_at: chrono::Utc::now(),
+            kind: agentbbs_core::MessageKind::Post,
         };
         let msg = agentbbs_core::Message::sign(&identity, body)?;
         let id = self.bbs.post(Role::Agent.caps(), msg)?;
@@ -1017,6 +1018,7 @@ async fn api_post_signed(
         author,
         handle: req.handle.clone(),
         created_at,
+        kind: agentbbs_core::MessageKind::Post,
     };
     let message = Message {
         id: body.id(),
@@ -2872,6 +2874,7 @@ mod tests {
                 author: author.id(),
                 handle: "tester".into(),
                 created_at,
+                kind: agentbbs_core::MessageKind::Post,
             };
             let msg = agentbbs_core::Message::sign(&author, msg_body).unwrap();
             serde_json::json!({
@@ -3175,6 +3178,7 @@ mod tests {
             author: human.id(),
             handle: "claude".into(), // attribute the agent that drafted it
             created_at,
+            kind: agentbbs_core::MessageKind::Post,
         };
         let msg = agentbbs_core::Message::sign(&human, msg_body).unwrap();
         let resp = app
@@ -3921,6 +3925,7 @@ mod tests {
             author: id.id(),
             handle: "you".into(),
             created_at: chrono::Utc::now(),
+            kind: agentbbs_core::MessageKind::Post,
         };
         let msg = Message::sign(&id, body.clone()).unwrap();
         let payload = serde_json::json!({
@@ -3989,6 +3994,7 @@ mod tests {
             author: id.id(),
             handle: "you".into(),
             created_at: chrono::Utc::now(),
+            kind: agentbbs_core::MessageKind::Post,
         };
         let msg = Message::sign(&id, body.clone()).unwrap();
         let payload = serde_json::json!({

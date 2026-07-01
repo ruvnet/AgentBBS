@@ -612,6 +612,7 @@ fn digest_tallies_general_and_posts_a_signed_summary() {
         author: app.session.identity.id(),
         handle: app.session.handle.clone(),
         created_at: chrono::Utc::now(),
+        kind: agentbbs_core::MessageKind::Post,
     };
     let msg = Message::sign(&app.session.identity, body).unwrap();
     app.bbs.post(app.session.caps, msg).unwrap();
@@ -947,6 +948,7 @@ fn edit_is_author_only() {
         author: b.session.identity.id(),
         handle: "you".into(),
         created_at: chrono::Utc::now(),
+        kind: agentbbs_core::MessageKind::Post,
     };
     let signed = Message::sign(&b.session.identity, forged).unwrap();
     b.bbs.post(b.session.caps, signed).unwrap();

@@ -13,7 +13,7 @@
 //! ```
 
 use agentbbs_core::{
-    board::{Message, MessageBody},
+    board::{Message, MessageBody, MessageKind},
     identity::Identity,
     rvf::{Record, RvfStore},
     store::{MemoryStore, Store},
@@ -45,6 +45,7 @@ fn body(author: agentbbs_core::AgentId, n: usize) -> MessageBody {
         author,
         handle: "benchcat".into(),
         created_at: Utc::now(),
+        kind: MessageKind::Post,
     }
 }
 

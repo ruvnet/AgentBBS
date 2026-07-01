@@ -5,7 +5,7 @@
 //! cargo run -q --example sample_message | \
 //!   cargo run -q --bin agentbbs-bridge -- --config bridge.json --dry-run
 //! ```
-use agentbbs_core::{Identity, Message, MessageBody};
+use agentbbs_core::{Identity, Message, MessageBody, MessageKind};
 use chrono::Utc;
 
 fn main() {
@@ -18,6 +18,7 @@ fn main() {
         author: id.id(),
         handle: "alice".into(),
         created_at: Utc::now(),
+        kind: MessageKind::Post,
     };
     let msg = Message::sign(&id, body).expect("sign");
     println!("{}", serde_json::to_string(&msg).expect("serialize"));

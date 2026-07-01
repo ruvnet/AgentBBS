@@ -60,6 +60,7 @@ mod tests {
             author: id.id(),
             handle: "handle".into(),
             created_at: Utc::now(),
+            kind: agentbbs_core::MessageKind::Post,
         };
         Message::sign(id, body).unwrap()
     }

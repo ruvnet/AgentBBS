@@ -293,7 +293,7 @@ mod redb_store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Message, MessageBody};
+    use crate::board::{Board, Message, MessageBody, MessageKind};
     use crate::identity::Identity;
     use chrono::Utc;
 
@@ -306,6 +306,7 @@ mod tests {
             author: id.id(),
             handle: "h".into(),
             created_at: Utc::now(),
+            kind: MessageKind::Post,
         };
         Message::sign(id, body).unwrap()
     }

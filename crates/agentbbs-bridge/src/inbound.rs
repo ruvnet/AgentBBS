@@ -16,7 +16,7 @@
 //! thin glue layered on top of this (and needs a live Slack connection, so it
 //! isn't unit-tested here); this module is the testable identity core.
 
-use agentbbs_core::{Identity, Message, MessageBody};
+use agentbbs_core::{Identity, Message, MessageBody, MessageKind};
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 
@@ -80,6 +80,7 @@ pub fn sign_inbound(id: &BridgeIdentity, inb: &Inbound, created_at: DateTime<Utc
         author: sub.id(),
         handle,
         created_at,
+        kind: MessageKind::Post,
     };
     Message::sign(&sub, body).expect("the subkey is the declared author")
 }

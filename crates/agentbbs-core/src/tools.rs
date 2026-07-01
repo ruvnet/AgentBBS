@@ -13,7 +13,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::board::{Message, MessageBody};
+use crate::board::{Message, MessageBody, MessageKind};
 use crate::caps::{require, Caps};
 use crate::draft::Draft;
 use crate::error::{Error, Result};
@@ -65,6 +65,7 @@ pub fn post_message(
         author: identity.id(),
         handle: handle.to_string(),
         created_at: chrono::Utc::now(),
+        kind: MessageKind::Post,
     };
     let message = Message::sign(identity, body)?;
     let id = bbs.post(caps, message)?;
