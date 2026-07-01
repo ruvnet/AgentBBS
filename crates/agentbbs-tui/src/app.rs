@@ -302,6 +302,12 @@ pub struct App {
     pub playbook: Playbook,
     /// The active run, if the playbook has been started this session.
     pub run: Option<PlaybookRun>,
+    /// The active run's live progress thread anchor (ADR-0052 Phase 2): the
+    /// `Milestone` message id, set once when the run first posts progress.
+    pub run_milestone: Option<MessageId>,
+    /// How many completed steps of the active run have been posted as `Step`
+    /// messages — keeps the progress thread idempotent across advances.
+    pub run_steps_posted: usize,
     /// Highlighted peer row in the DM screen.
     pub dm_index: usize,
     /// Verified key-rotation links (ADR-0044) — resolves a retired key to its
@@ -532,6 +538,8 @@ impl App {
             org_identity: Identity::generate(),
             playbook: demo_playbook(),
             run: None,
+            run_milestone: None,
+            run_steps_posted: 0,
             dm_index: 0,
             rotation: agentbbs_core::rotation::RotationChain::new(),
             rotated_from: None,
@@ -797,7 +805,11 @@ impl App {
                 return;
             }
         };
+        // Fresh run → fresh progress thread (ADR-0052 Phase 2).
+        self.run_milestone = None;
+        self.run_steps_posted = 0;
         self.drive(&mut run);
+        self.post_run_progress(&run);
         if run.status() == RunStatus::Completed {
             self.record_run_completion(&run);
         }
@@ -813,6 +825,7 @@ impl App {
             return;
         };
         self.drive(&mut run);
+        self.post_run_progress(&run);
         if run.status() == RunStatus::Completed {
             self.record_run_completion(&run);
         }
@@ -852,6 +865,70 @@ impl App {
                 _ => break,
             }
         }
+    }
+
+    /// Post the active run's live threaded progress log (ADR-0052 Phase 2) —
+    /// mirrors the web's `post_run_progress`: a `Milestone` anchors the run
+    /// (posted once), and each newly-completed `PlaybookStep` posts a `Step`
+    /// message threaded under it. Idempotent via `run_milestone` /
+    /// `run_steps_posted`; signed by the org/autopilot identity, handle
+    /// `autopilot`, to `agents.dev`. Soft-fails (a post error never breaks the
+    /// run). Renders through the same milestone/step collapse as Phase 1.
+    fn post_run_progress(&mut self, run: &PlaybookRun) {
+        let board = "agents.dev";
+        let pb = run.playbook().clone();
+        if self.run_milestone.is_none() {
+            let subject = format!("▶ Playbook '{}' v{}", pb.name, pb.version);
+            let body = format!(
+                "Autopilot started '{}' (trigger: {}) — {} step(s).",
+                pb.name,
+                pb.trigger,
+                pb.steps.len()
+            );
+            self.run_milestone =
+                self.post_autopilot(board, &subject, &body, MessageKind::Milestone, None);
+        }
+        let Some(milestone) = self.run_milestone.clone() else {
+            return; // milestone post failed — nothing to thread under
+        };
+        let completed = run.steps_completed();
+        while self.run_steps_posted < completed {
+            let step = &pb.steps[self.run_steps_posted];
+            let subject = format!("✓ {}", step.id);
+            self.post_autopilot(
+                board,
+                &subject,
+                &step.progress_summary(),
+                MessageKind::Step,
+                Some(milestone.clone()),
+            );
+            self.run_steps_posted += 1;
+        }
+    }
+
+    /// Sign a `kind`-typed board message as the org/autopilot identity (handle
+    /// `autopilot`) and post it, returning its id. The signing half of the
+    /// playbook progress thread (ADR-0052 Phase 2).
+    fn post_autopilot(
+        &self,
+        board: &str,
+        subject: &str,
+        body: &str,
+        kind: MessageKind,
+        parent: Option<MessageId>,
+    ) -> Option<MessageId> {
+        let msg_body = MessageBody {
+            board: board.to_string(),
+            parent,
+            subject: subject.to_string(),
+            body: body.to_string(),
+            author: self.org_identity.id(),
+            handle: "autopilot".to_string(),
+            created_at: chrono::Utc::now(),
+            kind,
+        };
+        let msg = Message::sign(&self.org_identity, msg_body).ok()?;
+        self.bbs.post(Role::Sysop.caps(), msg).ok()
     }
 
     /// Emit a signed `DecisionRecord` when a run completes (ADR-0041 ×

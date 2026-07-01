@@ -596,6 +596,51 @@ fn playbook_run_parks_at_the_gate_then_completes_on_approval() {
 }
 
 #[test]
+fn tui_playbook_run_posts_a_threaded_progress_log() {
+    use agentbbs_core::caps::Caps;
+    use agentbbs_core::MessageKind;
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('L'))); // -> playbooks
+    app.on_key(press(KeyCode::Char('r'))); // start + drive to the gate
+
+    // Milestone anchor + one Step for the completed AgentTask ("research"),
+    // threaded under it — the demo playbook parks at the gate after step 1.
+    let msgs = app.bbs.read_board(Caps::READ, "agents.dev", 100).unwrap();
+    let milestones: Vec<_> = msgs
+        .iter()
+        .filter(|m| m.body.kind == MessageKind::Milestone)
+        .collect();
+    let steps: Vec<_> = msgs
+        .iter()
+        .filter(|m| m.body.kind == MessageKind::Step)
+        .collect();
+    assert_eq!(milestones.len(), 1, "one Milestone anchors the run");
+    assert_eq!(steps.len(), 1, "only 'research' completed before the gate");
+    assert_eq!(
+        steps[0].body.parent.as_ref(),
+        Some(&milestones[0].id),
+        "the Step threads under the Milestone"
+    );
+    assert!(steps[0].body.body.contains("enrich the lead"));
+
+    // Approve the gate + advance → the remaining two steps post under the same
+    // milestone (no duplicate anchor).
+    app.on_key(press(KeyCode::Char('y')));
+    let msgs2 = app.bbs.read_board(Caps::READ, "agents.dev", 100).unwrap();
+    let milestones2 = msgs2
+        .iter()
+        .filter(|m| m.body.kind == MessageKind::Milestone)
+        .count();
+    let steps2 = msgs2
+        .iter()
+        .filter(|m| m.body.kind == MessageKind::Step)
+        .count();
+    assert_eq!(milestones2, 1, "the anchor is not re-posted");
+    assert_eq!(steps2, 3, "research + approve-spend + crm all posted");
+}
+
+#[test]
 fn digest_tallies_general_and_posts_a_signed_summary() {
     let mut app = App::in_memory();
     app.on_key(press(KeyCode::Enter));
