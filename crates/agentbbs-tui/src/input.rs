@@ -16,6 +16,22 @@ impl App {
             return Control::Quit;
         }
 
+        // Ctrl-K opens the command palette from anywhere (except the palette
+        // itself, where it would just reset the query, and Goodbye, which is
+        // already exiting).
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('k')
+            && self.screen != Screen::Palette
+            && self.screen != Screen::Goodbye
+        {
+            self.palette_return = self.screen;
+            self.palette_query.clear();
+            self.palette_index = 0;
+            self.screen = Screen::Palette;
+            self.status = "Command palette — type to filter, Enter to jump, Esc to cancel.".into();
+            return Control::Continue;
+        }
+
         match self.screen {
             Screen::Splash => self.key_splash(key),
             Screen::Main => self.key_main(key),
@@ -33,6 +49,7 @@ impl App {
             Screen::Passport => self.key_passport(key),
             Screen::Market => self.key_market(key),
             Screen::Sysop => self.key_sysop(key),
+            Screen::Palette => self.key_palette(key),
             Screen::Who
             | Screen::Doors
             | Screen::Federation
@@ -90,6 +107,33 @@ impl App {
             _ => {}
         }
         self.screen = target;
+    }
+
+    fn key_palette(&mut self, key: KeyEvent) -> Control {
+        match key.code {
+            KeyCode::Esc => self.screen = self.palette_return,
+            KeyCode::Enter => match self.filtered_palette_entries().get(self.palette_index) {
+                Some((_, _, target)) => self.goto(*target),
+                None => self.screen = self.palette_return,
+            },
+            KeyCode::Backspace => {
+                self.palette_query.pop();
+                self.palette_index = 0;
+            }
+            KeyCode::Up => self.palette_index = self.palette_index.saturating_sub(1),
+            KeyCode::Down => {
+                let count = self.filtered_palette_entries().len();
+                if count > 0 && self.palette_index + 1 < count {
+                    self.palette_index += 1;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.palette_query.push(c);
+                self.palette_index = 0;
+            }
+            _ => {}
+        }
+        Control::Continue
     }
 
     fn key_boards(&mut self, key: KeyEvent) -> Control {

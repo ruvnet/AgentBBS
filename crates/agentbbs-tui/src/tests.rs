@@ -774,3 +774,63 @@ fn markdown_bold_and_code_markers_are_stripped_when_rendered() {
     assert!(text.contains("run"));
     assert!(text.contains("then check"));
 }
+
+#[test]
+fn command_palette_opens_via_ctrl_k_filters_and_jumps_to_a_screen() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter)); // splash -> main
+    assert_eq!(app.screen, Screen::Main);
+
+    app.on_key(ctrl('k'));
+    assert_eq!(app.screen, Screen::Palette);
+    assert_eq!(app.palette_return, Screen::Main);
+    // Unfiltered, every MENU entry is a candidate.
+    assert_eq!(app.filtered_palette_entries().len(), MENU.len());
+
+    for c in "pod".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    let matches = app.filtered_palette_entries();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].1, "Pods");
+
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("Command Palette"));
+    assert!(text.contains("pod"));
+    assert!(text.contains("Pods"));
+
+    app.on_key(press(KeyCode::Enter));
+    assert_eq!(app.screen, Screen::Pods);
+}
+
+#[test]
+fn command_palette_esc_returns_to_the_screen_it_was_opened_from() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter)); // splash -> main
+    app.on_key(press(KeyCode::Char('A'))); // main -> arena
+    assert_eq!(app.screen, Screen::Arena);
+
+    app.on_key(ctrl('k'));
+    assert_eq!(app.screen, Screen::Palette);
+    assert_eq!(app.palette_return, Screen::Arena);
+
+    app.on_key(press(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Arena);
+}
+
+#[test]
+fn command_palette_query_with_no_matches_shows_a_message_and_enter_is_a_no_op() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(ctrl('k'));
+    for c in "zzzznomatch".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    assert!(app.filtered_palette_entries().is_empty());
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("No matches."));
+
+    app.on_key(press(KeyCode::Enter));
+    // Enter on an empty match list bails back to where the palette opened.
+    assert_eq!(app.screen, Screen::Main);
+}

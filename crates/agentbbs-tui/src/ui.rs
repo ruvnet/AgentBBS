@@ -50,6 +50,7 @@ impl App {
             Screen::Dm => self.render_dm(frame, rows[1]),
             Screen::Passport => self.render_passport(frame, rows[1]),
             Screen::Console => self.render_console(frame, rows[1]),
+            Screen::Palette => self.render_palette(frame, rows[1]),
             Screen::Goodbye => self.render_goodbye(frame, rows[1]),
         }
         self.render_status(frame, rows[2]);
@@ -153,6 +154,11 @@ impl App {
             Line::from(Span::styled(
                 self.session.identity.id().to_hex(),
                 Style::default().fg(theme::GREEN),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Ctrl-K anywhere: command palette",
+                theme::dim(),
             )),
         ];
         frame.render_widget(
@@ -969,6 +975,45 @@ impl App {
             Paragraph::new(lines)
                 .wrap(Wrap { trim: true })
                 .block(self.framed("Console")),
+            area,
+        );
+    }
+
+    fn render_palette(&self, frame: &mut Frame, area: Rect) {
+        let entries = self.filtered_palette_entries();
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("> ", theme::hotkey()),
+                Span::styled(self.palette_query.clone(), theme::chrome()),
+                Span::styled("▏", theme::dim()),
+            ]),
+            Line::from(""),
+        ];
+        if entries.is_empty() {
+            lines.push(Line::from(Span::styled("No matches.", theme::dim())));
+        }
+        for (i, (hot, label, _)) in entries.iter().enumerate() {
+            let selected = i == self.palette_index;
+            let prefix = if selected { "▶ " } else { "  " };
+            let line = Line::from(vec![
+                Span::raw(prefix),
+                Span::styled(format!("[{hot}] "), theme::hotkey()),
+                Span::styled(*label, theme::chrome()),
+            ]);
+            let style = if selected {
+                theme::lightbar()
+            } else {
+                Style::default()
+            };
+            lines.push(line.style(style));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "type to filter · ↑↓ select · ENTER jump · ESC cancel",
+            theme::dim(),
+        )));
+        frame.render_widget(
+            Paragraph::new(lines).block(self.framed("Command Palette (Ctrl-K)")),
             area,
         );
     }

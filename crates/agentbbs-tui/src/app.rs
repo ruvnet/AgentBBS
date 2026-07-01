@@ -99,6 +99,9 @@ pub enum Screen {
     /// Diagnostics — session/store counts, distinct from Sysop's raw
     /// chronological event log.
     Console,
+    /// Command palette (Ctrl-K, from anywhere) — filter [`MENU`] by label
+    /// and jump straight to a screen.
+    Palette,
     /// Sign-off screen.
     Goodbye,
 }
@@ -261,6 +264,13 @@ pub struct App {
     /// field the *handler* consults before calling `Bbs::post`) —
     /// `submit_compose` enforces it explicitly before signing/posting.
     pub moderation: agentbbs_core::moderation::ModerationLog,
+    /// Command palette (Ctrl-K): the current filter query.
+    pub palette_query: String,
+    /// Command palette: highlighted row in the filtered [`MENU`] list.
+    pub palette_index: usize,
+    /// Command palette: the screen to return to on Esc — wherever Ctrl-K
+    /// was pressed from, not always `Main`.
+    pub palette_return: Screen,
 }
 
 impl Drop for App {
@@ -366,6 +376,9 @@ impl App {
             installed: std::collections::HashSet::new(),
             market_index: 0,
             moderation: agentbbs_core::moderation::ModerationLog::new(),
+            palette_query: String::new(),
+            palette_index: 0,
+            palette_return: Screen::Main,
         };
         app.seed_defaults();
         app.seed_arena();
@@ -815,6 +828,17 @@ impl App {
             ("events retained", events.len().to_string()),
             ("errors/warnings", errors.to_string()),
         ]
+    }
+
+    /// [`MENU`] entries whose label contains the current command-palette
+    /// query (case-insensitive substring; empty query matches everything),
+    /// in menu order.
+    pub fn filtered_palette_entries(&self) -> Vec<(char, &'static str, Screen)> {
+        let q = self.palette_query.to_ascii_lowercase();
+        MENU.iter()
+            .filter(|(_, label, _)| q.is_empty() || label.to_ascii_lowercase().contains(&q))
+            .copied()
+            .collect()
     }
 
     /// Install a marketplace listing by SKU — a local-only credit ledger, no
