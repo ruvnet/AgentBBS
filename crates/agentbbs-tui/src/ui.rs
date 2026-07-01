@@ -43,6 +43,7 @@ impl App {
             Screen::Approvals => self.render_approvals(frame, rows[1]),
             Screen::Budget => self.render_budget(frame, rows[1]),
             Screen::Decisions => self.render_decisions(frame, rows[1]),
+            Screen::Directory => self.render_directory(frame, rows[1]),
             Screen::Goodbye => self.render_goodbye(frame, rows[1]),
         }
         self.render_status(frame, rows[2]);
@@ -623,6 +624,71 @@ impl App {
             Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
                 .block(self.framed("Decision Records  (ESC back)")),
+            area,
+        );
+    }
+
+    fn render_directory(&self, frame: &mut Frame, area: Rect) {
+        let ranking = self.reputation.ranking();
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "  #  HANDLE            SCORE   RATE    CREDENTIALS",
+                theme::hotkey(),
+            )),
+            Line::from("──────────────────────────────────────────────────────────"),
+        ];
+        for (i, r) in ranking.iter().enumerate() {
+            let selected = i == self.directory_index;
+            let marker = if selected { "▶" } else { " " };
+            let id = agentbbs_core::identity::AgentId::from_hex(&r.agent).ok();
+            let handle = id
+                .as_ref()
+                .map(|id| self.directory_handle(id))
+                .unwrap_or_else(|| r.agent[..8.min(r.agent.len())].to_string());
+            let creds: Vec<String> = id
+                .as_ref()
+                .map(|id| {
+                    self.credentials
+                        .valid_for(id, chrono::Utc::now())
+                        .iter()
+                        .map(|c| format!("🎫{}", c.claim))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let style = if selected {
+                theme::lightbar()
+            } else {
+                Style::default()
+            };
+            lines.push(
+                Line::from(vec![
+                    Span::styled(format!("{marker} {:>2}  ", i + 1), theme::hotkey()),
+                    Span::styled(format!("@{:<17} ", handle), theme::chrome()),
+                    Span::styled(
+                        format!("{:>5.2}  ", r.score),
+                        Style::default().fg(theme::GREEN),
+                    ),
+                    Span::styled(format!("{:>4.0}%  ", r.rate * 100.0), theme::dim()),
+                    Span::styled(creds.join(" "), theme::dim()),
+                ])
+                .style(style),
+            );
+        }
+        if ranking.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No agents observed yet.",
+                theme::dim(),
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "[N] hire highlighted · [I] issue skill:rust credential · ESC back",
+            theme::chrome(),
+        )));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: true })
+                .block(self.framed("Agent Directory")),
             area,
         );
     }

@@ -15,12 +15,14 @@ use agentbbs_arena::{Arena, BenchmarkId, RunResult, Submission};
 use agentbbs_core::approval::{ActionProposal, ApprovalGate, SignedDecision, Verdict};
 use agentbbs_core::budget::BudgetLedger;
 use agentbbs_core::caps::Caps;
+use agentbbs_core::credential::{Credential, CredentialStore};
 use agentbbs_core::decision::{DecisionLog, DecisionRecord};
-use agentbbs_core::identity::Identity;
+use agentbbs_core::identity::{AgentId, Identity};
 use agentbbs_core::market::{Listing, ListingBody, ListingKind, Market};
 use agentbbs_core::pod::{MaxTier, PodSpec, PodStatus, PodTemplate};
 use agentbbs_core::presence::Presence;
 use agentbbs_core::report::MemoryReporter;
+use agentbbs_core::reputation::{OutcomeRecord, ReputationLedger};
 use agentbbs_core::{Bbs, Board, MemoryStore, Message, MessageId, Role, Store};
 
 /// A snapshot of the message being replied to, kept alongside the compose
@@ -41,6 +43,13 @@ pub struct PodRecord {
     pub status: PodStatus,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub spec: PodSpec,
+}
+
+/// A demo agent seeded into the Directory (ADR-0039) so reputation ranking has
+/// something real to show — same style as Arena's demo competitors.
+pub struct DirectoryAgent {
+    pub id: AgentId,
+    pub handle: String,
 }
 
 /// Which screen is currently focused.
@@ -76,6 +85,8 @@ pub enum Screen {
     Budget,
     /// The org's signed decision log (ADR-0045).
     Decisions,
+    /// Agent directory — reputation ranking, hire, issue credentials (ADR-0039/0042).
+    Directory,
     /// Sign-off screen.
     Goodbye,
 }
@@ -90,6 +101,7 @@ pub const MENU: &[(char, &str, Screen)] = &[
     ('V', "Approvals", Screen::Approvals),
     ('B', "Budget", Screen::Budget),
     ('C', "Decisions", Screen::Decisions),
+    ('H', "Agent Directory", Screen::Directory),
     ('K', "Marketplace", Screen::Market),
     ('F', "Federation", Screen::Federation),
     ('S', "Sysop Report", Screen::Sysop),
@@ -187,6 +199,14 @@ pub struct App {
     pub budget: BudgetLedger,
     /// The org's signed decision log (ADR-0045).
     pub decisions: DecisionLog,
+    /// Agent reputation ledger (ADR-0039), fed by demo outcome records.
+    pub reputation: ReputationLedger,
+    /// Verifiable credentials issued to directory agents (ADR-0042).
+    pub credentials: CredentialStore,
+    /// Demo agents shown in the Directory (handle lookup for the ranking).
+    pub directory: Vec<DirectoryAgent>,
+    /// Highlighted directory row.
+    pub directory_index: usize,
 }
 
 impl Drop for App {
@@ -244,11 +264,16 @@ impl App {
             approval_index: 0,
             budget: BudgetLedger::new(),
             decisions: DecisionLog::new(),
+            reputation: ReputationLedger::new(),
+            credentials: CredentialStore::new(),
+            directory: Vec::new(),
+            directory_index: 0,
         };
         app.seed_defaults();
         app.seed_arena();
         app.seed_market();
         app.seed_decisions();
+        app.seed_directory();
         app.heartbeat();
         app.refresh_boards();
         app
@@ -386,6 +411,77 @@ impl App {
         ] {
             let _ = self.decisions.add(rec);
         }
+    }
+
+    /// Seed a few demo agents with outcome records so reputation ranking has
+    /// something real to show — same style as `seed_arena`'s demo competitors.
+    fn seed_directory(&mut self) {
+        let demo: &[(&str, u32, u32)] = &[
+            ("graybeard", 8, 10),
+            ("night-owl", 5, 5),
+            ("script-kiddie", 2, 8),
+        ];
+        for (handle, successes, total) in demo.iter().copied() {
+            let id = Identity::generate();
+            for i in 0..total {
+                self.reputation.record(OutcomeRecord {
+                    agent: id.id(),
+                    success: i < successes,
+                    weight: 1.0,
+                    source: "demo".into(),
+                });
+            }
+            self.directory.push(DirectoryAgent {
+                id: id.id(),
+                handle: handle.to_string(),
+            });
+        }
+    }
+
+    /// Resolve a directory agent's handle from its id (falls back to the
+    /// short hex id if it's not one of the seeded demo agents).
+    pub fn directory_handle(&self, id: &AgentId) -> String {
+        self.directory
+            .iter()
+            .find(|a| &a.id == id)
+            .map(|a| a.handle.clone())
+            .unwrap_or_else(|| id.short())
+    }
+
+    /// Issue a credential to the highlighted directory agent, signed by this
+    /// session.
+    pub fn issue_credential(&mut self, claim: &str) -> Result<Credential, String> {
+        let ranking = self.reputation.ranking();
+        let entry = ranking
+            .get(self.directory_index)
+            .ok_or_else(|| "no agent selected".to_string())?;
+        let subject = AgentId::from_hex(&entry.agent).map_err(|e| e.to_string())?;
+        let cred = Credential::issue(
+            &self.session.identity,
+            subject,
+            claim,
+            chrono::Utc::now(),
+            None,
+        );
+        self.credentials
+            .add(cred.clone())
+            .map_err(|e| e.to_string())?;
+        Ok(cred)
+    }
+
+    /// "Hire" the highlighted directory agent — spawns a pod hosted by them.
+    pub fn hire_selected(&mut self) -> Result<PodRecord, String> {
+        let ranking = self.reputation.ranking();
+        let entry = ranking
+            .get(self.directory_index)
+            .ok_or_else(|| "no agent selected".to_string())?;
+        let handle = self
+            .directory
+            .iter()
+            .find(|a| a.id.to_hex() == entry.agent)
+            .map(|a| a.handle.clone())
+            .unwrap_or_else(|| entry.agent[..8.min(entry.agent.len())].to_string());
+        self.hire(&handle, "ops")
     }
 
     /// Validate and record a pod spawn locally (idempotent on

@@ -351,3 +351,49 @@ fn decisions_screen_shows_the_seeded_records() {
     assert!(text.contains("Adopt the meta-llm gateway"));
     assert!(text.contains("Human approval for spend"));
 }
+
+#[test]
+fn directory_ranks_seeded_agents_by_wilson_score() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('H'))); // -> directory
+    assert_eq!(app.screen, Screen::Directory);
+
+    let ranking = app.reputation.ranking();
+    assert_eq!(ranking.len(), 3);
+    // script-kiddie (2/8, 25%) is unambiguously worst regardless of Wilson
+    // bound specifics — must rank last.
+    let last_handle = app
+        .directory_handle(&agentbbs_core::identity::AgentId::from_hex(&ranking[2].agent).unwrap());
+    assert_eq!(last_handle, "script-kiddie");
+    let text = screen_text(&app, 120, 30);
+    assert!(text.contains("Agent Directory"));
+    assert!(text.contains("@graybeard"));
+}
+
+#[test]
+fn hire_selected_spawns_a_pod_for_the_highlighted_agent() {
+    let mut app = App::in_memory();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('H')));
+    app.on_key(press(KeyCode::Char('n'))); // hire highlighted
+    assert_eq!(app.pods.len(), 1);
+    assert!(app.status.starts_with("Hired"));
+}
+
+#[test]
+fn issue_credential_signs_and_stores_a_claim_for_the_highlighted_agent() {
+    let mut app = App::in_memory();
+    let ranking = app.reputation.ranking();
+    let subject = agentbbs_core::identity::AgentId::from_hex(&ranking[0].agent).unwrap();
+    app.on_key(press(KeyCode::Enter));
+    app.on_key(press(KeyCode::Char('H')));
+    app.on_key(press(KeyCode::Char('i'))); // issue skill:rust
+
+    let valid = app.credentials.valid_for(&subject, chrono::Utc::now());
+    assert_eq!(valid.len(), 1);
+    assert_eq!(valid[0].claim, "skill:rust");
+    assert!(valid[0].verify().is_ok());
+    let text = screen_text(&app, 120, 30);
+    assert!(text.contains("skill:rust"));
+}

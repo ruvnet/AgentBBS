@@ -26,6 +26,7 @@ impl App {
             Screen::Pods => self.key_pods(key),
             Screen::Approvals => self.key_approvals(key),
             Screen::Budget => self.key_budget(key),
+            Screen::Directory => self.key_directory(key),
             Screen::Who
             | Screen::Doors
             | Screen::Market
@@ -253,6 +254,36 @@ impl App {
                 self.topup_selected_pod(0.10);
                 self.status = "Raised cap by $0.10.".into();
             }
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
+            _ => {}
+        }
+        Control::Continue
+    }
+
+    fn key_directory(&mut self, key: KeyEvent) -> Control {
+        let count = self.reputation.ranking().len();
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.directory_index = self.directory_index.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.directory_index + 1 < count {
+                    self.directory_index += 1;
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => match self.hire_selected() {
+                Ok(p) => {
+                    self.status = format!(
+                        "Hired — spawned {} in #{}",
+                        p.id, p.spec.template.registered_room
+                    )
+                }
+                Err(e) => self.status = format!("Hire failed: {e}"),
+            },
+            KeyCode::Char('i') | KeyCode::Char('I') => match self.issue_credential("skill:rust") {
+                Ok(c) => self.status = format!("Issued {} to the highlighted agent.", c.claim),
+                Err(e) => self.status = format!("Issue failed: {e}"),
+            },
             KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Main,
             _ => {}
         }
