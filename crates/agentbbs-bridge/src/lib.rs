@@ -1,7 +1,10 @@
-//! AgentBBS → Slack / Microsoft Teams / Discord **outbound** bridge
+//! AgentBBS → Slack / Microsoft Teams / Discord / WhatsApp **outbound** bridge
 //! (Slack/Teams: ADR-0025 Phase 0; Discord reuses the identical mechanism —
 //! it isn't its own ADR, just a third `Target` on the same generic
-//! board→webhook mapping).
+//! board→webhook mapping. WhatsApp: ADR-0053 Phase 0 — the first target that
+//! isn't a plain webhook: an authenticated per-recipient Cloud API send with a
+//! bearer token resolved from the environment at delivery, never stored in the
+//! config or the plan).
 //!
 //! Phase 0 is a one-way mirror: a board's messages are pushed to a configured
 //! Slack Incoming Webhook, a Microsoft Teams Workflows ("when a Teams webhook
@@ -41,6 +44,7 @@ pub enum Target {
     Slack,
     Teams,
     Discord,
+    WhatsApp,
 }
 
 impl fmt::Display for Target {
@@ -49,6 +53,7 @@ impl fmt::Display for Target {
             Target::Slack => "slack",
             Target::Teams => "teams",
             Target::Discord => "discord",
+            Target::WhatsApp => "whatsapp",
         })
     }
 }
@@ -59,11 +64,37 @@ pub struct OutboundPost {
     pub target: Target,
     pub url: String,
     pub payload: Value,
+    /// Name of the environment variable holding a bearer token to send as an
+    /// `Authorization: Bearer …` header (ADR-0053). `None` for the webhook
+    /// targets (Slack/Teams/Discord), whose secret is carried in the URL itself.
+    /// The env var *name* — never the token — travels in the plan, so the secret
+    /// stays out of config and out of the plan; [`deliver`] resolves it at send.
+    pub auth_token_env: Option<String>,
 }
 
-/// One board's outbound webhook targets. A `None` webhook means "don't mirror
-/// to that platform". A board absent from the config is never mirrored
-/// (opt-in allowlist).
+/// The Meta Graph API version the WhatsApp Cloud API endpoint is pinned to
+/// (ADR-0053). Bump deliberately — Meta versions the graph surface.
+pub const WHATSAPP_GRAPH_VERSION: &str = "v21.0";
+
+/// WhatsApp Cloud API outbound target for a board (ADR-0053). Unlike the
+/// webhook platforms, WhatsApp has no channel primitive and no
+/// credential-in-URL: outbound is an authenticated per-recipient send. The
+/// bearer token is NOT stored here — only the *name* of the env var that holds
+/// it (`token_env`), keeping the secret out of config (ADR-0053 §Safety).
+#[derive(Clone, Debug, Deserialize)]
+pub struct WhatsAppTarget {
+    /// The WhatsApp Business phone-number id the message is sent *from*.
+    pub phone_number_id: String,
+    /// The recipient phone number in E.164 (e.g. `15551234567`). This is PII —
+    /// it must never enter a federated envelope, only the bridge's local config.
+    pub recipient: String,
+    /// Name of the env var holding the Cloud API access token (never the token).
+    pub token_env: String,
+}
+
+/// One board's outbound targets. A `None` target means "don't mirror to that
+/// platform". A board absent from the config is never mirrored (opt-in
+/// allowlist).
 #[derive(Clone, Debug, Deserialize)]
 pub struct BoardMapping {
     pub board: String,
@@ -73,6 +104,8 @@ pub struct BoardMapping {
     pub teams_webhook: Option<String>,
     #[serde(default)]
     pub discord_webhook: Option<String>,
+    #[serde(default)]
+    pub whatsapp: Option<WhatsAppTarget>,
 }
 
 /// The bridge configuration: the set of board→webhook mappings.
@@ -160,6 +193,29 @@ pub fn format_discord(msg: &Message) -> Value {
     })
 }
 
+/// WhatsApp Cloud API message body (a `type: "text"` message). WhatsApp has no
+/// rich-card webhook like Teams/Discord for a session reply, so the author,
+/// board, and signature status are folded into the text itself. `preview_url`
+/// is false — we don't want link unfurling of board content.
+pub fn format_whatsapp(msg: &Message, recipient: &str) -> Value {
+    let who = display_handle(msg);
+    let sig = if msg.verify().is_ok() {
+        "✓ signed"
+    } else {
+        "✗ unsigned"
+    };
+    json!({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": recipient,
+        "type": "text",
+        "text": {
+            "preview_url": false,
+            "body": format!("*{}* in #{}  _{}_\n{}", who, msg.body.board, sig, msg.body.body),
+        }
+    })
+}
+
 fn display_handle(msg: &Message) -> String {
     if msg.body.handle.is_empty() {
         format!(
@@ -198,6 +254,7 @@ impl Bridge {
                 target: Target::Slack,
                 url: url.clone(),
                 payload: format_slack(msg),
+                auth_token_env: None,
             });
         }
         if let Some(url) = &mapping.teams_webhook {
@@ -205,6 +262,7 @@ impl Bridge {
                 target: Target::Teams,
                 url: url.clone(),
                 payload: format_teams(msg),
+                auth_token_env: None,
             });
         }
         if let Some(url) = &mapping.discord_webhook {
@@ -212,6 +270,18 @@ impl Bridge {
                 target: Target::Discord,
                 url: url.clone(),
                 payload: format_discord(msg),
+                auth_token_env: None,
+            });
+        }
+        if let Some(wa) = &mapping.whatsapp {
+            posts.push(OutboundPost {
+                target: Target::WhatsApp,
+                url: format!(
+                    "https://graph.facebook.com/{WHATSAPP_GRAPH_VERSION}/{}/messages",
+                    wa.phone_number_id
+                ),
+                payload: format_whatsapp(msg, &wa.recipient),
+                auth_token_env: Some(wa.token_env.clone()),
             });
         }
         posts
@@ -222,12 +292,19 @@ impl Bridge {
 #[derive(Debug)]
 pub enum BridgeError {
     Http(reqwest::Error),
+    /// An `auth_token_env` named an environment variable that isn't set — the
+    /// bearer token can't be resolved, so the authenticated send is refused
+    /// (rather than sent unauthenticated). Carries the missing var name.
+    MissingToken(String),
 }
 
 impl fmt::Display for BridgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BridgeError::Http(e) => write!(f, "bridge http error: {e}"),
+            BridgeError::MissingToken(var) => {
+                write!(f, "bridge auth token env var not set: {var}")
+            }
         }
     }
 }
@@ -249,7 +326,14 @@ pub async fn deliver(
 ) -> Result<Vec<Target>, BridgeError> {
     let mut delivered = Vec::with_capacity(posts.len());
     for p in posts {
-        let resp = client.post(&p.url).json(&p.payload).send().await?;
+        let mut req = client.post(&p.url).json(&p.payload);
+        // WhatsApp (ADR-0053): resolve the bearer token from the named env var
+        // at send time — the token never lived in the config or the plan.
+        if let Some(var) = &p.auth_token_env {
+            let token = std::env::var(var).map_err(|_| BridgeError::MissingToken(var.clone()))?;
+            req = req.bearer_auth(token);
+        }
+        let resp = req.send().await?;
         resp.error_for_status()?;
         delivered.push(p.target);
     }
@@ -284,6 +368,7 @@ mod tests {
                 slack_webhook: Some("https://hooks.slack.com/services/T/B/X".into()),
                 teams_webhook: Some("https://prod.westus.logic.azure.com/workflows/abc".into()),
                 discord_webhook: Some("https://discord.com/api/webhooks/123/abc".into()),
+                whatsapp: None,
             }],
         }
     }
@@ -347,6 +432,7 @@ mod tests {
                 slack_webhook: Some("https://hooks.slack.com/services/x".into()),
                 teams_webhook: None,
                 discord_webhook: None,
+                whatsapp: None,
             }],
         });
         let posts = b.plan(&msg("general", "alice", "hi"));
@@ -374,6 +460,7 @@ mod tests {
                 slack_webhook: None,
                 teams_webhook: None,
                 discord_webhook: Some("https://discord.com/api/webhooks/1/x".into()),
+                whatsapp: None,
             }],
         });
         let posts = b.plan(&msg("general", "alice", "hi"));
@@ -396,5 +483,86 @@ mod tests {
         assert_eq!(c.mappings.len(), 1);
         assert_eq!(c.mappings[0].board, "general");
         assert!(c.mappings[0].teams_webhook.is_none());
+    }
+
+    // ---- ADR-0053: WhatsApp Cloud API outbound ----
+
+    fn wa_cfg() -> BridgeConfig {
+        BridgeConfig {
+            mappings: vec![BoardMapping {
+                board: "general".into(),
+                slack_webhook: None,
+                teams_webhook: None,
+                discord_webhook: None,
+                whatsapp: Some(WhatsAppTarget {
+                    phone_number_id: "109999888".into(),
+                    recipient: "15551234567".into(),
+                    token_env: "WHATSAPP_TOKEN_TEST".into(),
+                }),
+            }],
+        }
+    }
+
+    #[test]
+    fn whatsapp_payload_is_a_cloud_api_text_message() {
+        let m = msg("general", "alice", "hello whatsapp");
+        let p = format_whatsapp(&m, "15551234567");
+        assert_eq!(p["messaging_product"], "whatsapp");
+        assert_eq!(p["to"], "15551234567");
+        assert_eq!(p["type"], "text");
+        assert_eq!(p["text"]["preview_url"], false);
+        let body = p["text"]["body"].as_str().unwrap();
+        assert!(body.contains("alice"));
+        assert!(body.contains("#general"));
+        assert!(body.contains("hello whatsapp"));
+        assert!(body.contains("✓ signed")); // it's a real signed message
+    }
+
+    #[test]
+    fn plan_emits_whatsapp_post_with_graph_url_and_token_env() {
+        let b = Bridge::new(wa_cfg());
+        let posts = b.plan(&msg("general", "alice", "hi"));
+        assert_eq!(posts.len(), 1);
+        let p = &posts[0];
+        assert_eq!(p.target, Target::WhatsApp);
+        // Authenticated per-recipient Cloud API endpoint, not a webhook URL.
+        assert!(p.url.contains("graph.facebook.com"));
+        assert!(p.url.contains("109999888/messages"));
+        assert!(p.url.contains(WHATSAPP_GRAPH_VERSION));
+        // The env var *name* travels, never the token itself.
+        assert_eq!(p.auth_token_env.as_deref(), Some("WHATSAPP_TOKEN_TEST"));
+        assert_eq!(p.payload["to"], "15551234567");
+    }
+
+    #[test]
+    fn webhook_targets_carry_no_auth_token_env() {
+        let b = Bridge::new(cfg());
+        for p in b.plan(&msg("general", "alice", "hi")) {
+            assert!(
+                p.auth_token_env.is_none(),
+                "{} carries its secret in the URL, not a bearer token",
+                p.target
+            );
+        }
+    }
+
+    #[test]
+    fn whatsapp_is_loop_guarded_like_every_other_target() {
+        let b = Bridge::new(wa_cfg());
+        assert!(b
+            .plan(&msg("general", "bridge:whatsapp", "echo"))
+            .is_empty());
+    }
+
+    #[test]
+    fn whatsapp_config_parses_from_json_without_exposing_a_token() {
+        let c = BridgeConfig::from_json(
+            r#"{"mappings":[{"board":"general","whatsapp":{"phone_number_id":"11","recipient":"15550001111","token_env":"WA_TOK"}}]}"#,
+        )
+        .unwrap();
+        let wa = c.mappings[0].whatsapp.as_ref().unwrap();
+        assert_eq!(wa.phone_number_id, "11");
+        assert_eq!(wa.recipient, "15550001111");
+        assert_eq!(wa.token_env, "WA_TOK");
     }
 }
