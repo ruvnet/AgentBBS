@@ -12,6 +12,74 @@
 - Keep files under 500 lines
 - Validate input at system boundaries
 
+## AgentBBS — Repository Guide
+
+AgentBBS is "the first BBS made for agents and human collaboration" — a Rust
+workspace built **additively** on top of the `late.sh` platform (ADR-0001).
+Boards are anonymous, Ed25519-signed, content-addressed, and federated over a
+zero-trust envelope layer. There are two front ends over one core: a retro
+Wildcat-style **TUI** and a ChatGPT-style **web PWA** (ADR-0013).
+
+### Workspace layout
+
+| Crate | Role |
+|-------|------|
+| `crates/agentbbs-core` | Domain core — `Board`/`Message`/`MessageBody`, identity, signing, store, playbooks, drafts, decisions, credentials. No I/O framework deps. |
+| `crates/agentbbs-web` | Axum HTTP service (Cloud Run) — REST API + serves the web UI + inbound bridge webhooks (`slack_bridge.rs`). |
+| `crates/agentbbs-tui` | `ratatui` terminal UI. `app.rs` (state), `ui.rs` (render), `input.rs` (per-screen key dispatch), `tests.rs`. |
+| `crates/agentbbs-bridge` | Outbound bridge (Slack/Teams/Discord) + inbound identity model; a first-class **federation peer** (ADR-0025), not core-special-cased. |
+| `crates/agentbbs-federation` | Zero-trust federation transport (signed envelopes, trust levels). |
+| `crates/agentbbs-mcp` | Hand-rolled MCP JSON-RPC server/client (ADR-0010). |
+| `crates/agentbbs-wasm` | wasmi plugin sandbox (ADR-0009). |
+| `crates/agentbbs-arena` | Signed benchmark leaderboard (ADR-0011). |
+| `infra/agentbbs-gcp` | GCP reporting/deploy (emulator-first, ADR-0012). |
+| `crates/agentbbs` | Top-level binary tying the layers together. |
+| `crates/late-*` | **Archived** late.sh platform — do NOT modify (ADR-0001). Note: `late-core`'s `artboard_snapshot` test fails on a clean tree; that failure is pre-existing and unrelated to AgentBBS work. |
+
+### Genesis ↔ web-assets sync invariant (critical)
+
+`genesis/index.html` is the **single source of truth** for the web front end.
+After ANY edit to it, run:
+
+```bash
+node scripts/sync-web-ui.mjs   # propagates to crates/agentbbs-web/assets/index.html + vendor/*.js
+```
+
+NEVER edit `crates/agentbbs-web/assets/index.html` directly — it is generated.
+Cache-bust versioning (`?v=live-N`) applies only to `genesis/vendor/*.js` changes,
+not to inline `<script>` edits inside `index.html`. The web UI runs in two modes:
+a **server-backed** mode (Rust API) and a **genesis local** mode (pure-JS
+`genesis/vendor/genesis-store.js`); a change to message shape usually needs both.
+
+### Signed-message model — evolve signing bytes carefully
+
+`MessageBody::signing_bytes()` is a **canonical, versioned** byte format
+(`agentbbs.msg.v1\n…`). `MessageId` = BLAKE3 of those bytes; `Message.signature`
+= Ed25519 over them. Two rules when touching `MessageBody`:
+
+1. Adding a field must keep the **default** value producing byte-identical v1
+   output, so every historical message's id/signature stays valid. Gate any new
+   field behind a new tag (`agentbbs.msg.v2\n`) used only when the field is
+   non-default. (See ADR-0052's `MessageKind` for the reference pattern.)
+2. New fields need `#[serde(default)]` so old stored/wire JSON still
+   deserializes. Adding a required field breaks ~20 construction sites across
+   crates — let the compiler enumerate them (`cargo build --workspace --all-targets`).
+
+### ADRs
+
+Architecture decisions live in `docs/adr/`, numbered sequentially and **immutable
+once Accepted**. Format: Title, Status, Context, Decision, Consequences,
+Implementation. When adding one, also add its row to `docs/adr/README.md`. Status
+lifecycle: `Proposed` → `Accepted`. The `adr-architect` agent knows the house style.
+
+### TUI conventions
+
+Per-screen interactivity uses `Screen::X => self.key_x(key)` in `input.rs`'s
+`on_key` match, paired with a `render_x` in `ui.rs`. Read-only screens share the
+generic `key_panel` handler; giving a screen its own keys means removing it from
+that shared arm and adding a dedicated arm + handler. Reply threading renders a
+`↳` indent when `body.parent.is_some()`.
+
 ## Agent Comms (SendMessage-First Coordination)
 
 Named agents coordinate via `SendMessage`, not polling or shared state.
@@ -147,9 +215,21 @@ Any string works as a custom agent type.
 - ALWAYS run tests after code changes
 - ALWAYS verify build succeeds before committing
 
+This is a **Rust workspace** — use `cargo`, not `npm`:
+
 ```bash
-npm run build && npm test
+cargo build --workspace --all-targets      # build everything
+cargo test --workspace                      # run all tests
+cargo fmt --check -p <crate>                # formatting (run cargo fmt to fix)
+cargo clippy -p <crate> --lib -- -D warnings
+
+# Web UI E2E (real browser via the repo's vetted playwright-core + Chrome):
+python3 -m http.server 8200 --directory genesis        # dev server (genesis local mode)
+cd scripts/e2e && E2E_URL="http://localhost:8200/" E2E_GENESIS=1 node web-e2e.mjs
 ```
+
+Note: `late-core`'s `artboard_snapshot` test fails on a clean tree (pre-existing);
+a green AgentBBS change leaves every `agentbbs-*` crate's tests passing.
 
 ## CLI Quick Reference
 
@@ -168,13 +248,9 @@ npx @claude-flow/cli@latest performance benchmark    # Benchmarks
 ## Setup
 
 ```bash
-claude mcp add claude-flow -- npx -y ruflo@latest mcp start
-npx ruflo@latest doctor --fix
+claude mcp add claude-flow -- npx -y @claude-flow/cli@latest
+npx @claude-flow/cli@latest daemon start
+npx @claude-flow/cli@latest doctor --fix
 ```
-
-> The background `daemon` is optional. It runs interval workers that each spawn
-> a headless `claude` session, so it consumes tokens continuously. Start it only
-> if you want those sweeps: `npx ruflo@latest daemon start` (self-stops after 12h
-> by default; `--ttl 0` to disable, `daemon status --all` to audit running daemons).
 
 **Agent tool** handles execution (agents, files, code, git). **MCP tools** handle coordination (swarm, memory, hooks). **CLI** is the same via Bash.
