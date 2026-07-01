@@ -189,3 +189,34 @@ terraform apply -var project_id=<your-project> -var function_source_bucket=<your
 
 Outputs include the topic id/name, subscription id, Firestore database name, and
 the function name/URI.
+
+## Board-state durability on Cloud Run (ADR-0054 Q4)
+
+**This crate is reporting only.** The Firestore/Pub/Sub sinks above persist
+*sysop events*, **not** board messages — do not mistake them for a message
+store. Board state lives in `agentbbs-core`'s `Store` (`MemoryStore` or the
+single-file `RedbStore`), and `agentbbs-web` defaults to the **in-memory**
+store, which is ephemeral: on Cloud Run's scale-to-zero, every cold start loses
+all boards and posts.
+
+For a durable single-instance deployment, set **`AGENTBBS_DB_PATH`** to a path
+on a mounted, persistent volume and pin the service to one instance:
+
+```bash
+gcloud run deploy agentbbs-web \
+  --image <image> \
+  --min-instances=1 --max-instances=1 \
+  --add-volume name=data,type=cloud-storage,bucket=<your-bucket> \
+  --add-volume-mount volume=data,mount-path=/data \
+  --set-env-vars AGENTBBS_DB_PATH=/data/agentbbs.redb
+```
+
+The server opens a `RedbStore` at that path so boards/posts survive restarts; a
+failed open falls back to in-memory with a loud log rather than refusing to boot.
+
+**Caveat — single-writer, not multi-instance HA.** redb is single-file /
+single-writer, so this is a *single-instance* durability story: keep
+`--max-instances=1` (redb will error if two instances open the same file).
+True multi-instance HA needs a new `Store` impl over a shared multi-writer
+backend (Cloud SQL / Firestore) — deliberately out of scope here (see ADR-0054
+Q4); the `Store` trait (`agentbbs-core/src/store.rs`) is the extension point.

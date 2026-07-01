@@ -4501,6 +4501,68 @@ mod tests {
         std::env::remove_var("AGENTBBS_WHATSAPP_APP_SECRET");
     }
 
+    // ADR-0054 Q4: durability. A board post made through one AppState over a
+    // RedbStore is still there through a second AppState opened on the same
+    // path — i.e. it survives a "restart" — and re-seeding is idempotent (the
+    // default boards aren't duplicated). This is the durability the
+    // AGENTBBS_DB_PATH + persistent-volume Cloud Run recipe relies on.
+    #[test]
+    fn board_state_persists_across_a_redb_restart() {
+        use agentbbs_core::caps::Caps;
+        use agentbbs_core::store::RedbStore;
+        use agentbbs_core::{Identity, Message, MessageBody};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let uniq = format!(
+            "agentbbs-redb-{}-{}.redb",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(uniq);
+
+        let id = Identity::generate();
+        let body = MessageBody {
+            board: "general".into(),
+            parent: None,
+            subject: "persist me".into(),
+            body: "durable across restart".into(),
+            author: id.id(),
+            handle: "you".into(),
+            created_at: chrono::Utc::now(),
+            kind: agentbbs_core::MessageKind::Post,
+        };
+        let msg = Message::sign(&id, body).unwrap();
+
+        // First "boot": seed + post, then drop the state (closes the db).
+        {
+            let state = AppState::new(Arc::new(RedbStore::open(&path).unwrap()));
+            let boards_after_seed = state.bbs.list_boards(Caps::READ).unwrap().len();
+            assert!(boards_after_seed >= 4); // default boards seeded
+            state.bbs.post(Role::Agent.caps(), msg.clone()).unwrap();
+        }
+
+        // Second "boot" on the same file: the message is still there, and the
+        // idempotent re-seed didn't duplicate the default boards.
+        {
+            let state = AppState::new(Arc::new(RedbStore::open(&path).unwrap()));
+            let msgs = state.bbs.read_board(Caps::READ, "general", 100).unwrap();
+            assert!(
+                msgs.iter().any(|m| m.id == msg.id),
+                "posted message must survive the restart"
+            );
+            let boards = state.bbs.list_boards(Caps::READ).unwrap().len();
+            assert_eq!(
+                boards, 4,
+                "re-seed must be idempotent, not duplicate boards"
+            );
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
     // ADR-0054 Q2: external-role→caps. Owns AGENTBBS_ROLE_CLAIM_SECRET for its
     // duration (single-owner env idiom).
     #[test]
