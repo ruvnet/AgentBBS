@@ -1512,3 +1512,166 @@ fn draft_edit_flow_revises_the_body_and_marks_it_edited() {
     assert_eq!(d.body, "a hand-revised reply");
     assert_eq!(d.status, agentbbs_core::DraftStatus::Edited);
 }
+
+// ---- ADR-0052: threaded agent-process view (Milestone / Step) ----
+
+/// Sign and post a message of a given `kind`/`parent` directly to `board`,
+/// returning its id — mirrors the `digest_*` tests' direct-post helper.
+fn post_kind(
+    app: &mut App,
+    board: &str,
+    parent: Option<agentbbs_core::MessageId>,
+    subject: &str,
+    body: &str,
+    kind: agentbbs_core::MessageKind,
+) -> agentbbs_core::MessageId {
+    let b = MessageBody {
+        board: board.into(),
+        parent,
+        subject: subject.into(),
+        body: body.into(),
+        author: app.session.identity.id(),
+        handle: app.session.handle.clone(),
+        created_at: chrono::Utc::now(),
+        kind,
+    };
+    let msg = Message::sign(&app.session.identity, b).unwrap();
+    app.bbs.post(app.session.caps, msg.clone()).unwrap();
+    msg.id
+}
+
+/// Open the first board in the Read view, returning its slug.
+fn open_first_board(app: &mut App) -> String {
+    app.on_key(press(KeyCode::Enter)); // splash -> main
+    app.on_key(press(KeyCode::Char('M'))); // -> boards
+    app.on_key(press(KeyCode::Enter)); // open first board -> Read
+    assert_eq!(app.screen, Screen::Read);
+    app.current_board.clone().unwrap()
+}
+
+#[test]
+fn step_children_collapse_under_milestone_by_default() {
+    use agentbbs_core::MessageKind;
+    let mut app = App::in_memory();
+    let slug = open_first_board(&mut app);
+
+    let mid = post_kind(
+        &mut app,
+        &slug,
+        None,
+        "Enrich the lead",
+        "started the process",
+        MessageKind::Milestone,
+    );
+    post_kind(
+        &mut app,
+        &slug,
+        Some(mid.clone()),
+        "step one",
+        "did thing one",
+        MessageKind::Step,
+    );
+    post_kind(
+        &mut app,
+        &slug,
+        Some(mid),
+        "step two",
+        "did thing two",
+        MessageKind::Step,
+    );
+    app.open_selected_board(); // reload from the store
+
+    let text = screen_text(&app, 120, 40);
+    // The milestone renders normally...
+    assert!(text.contains("started the process"));
+    // ...with a collapsed marker counting its two steps...
+    assert!(text.contains("2 updates from"));
+    // ...and the step bodies are NOT shown inline by default.
+    assert!(!text.contains("did thing one"));
+    assert!(!text.contains("did thing two"));
+}
+
+#[test]
+fn pressing_t_expands_the_step_thread() {
+    use agentbbs_core::MessageKind;
+    let mut app = App::in_memory();
+    let slug = open_first_board(&mut app);
+
+    let mid = post_kind(
+        &mut app,
+        &slug,
+        None,
+        "Enrich the lead",
+        "started the process",
+        MessageKind::Milestone,
+    );
+    post_kind(
+        &mut app,
+        &slug,
+        Some(mid.clone()),
+        "step one",
+        "did thing one",
+        MessageKind::Step,
+    );
+    post_kind(
+        &mut app,
+        &slug,
+        Some(mid.clone()),
+        "step two",
+        "did thing two",
+        MessageKind::Step,
+    );
+    app.open_selected_board();
+
+    // read_index lands on the last message (a step); move up to the milestone.
+    app.on_key(press(KeyCode::Up));
+    app.on_key(press(KeyCode::Up));
+    assert_eq!(app.read_index, 0);
+
+    app.on_key(press(KeyCode::Char('t')));
+    assert!(app.expanded_threads.contains(&mid));
+
+    let text = screen_text(&app, 120, 40);
+    // Expanded: the step bodies are now visible beneath the milestone.
+    assert!(text.contains("did thing one"));
+    assert!(text.contains("did thing two"));
+
+    // Toggling again collapses it back to the marker.
+    app.on_key(press(KeyCode::Char('T')));
+    assert!(!app.expanded_threads.contains(&mid));
+    let text = screen_text(&app, 120, 40);
+    assert!(text.contains("2 updates from"));
+    assert!(!text.contains("did thing one"));
+}
+
+#[test]
+fn ordinary_post_reply_stays_inline_with_indicator() {
+    use agentbbs_core::MessageKind;
+    let mut app = App::in_memory();
+    let slug = open_first_board(&mut app);
+
+    let root = post_kind(
+        &mut app,
+        &slug,
+        None,
+        "root topic",
+        "the original message",
+        MessageKind::Post,
+    );
+    // A plain reply (Post kind with a parent) — NOT a Step — must never be
+    // collapsed away; it keeps today's always-visible `↳` indent.
+    post_kind(
+        &mut app,
+        &slug,
+        Some(root),
+        "Re: root topic",
+        "a threaded reply",
+        MessageKind::Post,
+    );
+    app.open_selected_board();
+
+    let text = screen_text(&app, 120, 40);
+    assert!(text.contains("a threaded reply")); // shown inline, not hidden
+    assert!(text.contains('↳')); // thread indicator rendered
+    assert!(!text.contains("updates from")); // no step-collapse marker
+}

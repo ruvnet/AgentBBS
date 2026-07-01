@@ -395,6 +395,10 @@ pub struct App {
     pub credential_claim_input: String,
     /// Highlighted row in the Who's Online screen.
     pub who_index: usize,
+    /// Ids of `Milestone` messages whose `Step` thread is currently expanded
+    /// inline in the Read view (ADR-0052). Absent = collapsed (the default),
+    /// so the milestone shows a `▸ N updates` marker instead of its steps.
+    pub expanded_threads: HashSet<MessageId>,
 }
 
 impl Drop for App {
@@ -566,6 +570,7 @@ impl App {
             credential_claim_editing: false,
             credential_claim_input: String::new(),
             who_index: 0,
+            expanded_threads: HashSet::new(),
         };
         app.seed_defaults();
         app.seed_arena();
@@ -1406,6 +1411,35 @@ impl App {
             self.read_index = self.messages.len().saturating_sub(1);
             self.current_board = Some(slug);
             self.screen = Screen::Read;
+        }
+    }
+
+    /// Whether `parent` has at least one direct `Step`-kind child among the
+    /// currently loaded messages (ADR-0052 threaded agent-process view).
+    pub fn has_step_children(&self, parent: &MessageId) -> bool {
+        self.messages
+            .iter()
+            .any(|m| m.body.kind == MessageKind::Step && m.body.parent.as_ref() == Some(parent))
+    }
+
+    /// Toggle the highlighted message's `Step` thread open/closed in the Read
+    /// view (ADR-0052, `t`/`T`). Only meaningful when the highlighted message
+    /// is a milestone with direct `Step` children — pressing it on an ordinary
+    /// post is a no-op, so nothing surprising happens.
+    pub fn toggle_thread(&mut self) {
+        let Some(m) = self.messages.get(self.read_index) else {
+            return;
+        };
+        let id = m.id.clone();
+        if !self.has_step_children(&id) {
+            self.status = "No agent-process steps to expand on this message.".into();
+            return;
+        }
+        if self.expanded_threads.remove(&id) {
+            self.status = "Collapsed step thread.".into();
+        } else {
+            self.expanded_threads.insert(id);
+            self.status = "Expanded step thread.".into();
         }
     }
 

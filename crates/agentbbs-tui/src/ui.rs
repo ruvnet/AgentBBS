@@ -234,58 +234,68 @@ impl App {
             frame.render_widget(p, area);
             return;
         }
+        // ADR-0052: group direct `Step`-kind children by their parent id, and
+        // note which message ids are present — so a `Step` whose parent isn't
+        // loaded here still renders inline (defensive fallback: nothing lost).
+        let present: std::collections::HashSet<&str> =
+            self.messages.iter().map(|m| m.id.0.as_str()).collect();
+        let mut step_children: std::collections::HashMap<&str, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, m) in self.messages.iter().enumerate() {
+            if m.body.kind == agentbbs_core::MessageKind::Step {
+                if let Some(parent) = &m.body.parent {
+                    if present.contains(parent.0.as_str()) {
+                        step_children.entry(parent.0.as_str()).or_default().push(i);
+                    }
+                }
+            }
+        }
+
         let mut lines: Vec<Line> = Vec::new();
         for (i, m) in self.messages.iter().enumerate() {
-            let marker = if i == self.read_index { "▶" } else { " " };
-            // Verified against the message *as originally fetched* (cached
-            // before any edit-body substitution), never re-derived from the
-            // possibly-substituted `m` here — an edit's own control message
-            // is independently signed, so the composite "original metadata +
-            // edited body" was never itself signed as one unit and would
-            // always fail a direct `.verify()` here despite being legitimate.
-            let ok = self.verified.get(&m.id.0).copied().unwrap_or(false);
-            let (verified, sig_style) = if ok {
-                ("✓sig", Style::default().fg(theme::green(self.theme)))
-            } else {
-                ("✗SIG", Style::default().fg(theme::RED))
-            };
+            // Steps are collapsed under their milestone by default — skip them
+            // in the top-level scroll unless their parent isn't present (then
+            // they fall through and render inline so nothing is hidden).
+            if m.body.kind == agentbbs_core::MessageKind::Step {
+                if let Some(parent) = &m.body.parent {
+                    if present.contains(parent.0.as_str()) {
+                        continue;
+                    }
+                }
+            }
+            // Ordinary threaded replies keep today's always-visible `↳` indent.
             let indent = if m.body.parent.is_some() {
                 "  ↳ "
             } else {
                 ""
             };
-            let edited_tag = if self.edited.contains(&m.id.0) {
-                " (edited)"
-            } else {
-                ""
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{marker} #{} ", i + 1), theme::hotkey(self.theme)),
-                Span::styled(
-                    m.body.created_at.format("%Y-%m-%d %H:%M").to_string(),
-                    theme::dim(self.theme),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    if m.body.handle.is_empty() {
+            self.push_message_lines(&mut lines, m, i, indent);
+
+            // If this message heads a `Step` thread, either show the collapsed
+            // `▸ N updates` marker (default) or, when expanded, the steps inline.
+            if let Some(children) = step_children.get(m.id.0.as_str()) {
+                if self.expanded_threads.contains(&m.id) {
+                    let step_indent = format!("{indent}  ↳ ");
+                    self.push_step_thread(
+                        &mut lines,
+                        &step_children,
+                        m.id.0.as_str(),
+                        &step_indent,
+                    );
+                } else {
+                    let handle = if m.body.handle.is_empty() {
                         m.body.author.short()
                     } else {
                         m.body.handle.clone()
-                    },
-                    theme::chrome(self.theme),
-                ),
-                Span::raw("  "),
-                Span::styled(verified, sig_style),
-                Span::styled(edited_tag, theme::dim(self.theme)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw(format!("   {indent}")),
-                Span::styled(m.body.subject.clone(), Style::default().fg(theme::YELLOW)),
-            ]));
-            for bl in m.body.body.lines() {
-                let mut spans = vec![Span::raw(format!("   {indent}"))];
-                spans.extend(markdown_spans(bl));
-                lines.push(Line::from(spans));
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "   {indent}▸ {} updates from {handle}  (T to expand)",
+                            children.len()
+                        ),
+                        Style::default().fg(theme::accent(self.theme)),
+                    )));
+                }
             }
             lines.push(Line::from(""));
         }
@@ -295,6 +305,86 @@ impl App {
                 .block(self.framed(&format!("{title}  {hint}"))),
             area,
         );
+    }
+
+    /// Render one message's header + subject + body lines into `lines` at the
+    /// given `indent` (the string after the fixed 3-space gutter). `i` is the
+    /// message's index in `self.messages`, used both for the `#N` label and the
+    /// `▶` selection marker. Factored out so a milestone and its expanded
+    /// `Step` children render through the identical path (ADR-0052).
+    fn push_message_lines(
+        &self,
+        lines: &mut Vec<Line<'static>>,
+        m: &agentbbs_core::Message,
+        i: usize,
+        indent: &str,
+    ) {
+        let marker = if i == self.read_index { "▶" } else { " " };
+        // Verified against the message *as originally fetched* (cached before
+        // any edit-body substitution), never re-derived from the possibly-
+        // substituted `m` here — an edit's own control message is independently
+        // signed, so the composite "original metadata + edited body" was never
+        // itself signed as one unit and would always fail a direct `.verify()`.
+        let ok = self.verified.get(&m.id.0).copied().unwrap_or(false);
+        let (verified, sig_style) = if ok {
+            ("✓sig", Style::default().fg(theme::green(self.theme)))
+        } else {
+            ("✗SIG", Style::default().fg(theme::RED))
+        };
+        let edited_tag = if self.edited.contains(&m.id.0) {
+            " (edited)"
+        } else {
+            ""
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker} #{} ", i + 1), theme::hotkey(self.theme)),
+            Span::styled(
+                m.body.created_at.format("%Y-%m-%d %H:%M").to_string(),
+                theme::dim(self.theme),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                if m.body.handle.is_empty() {
+                    m.body.author.short()
+                } else {
+                    m.body.handle.clone()
+                },
+                theme::chrome(self.theme),
+            ),
+            Span::raw("  "),
+            Span::styled(verified, sig_style),
+            Span::styled(edited_tag, theme::dim(self.theme)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw(format!("   {indent}")),
+            Span::styled(m.body.subject.clone(), Style::default().fg(theme::YELLOW)),
+        ]));
+        for bl in m.body.body.lines() {
+            let mut spans = vec![Span::raw(format!("   {indent}"))];
+            spans.extend(markdown_spans(bl));
+            lines.push(Line::from(spans));
+        }
+    }
+
+    /// Recursively render the expanded `Step` thread rooted at `parent_id`,
+    /// indenting one `↳` level deeper at each nesting step so a `Step` posted
+    /// under another `Step` still shows (ADR-0052 — lossless expansion).
+    fn push_step_thread(
+        &self,
+        lines: &mut Vec<Line<'static>>,
+        step_children: &std::collections::HashMap<&str, Vec<usize>>,
+        parent_id: &str,
+        indent: &str,
+    ) {
+        if let Some(children) = step_children.get(parent_id) {
+            for &ci in children {
+                let step = &self.messages[ci];
+                lines.push(Line::from(""));
+                self.push_message_lines(lines, step, ci, indent);
+                let deeper = format!("{indent}  ↳ ");
+                self.push_step_thread(lines, step_children, step.id.0.as_str(), &deeper);
+            }
+        }
     }
 
     fn render_compose(&self, frame: &mut Frame, area: Rect) {

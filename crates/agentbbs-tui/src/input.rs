@@ -396,6 +396,10 @@ impl App {
                 Err(e) => self.status = format!("Delete failed: {e}"),
             },
             KeyCode::Char('a') | KeyCode::Char('A') => self.begin_draft(),
+            // Expand/collapse the highlighted milestone's agent-process step
+            // thread inline (ADR-0052). `t` for "thread" — unbound elsewhere in
+            // the Read view. No-op on a message with no Step children.
+            KeyCode::Char('t') | KeyCode::Char('T') => self.toggle_thread(),
             // Slack-style quick channel switch — jump boards without
             // returning to the Boards list first.
             KeyCode::Char('[') => self.switch_board(-1),
