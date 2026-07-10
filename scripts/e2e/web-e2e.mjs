@@ -65,7 +65,7 @@ try {
 
   // ---- themes ----
   const themes = await page.evaluate(() => window.__ui.THEMES.map(t => t.id));
-  ok(themes.length === 6, `theme registry has ${themes.length} themes: ${themes.join(',')}`);
+  ok(themes.length === 7, `theme registry has ${themes.length} themes: ${themes.join(',')}`);
   const bgs = new Set();
   for (const t of themes) {
     await page.evaluate((id) => window.__ui.applyTheme(id), t);
