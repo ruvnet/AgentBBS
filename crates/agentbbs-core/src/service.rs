@@ -9,6 +9,7 @@ use crate::board::{Board, Message, MessageBody, MessageId, MessageKind};
 use crate::caps::{require, Caps};
 use crate::error::{Error, Result};
 use crate::identity::AgentId;
+use crate::persona::AgentPersona;
 use crate::report::{Event, EventKind, MemoryReporter, Reporter};
 use crate::store::Store;
 
@@ -140,6 +141,41 @@ impl Bbs {
         );
         Ok(())
     }
+
+    /// List custom agent personas (ADR-0058). Requires [`Caps::READ`] — same
+    /// visibility as the board list; knowing which agents are summonable
+    /// isn't sensitive, only changing them is.
+    pub fn list_agent_personas(&self, caps: Caps) -> Result<Vec<AgentPersona>> {
+        require(caps, Caps::READ, "READ")?;
+        self.store.list_agent_personas()
+    }
+
+    /// Create or update a custom agent persona. Requires [`Caps::SYSOP`] —
+    /// this changes what any human or agent can summon into every board, and
+    /// (when a live LLM is configured) has real per-call cost implications.
+    pub fn set_agent_persona(&self, caps: Caps, persona: AgentPersona, by: AgentId) -> Result<()> {
+        require(caps, Caps::SYSOP, "SYSOP")?;
+        self.store.put_agent_persona(&persona)?;
+        self.emit(
+            Event::now(EventKind::AgentConfig, persona.handle.clone())
+                .by(by)
+                .with(serde_json::json!({ "action": "set_persona" })),
+        );
+        Ok(())
+    }
+
+    /// Remove a custom agent persona. Requires [`Caps::SYSOP`]. A built-in
+    /// default (if any) simply keeps applying — see [`Store::delete_agent_persona`].
+    pub fn delete_agent_persona(&self, caps: Caps, handle: &str, by: AgentId) -> Result<()> {
+        require(caps, Caps::SYSOP, "SYSOP")?;
+        self.store.delete_agent_persona(handle)?;
+        self.emit(
+            Event::now(EventKind::AgentConfig, handle.to_string())
+                .by(by)
+                .with(serde_json::json!({ "action": "delete_persona" })),
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -208,5 +244,52 @@ mod tests {
         let agent = Identity::generate();
         let err = bbs.post_text(Caps::default(), &agent, "g", "s", "x");
         assert!(matches!(err, Err(Error::PermissionDenied(_))));
+    }
+
+    #[test]
+    fn agent_persona_requires_sysop_and_moderator_is_not_enough() {
+        let (bbs, _) = svc();
+        let sysop = Identity::generate();
+        let persona = crate::persona::AgentPersona {
+            handle: "custom-bot".into(),
+            system_prompt: "You are a custom bot.".into(),
+        };
+        let err = bbs.set_agent_persona(Role::Moderator.caps(), persona.clone(), sysop.id());
+        assert!(matches!(err, Err(Error::PermissionDenied(_))));
+        bbs.set_agent_persona(Role::Sysop.caps(), persona, sysop.id())
+            .unwrap();
+        let listed = bbs.list_agent_personas(Caps::READ).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].handle, "custom-bot");
+    }
+
+    #[test]
+    fn agent_persona_delete_is_a_noop_when_never_customized() {
+        let (bbs, _) = svc();
+        let sysop = Identity::generate();
+        bbs.delete_agent_persona(Role::Sysop.caps(), "claude", sysop.id())
+            .unwrap();
+        assert_eq!(bbs.list_agent_personas(Caps::READ).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn agent_config_events_are_reported_at_warn_severity() {
+        let (bbs, rep) = svc();
+        let sysop = Identity::generate();
+        bbs.set_agent_persona(
+            Role::Sysop.caps(),
+            crate::persona::AgentPersona {
+                handle: "custom-bot".into(),
+                system_prompt: "p".into(),
+            },
+            sysop.id(),
+        )
+        .unwrap();
+        let events = rep.snapshot();
+        let event = events
+            .iter()
+            .find(|e| e.kind == EventKind::AgentConfig)
+            .unwrap();
+        assert_eq!(event.kind.severity(), crate::report::Severity::Warn);
     }
 }

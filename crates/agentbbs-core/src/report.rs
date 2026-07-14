@@ -44,13 +44,15 @@ pub enum EventKind {
     McpCall,
     /// A security-relevant event (rate limit, bad signature, denied cap).
     Security,
+    /// A custom agent persona was created, updated, or removed (ADR-0058).
+    AgentConfig,
 }
 
 impl EventKind {
     /// Severity tier used for dashboards and alerting.
     pub fn severity(self) -> Severity {
         match self {
-            EventKind::Security | EventKind::Moderation => Severity::Warn,
+            EventKind::Security | EventKind::Moderation | EventKind::AgentConfig => Severity::Warn,
             _ => Severity::Info,
         }
     }
