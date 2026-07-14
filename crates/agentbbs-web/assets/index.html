@@ -9,6 +9,9 @@
 <!-- @sync:default-theme -->
 <meta name="agentbbs-default-theme" content="" />
 <!-- @sync:default-theme-end -->
+<!-- @sync:attest-url -->
+<meta name="agentbbs-attest-url" content="" />
+<!-- @sync:attest-url-end -->
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c5cff'/%3E%3Ctext x='16' y='23' font-size='19' font-family='monospace' font-weight='700' fill='white' text-anchor='middle'%3EA%3C/text%3E%3C/svg%3E" />
@@ -2381,6 +2384,26 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Escape') closePalette();
 });
 window.__palette = { open: openPalette, close: closePalette }; // shared (outside @sync:boot)
+
+// ADR-0056: if this deployment set an attest-url (e.g. a Cognitum comms
+// tenant) and the visitor arrived via a `?cognitum_attest=<nonce>` link, hand
+// the nonce + this browser's own public key to that issuer. It signs and
+// posts back a verifiable credential (ADR-0042) attesting whose real account
+// this anonymous key belongs to — this browser's signing key never leaves
+// it; the issuer only ever sees the public key, never a private one.
+async function attestCognitumIdentity(myId) {
+  const nonce = new URLSearchParams(location.search).get('cognitum_attest');
+  const attestUrl = (document.querySelector('meta[name="agentbbs-attest-url"]') || {}).content || '';
+  if (!nonce || !attestUrl) return;
+  try {
+    const r = await fetch(attestUrl, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nonce, publicKey: myId }),
+    });
+    if (r.ok) notify('Verified — this key is now linked to your Cognitum account.', 'info');
+    else notify('Cognitum verification failed — the link may have expired.', 'error');
+  } catch (_) { notify('Cognitum verification failed — network error.', 'error'); }
+}
 
 /* @sync:boot-start (agentbbs-web: /api preload + node poll) */
 async function boot() {
