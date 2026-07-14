@@ -505,13 +505,45 @@ const KNOWN_THEMES: &[&str] = &[
     "cognitum",
 ];
 
+/// Parses the origin (`scheme://host[:port]`) out of a well-formed `https://`
+/// URL, with no other characters that could break out of a CSP directive or
+/// an HTML attribute. Returns `None` for anything else — a malformed
+/// `AGENTBBS_ATTEST_URL` disables the feature rather than injecting garbage.
+fn https_origin(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty()
+        || !authority
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+    {
+        return None;
+    }
+    Some(format!("https://{authority}"))
+}
+
 /// Deployments (e.g. a white-labeled multi-tenant host) can set this to make
 /// the UI open in that theme by default, without touching every link that
 /// points at the instance. `initTheme()` in the client still lets a visitor's
 /// own saved preference or a `?theme=` override win over this default.
+///
+/// A deployment can also set `AGENTBBS_ATTEST_URL` (ADR-0056) so the client
+/// can POST a `?cognitum_attest=` handshake to an external identity issuer —
+/// CSP's `connect-src` is widened to that one origin only, everything else
+/// stays locked to `'self'`.
 async fn index() -> impl IntoResponse {
     let html = include_str!("../assets/index.html");
-    let body = match std::env::var("AGENTBBS_DEFAULT_THEME")
+    let attest_url = std::env::var("AGENTBBS_ATTEST_URL").ok();
+    let attest_origin = attest_url.as_deref().and_then(https_origin);
+    // connect-src is deliberately the LAST directive in CSP (no trailing
+    // semicolon) so appending "<space><origin>" lands as one more source
+    // inside that directive, not as a dangling token after the policy.
+    let csp = match &attest_origin {
+        Some(origin) => format!("{CSP} {origin}"),
+        None => CSP.to_string(),
+    };
+    let mut body = match std::env::var("AGENTBBS_DEFAULT_THEME")
         .ok()
         .filter(|t| KNOWN_THEMES.contains(&t.as_str()))
     {
@@ -522,10 +554,17 @@ async fn index() -> impl IntoResponse {
         ),
         None => html.to_string(),
     };
+    if let Some(url) = attest_url.filter(|u| https_origin(u).is_some()) {
+        body = body.replacen(
+            r#"<meta name="agentbbs-attest-url" content="" />"#,
+            &format!(r#"<meta name="agentbbs-attest-url" content="{url}" />"#),
+            1,
+        );
+    }
     (
         [
-            ("content-security-policy", CSP),
-            ("x-content-type-options", "nosniff"),
+            ("content-security-policy".to_string(), csp),
+            ("x-content-type-options".to_string(), "nosniff".to_string()),
         ],
         Html(body),
     )
@@ -2937,6 +2976,60 @@ mod tests {
         std::env::remove_var("AGENTBBS_DEFAULT_THEME");
         let body = served_body().await;
         assert!(body.contains(r#"<meta name="agentbbs-default-theme" content="" />"#));
+    }
+
+    // ADR-0056: a deployment's attest-url both fills the meta tag AND widens
+    // CSP's connect-src to that one origin — the client can't POST the
+    // handshake at all if only the meta tag were set, since connect-src
+    // defaults to 'self'.
+    #[tokio::test]
+    async fn index_injects_attest_url_and_widens_csp_only_when_valid() {
+        async fn served() -> (String, String) {
+            let app = router(AppState::in_memory());
+            let resp = app
+                .oneshot(Request::get("/").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let csp = resp
+                .headers()
+                .get("content-security-policy")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let body = String::from_utf8(
+                axum::body::to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            (body, csp)
+        }
+
+        std::env::set_var("AGENTBBS_ATTEST_URL", "https://comms.example.com/v1/attest");
+        let (body, csp) = served().await;
+        assert!(body.contains(
+            r#"<meta name="agentbbs-attest-url" content="https://comms.example.com/v1/attest" />"#
+        ));
+        assert!(csp.contains("connect-src 'self' https://comms.example.com"));
+
+        // Not a well-formed https:// origin — must not appear in the tag or
+        // (more importantly) widen CSP to an attacker-controlled value.
+        std::env::set_var(
+            "AGENTBBS_ATTEST_URL",
+            "javascript:alert(1)//\" onmouseover=x",
+        );
+        let (body, csp) = served().await;
+        assert!(body.contains(r#"<meta name="agentbbs-attest-url" content="" />"#));
+        assert!(!body.contains("javascript:alert"));
+        assert!(csp.ends_with("connect-src 'self'"));
+
+        std::env::remove_var("AGENTBBS_ATTEST_URL");
+        let (body, csp) = served().await;
+        assert!(body.contains(r#"<meta name="agentbbs-attest-url" content="" />"#));
+        assert!(csp.ends_with("connect-src 'self'"));
     }
 
     // Issue #4 / ADR-0034: provider-agnostic LLM gateway config + payload.
