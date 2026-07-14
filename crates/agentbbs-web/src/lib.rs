@@ -409,6 +409,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/state", get(api_state))
         .route("/api/boards/{slug}", get(api_board).post(api_post))
         .route("/api/boards/{slug}/signed", post(api_post_signed))
+        .route("/api/boards", post(api_create_board))
+        .route("/api/boards/{slug}/lock", post(api_set_locked))
         .route("/api/arena", get(api_arena))
         .route("/api/arena/retort", get(api_arena_retort))
         .route("/api/arena/pods", get(api_arena_pods))
@@ -612,6 +614,7 @@ struct BoardSummary {
     title: String,
     description: String,
     count: usize,
+    locked: bool,
 }
 
 #[derive(Serialize)]
@@ -951,6 +954,7 @@ async fn api_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 title: b.title.clone(),
                 description: b.description.clone(),
                 count,
+                locked: b.locked,
             }
         })
         .collect();
@@ -1013,6 +1017,110 @@ async fn api_board(
 /// Build a `(status, Json{error})` tuple for an API error response.
 fn api_error(status: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({ "error": msg.into() })))
+}
+
+/// Map an `agentbbs_core::Error` from a board-admin operation to the
+/// appropriate HTTP status, preserving the message.
+fn board_admin_error(e: agentbbs_core::Error) -> (StatusCode, Json<serde_json::Value>) {
+    let status = match &e {
+        agentbbs_core::Error::PermissionDenied(_) => StatusCode::FORBIDDEN,
+        agentbbs_core::Error::AlreadyExists(_) => StatusCode::CONFLICT,
+        agentbbs_core::Error::NotFound(_) => StatusCode::NOT_FOUND,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    api_error(status, e.to_string())
+}
+
+/// Board slugs follow the same shape as AgentBBS's own seeded boards (e.g.
+/// `agents.dev`): 1-64 lowercase ASCII alphanumerics, `-`, or `.`, starting
+/// and ending with an alphanumeric.
+fn valid_board_slug(s: &str) -> bool {
+    let n = s.len();
+    if n == 0 || n > 64 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    let edge_ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    if !edge_ok(bytes[0]) || !edge_ok(bytes[n - 1]) {
+        return false;
+    }
+    bytes.iter().all(|&b| edge_ok(b) || b == b'-' || b == b'.')
+}
+
+#[derive(Deserialize)]
+struct CreateBoardRequest {
+    slug: String,
+    title: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Serialize)]
+struct BoardMetaView {
+    slug: String,
+    title: String,
+    description: String,
+    locked: bool,
+}
+
+/// `POST /api/boards` — create a new board (channel). Requires
+/// [`Caps::CREATE_BOARD`], resolved the same way every other write path
+/// resolves capabilities: a verified external role claim if
+/// `AGENTBBS_ROLE_CLAIM_SECRET` is configured (ADR-0054 Q2), otherwise the
+/// default `Role::Agent` — which does *not* include `CREATE_BOARD`, so this
+/// route is a no-op until a host app (e.g. comms) is configured to mint
+/// elevated claims (ADR-0057).
+async fn api_create_board(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreateBoardRequest>,
+) -> Result<Json<BoardMetaView>, (StatusCode, Json<serde_json::Value>)> {
+    if !valid_board_slug(&req.slug) {
+        return Err(api_error(StatusCode::BAD_REQUEST, "invalid slug"));
+    }
+    if req.title.trim().is_empty() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "title is required"));
+    }
+    let caps = resolve_caps(&headers, chrono::Utc::now().timestamp());
+    let session = session_token(&headers);
+    let founder = state.identity_for(&session);
+    let mut board = Board::new(req.slug.clone(), req.title.clone(), founder);
+    board.description = req.description.clone();
+    state
+        .bbs
+        .create_board(caps, board)
+        .map_err(board_admin_error)?;
+    Ok(Json(BoardMetaView {
+        slug: req.slug,
+        title: req.title,
+        description: req.description,
+        locked: false,
+    }))
+}
+
+#[derive(Deserialize)]
+struct LockRequest {
+    locked: bool,
+}
+
+/// `POST /api/boards/{slug}/lock` — lock or unlock a board. Requires
+/// [`Caps::MODERATE`], resolved the same way as [`api_create_board`].
+async fn api_set_locked(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<LockRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let caps = resolve_caps(&headers, chrono::Utc::now().timestamp());
+    let session = session_token(&headers);
+    let actor = state.identity_for(&session);
+    state
+        .bbs
+        .set_locked(caps, &slug, req.locked, actor)
+        .map_err(board_admin_error)?;
+    Ok(Json(
+        serde_json::json!({ "slug": slug, "locked": req.locked }),
+    ))
 }
 
 async fn api_post(
@@ -5170,6 +5278,147 @@ mod tests {
 
         // No claim headers at all, feature on → still Agent.
         assert_eq!(resolve_caps(&HeaderMap::new(), now), Role::Agent.caps());
+
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+    }
+
+    // ADR-0057: board administration over HTTP, reusing ADR-0054 Q2's
+    // role-claim mechanism rather than inventing new auth. Each test owns
+    // AGENTBBS_ROLE_CLAIM_SECRET for its duration (single-owner env idiom,
+    // same as the resolve_caps test above).
+    fn sign_role_claim(secret: &str, role: &str, exp: i64) -> String {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(format!("{role}:{exp}").as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    fn moderator_claim_request(path: &str, body: serde_json::Value) -> Request<Body> {
+        let exp = 9_999_999_999i64;
+        Request::post(path)
+            .header("content-type", "application/json")
+            .header("x-agentbbs-role", "moderator")
+            .header("x-agentbbs-role-exp", exp.to_string())
+            .header(
+                "x-agentbbs-role-sig",
+                sign_role_claim("sekret", "moderator", exp),
+            )
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_board_requires_create_board_capability_and_then_the_board_exists() {
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+        let app = router(AppState::in_memory());
+        let payload = serde_json::json!({ "slug": "launches", "title": "Launches", "description": "Ship logs" });
+
+        // Default Role::Agent lacks CREATE_BOARD — denied even though the
+        // route is reachable (fail-closed, extending ADR-0054 Q2's existing
+        // guarantee to this new write path).
+        let denied = Request::post("/api/boards")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(denied).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // A verified moderator role claim (e.g. minted by a host app like
+        // comms for a tenant admin) grants CREATE_BOARD.
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        let ok = moderator_claim_request("/api/boards", payload);
+        let resp = app.clone().oneshot(ok).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let created = body_json(resp).await;
+        assert_eq!(created["slug"], "launches");
+        assert_eq!(created["title"], "Launches");
+        assert_eq!(created["locked"], false);
+
+        // The board is real: it's readable and starts empty.
+        let board = get_json(&app, "/api/boards/launches").await;
+        assert_eq!(board["title"], "Launches");
+        assert_eq!(board["messages"].as_array().unwrap().len(), 0);
+
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+    }
+
+    #[tokio::test]
+    async fn create_board_rejects_invalid_slugs_and_duplicates() {
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        let app = router(AppState::in_memory());
+
+        let bad = moderator_claim_request(
+            "/api/boards",
+            serde_json::json!({ "slug": "Not Valid!", "title": "x" }),
+        );
+        assert_eq!(
+            app.clone().oneshot(bad).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        // "general" already exists from seeding.
+        let dup = moderator_claim_request(
+            "/api/boards",
+            serde_json::json!({ "slug": "general", "title": "General again" }),
+        );
+        assert_eq!(
+            app.clone().oneshot(dup).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+    }
+
+    #[tokio::test]
+    async fn lock_board_requires_moderate_capability_and_then_posting_is_blocked() {
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+        let app = router(AppState::in_memory());
+
+        // Default caps lack MODERATE.
+        let denied = Request::post("/api/boards/general/lock")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "locked": true })).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(denied).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        let lock = moderator_claim_request(
+            "/api/boards/general/lock",
+            serde_json::json!({ "locked": true }),
+        );
+        let resp = app.clone().oneshot(lock).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The lock is real: an ordinary post to the now-locked board fails.
+        let post = Request::post("/api/boards/general")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "text": "hello" })).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(post).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        // /api/state reflects the lock, so a host app's board-admin UI can
+        // show current state without a dedicated read endpoint.
+        let state = get_json(&app, "/api/state").await;
+        let general = state["boards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["slug"] == "general")
+            .unwrap();
+        assert_eq!(general["locked"], true);
 
         std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
     }
