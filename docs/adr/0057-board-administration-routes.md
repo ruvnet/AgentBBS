@@ -31,6 +31,10 @@ ADR-0054 Q2) — no new authorization primitive:
   creation and unsigned posting share one identity model.
 - `POST /api/boards/{slug}/lock` — `{locked: bool}`. Requires
   `Caps::MODERATE`.
+- `GET /api/state`'s `BoardSummary` now also carries `locked: bool` (it
+  already carried `slug`/`title`/`description`/`count`), so a host app's
+  board-admin UI can show current lock state without a dedicated read
+  route.
 
 Both routes resolve caps via `resolve_caps(&headers, now)`: with
 `AGENTBBS_ROLE_CLAIM_SECRET` unset, every caller gets `Role::Agent.caps()`,

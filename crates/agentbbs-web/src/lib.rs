@@ -614,6 +614,7 @@ struct BoardSummary {
     title: String,
     description: String,
     count: usize,
+    locked: bool,
 }
 
 #[derive(Serialize)]
@@ -953,6 +954,7 @@ async fn api_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 title: b.title.clone(),
                 description: b.description.clone(),
                 count,
+                locked: b.locked,
             }
         })
         .collect();
@@ -5406,6 +5408,17 @@ mod tests {
             app.clone().oneshot(post).await.unwrap().status(),
             StatusCode::BAD_REQUEST
         );
+
+        // /api/state reflects the lock, so a host app's board-admin UI can
+        // show current state without a dedicated read endpoint.
+        let state = get_json(&app, "/api/state").await;
+        let general = state["boards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["slug"] == "general")
+            .unwrap();
+        assert_eq!(general["locked"], true);
 
         std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
     }
