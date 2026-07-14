@@ -218,7 +218,8 @@ impl AppState {
     /// otherwise it falls back to a scripted action-stream. Either way it is the
     /// same signed [`agentbbs_core::Message`] path a real MCP-backed agent uses.
     async fn maybe_loop_in(&self, board: &str, text: &str, poster_handle: &str) {
-        let Some(agent) = detect_mention(text) else {
+        let known = self.known_agent_handles();
+        let Some(agent) = detect_mention(text, &known) else {
             return;
         };
         if agent.eq_ignore_ascii_case(poster_handle) {
@@ -228,7 +229,8 @@ impl AppState {
         // Daily budget guard: only take the live-LLM path while under the cap;
         // otherwise fall back to the scripted reply (no cog_ spend).
         let live_allowed = self.llm_quota_ok();
-        let (subject, body) = compose_reply(&agent, text, live_allowed).await;
+        let prompt = self.resolve_persona_prompt(&agent);
+        let (subject, body) = compose_reply(&agent, text, live_allowed, &prompt).await;
         // Shared agent tool layer (ADR-0050) — same post path MCP/other agent
         // surfaces use; errors (sign or post) are fire-and-forget here, same as
         // before migration.
@@ -241,6 +243,32 @@ impl AppState {
             &body,
             &agent,
         );
+    }
+
+    /// Every summonable agent handle: the compiled-in defaults plus any
+    /// custom personas configured via `POST /api/agents` (ADR-0058). A custom
+    /// entry can add a brand-new handle, not just override a default's prompt.
+    fn known_agent_handles(&self) -> std::collections::HashSet<String> {
+        let mut known: std::collections::HashSet<String> =
+            KNOWN_AGENTS.iter().map(|s| s.to_string()).collect();
+        if let Ok(personas) = self.bbs.list_agent_personas(Caps::READ) {
+            known.extend(personas.into_iter().map(|p| p.handle));
+        }
+        known
+    }
+
+    /// The system prompt for `agent`: a custom persona if one is configured
+    /// (ADR-0058), else the compiled-in default (which itself falls back to a
+    /// generic prompt for an unknown handle — reachable now that a custom
+    /// persona can add a handle outside the compiled `KNOWN_AGENTS` list).
+    fn resolve_persona_prompt(&self, agent: &str) -> String {
+        self.bbs
+            .list_agent_personas(Caps::READ)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| p.handle == agent)
+            .map(|p| p.system_prompt)
+            .unwrap_or_else(|| persona_prompt(agent).to_string())
     }
 
     /// In-memory convenience constructor.
@@ -411,6 +439,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/boards/{slug}/signed", post(api_post_signed))
         .route("/api/boards", post(api_create_board))
         .route("/api/boards/{slug}/lock", post(api_set_locked))
+        .route("/api/agents", get(api_list_agents).post(api_set_agent))
+        .route("/api/agents/{handle}", delete(api_delete_agent))
         .route("/api/arena", get(api_arena))
         .route("/api/arena/retort", get(api_arena_retort))
         .route("/api/arena/pods", get(api_arena_pods))
@@ -770,17 +800,21 @@ fn looks_like_agent(handle: &str) -> bool {
         || h.contains("mcp")
 }
 
-/// The agent handles a human can summon by `@mention`.
+/// The built-in agent handles a human can summon by `@mention` — always
+/// summonable, with no configuration required. `AppState::known_agent_handles`
+/// (ADR-0058) unions this with any custom personas configured via
+/// `POST /api/agents`.
 const KNOWN_AGENTS: &[&str] = &["claude-agent", "claude", "codex", "graybeard", "gpt"];
 
-/// Extract the first known agent handle `@mention`ed in `text`.
-fn detect_mention(text: &str) -> Option<String> {
+/// Extract the first `@mention`ed handle in `text` that's in `known` (the
+/// built-in defaults plus any custom personas, ADR-0058).
+fn detect_mention(text: &str, known: &std::collections::HashSet<String>) -> Option<String> {
     for word in
         text.split(|c: char| !(c.is_alphanumeric() || c == '@' || c == '-' || c == '.' || c == '_'))
     {
         if let Some(name) = word.strip_prefix('@') {
             let lname = name.to_ascii_lowercase();
-            if KNOWN_AGENTS.contains(&lname.as_str()) {
+            if known.contains(&lname) {
                 return Some(lname);
             }
         }
@@ -818,13 +852,15 @@ fn chat_completions_url(base_url: &str) -> String {
 }
 
 /// The chat-completions request body (identical across OpenRouter / meta-llm).
-fn build_payload(model: &str, agent: &str, text: &str) -> serde_json::Value {
+/// `prompt` is the already-resolved persona prompt (custom, if configured via
+/// `POST /api/agents` — ADR-0058 — else the compiled-in default).
+fn build_payload(model: &str, text: &str, prompt: &str) -> serde_json::Value {
     serde_json::json!({
         "model": model,
         "max_tokens": 300,
         "temperature": 0.7,
         "messages": [
-            { "role": "system", "content": persona_prompt(agent) },
+            { "role": "system", "content": prompt },
             { "role": "user", "content": text },
         ],
     })
@@ -860,10 +896,15 @@ fn resolve_llm_config() -> Option<LlmConfig> {
 /// routes to the OpenRouter-hosted model; otherwise it returns a scripted
 /// action-stream. The API key is read from the process environment and never
 /// leaves the server.
-async fn compose_reply(agent: &str, text: &str, live_allowed: bool) -> (String, String) {
+async fn compose_reply(
+    agent: &str,
+    text: &str,
+    live_allowed: bool,
+    prompt: &str,
+) -> (String, String) {
     if live_allowed {
         if let Some(cfg) = resolve_llm_config() {
-            if let Some(body) = llm_reply(&cfg, agent, text).await {
+            if let Some(body) = llm_reply(&cfg, text, prompt).await {
                 return (format!("looped in {agent}"), body);
             }
             tracing::warn!("live LLM reply failed; falling back to scripted reply");
@@ -887,8 +928,8 @@ Be genuinely helpful and concise. Under 70 words.",
 /// Call the configured OpenAI-compatible chat-completions endpoint (OpenRouter
 /// or meta-llm). Returns `None` on any error so the caller falls back to the
 /// scripted reply.
-async fn llm_reply(cfg: &LlmConfig, agent: &str, text: &str) -> Option<String> {
-    let payload = build_payload(&cfg.model, agent, text);
+async fn llm_reply(cfg: &LlmConfig, text: &str, prompt: &str) -> Option<String> {
+    let payload = build_payload(&cfg.model, text, prompt);
     let client = reqwest::Client::new();
     let resp = client
         .post(chat_completions_url(&cfg.base_url))
@@ -1121,6 +1162,125 @@ async fn api_set_locked(
     Ok(Json(
         serde_json::json!({ "slug": slug, "locked": req.locked }),
     ))
+}
+
+#[derive(Serialize)]
+struct AgentPersonaView {
+    handle: String,
+    system_prompt: String,
+    /// `false` for a compiled-in default that has never been overridden.
+    custom: bool,
+}
+
+/// `GET /api/agents` — the full effective agent roster (ADR-0058): every
+/// built-in default plus any custom persona, each showing the prompt that
+/// actually applies (a custom entry overrides its built-in of the same
+/// handle). Read-only, no capability beyond the default `Caps::READ` every
+/// caller already has — same visibility as `GET /api/state`'s board list.
+async fn api_list_agents(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let customs = state
+        .bbs
+        .list_agent_personas(Caps::READ)
+        .unwrap_or_default();
+    let mut by_handle: std::collections::BTreeMap<String, AgentPersonaView> = KNOWN_AGENTS
+        .iter()
+        .map(|h| {
+            (
+                h.to_string(),
+                AgentPersonaView {
+                    handle: h.to_string(),
+                    system_prompt: persona_prompt(h).to_string(),
+                    custom: false,
+                },
+            )
+        })
+        .collect();
+    for p in customs {
+        by_handle.insert(
+            p.handle.clone(),
+            AgentPersonaView {
+                handle: p.handle,
+                system_prompt: p.system_prompt,
+                custom: true,
+            },
+        );
+    }
+    Json(serde_json::json!({ "agents": by_handle.into_values().collect::<Vec<_>>() }))
+}
+
+#[derive(Deserialize)]
+struct SetAgentPersonaRequest {
+    handle: String,
+    system_prompt: String,
+}
+
+/// Handles are the same shape `@mention`s already accept: lowercase
+/// alphanumeric plus `-`/`_`, 1-64 chars.
+fn valid_agent_handle(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// `POST /api/agents` — create or update a custom agent persona. Requires
+/// [`Caps::SYSOP`] (ADR-0058): this changes what any human or agent can
+/// summon into every board, and — when a live LLM is configured — has real
+/// per-call cost implications, so it's gated more strictly than board
+/// administration (`Caps::CREATE_BOARD`/`Caps::MODERATE`).
+async fn api_set_agent(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<SetAgentPersonaRequest>,
+) -> Result<Json<AgentPersonaView>, (StatusCode, Json<serde_json::Value>)> {
+    let handle = req
+        .handle
+        .trim()
+        .trim_start_matches('@')
+        .to_ascii_lowercase();
+    if !valid_agent_handle(&handle) {
+        return Err(api_error(StatusCode::BAD_REQUEST, "invalid handle"));
+    }
+    if req.system_prompt.trim().is_empty() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "system_prompt is required",
+        ));
+    }
+    let caps = resolve_caps(&headers, chrono::Utc::now().timestamp());
+    let session = session_token(&headers);
+    let actor = state.identity_for(&session);
+    let persona = agentbbs_core::AgentPersona {
+        handle: handle.clone(),
+        system_prompt: req.system_prompt.clone(),
+    };
+    state
+        .bbs
+        .set_agent_persona(caps, persona, actor)
+        .map_err(board_admin_error)?;
+    Ok(Json(AgentPersonaView {
+        handle,
+        system_prompt: req.system_prompt,
+        custom: true,
+    }))
+}
+
+/// `DELETE /api/agents/{handle}` — remove a custom agent persona. Requires
+/// [`Caps::SYSOP`]. A built-in default (if any) simply keeps applying — see
+/// [`agentbbs_core::store::Store::delete_agent_persona`].
+async fn api_delete_agent(
+    State(state): State<Arc<AppState>>,
+    Path(handle): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let caps = resolve_caps(&headers, chrono::Utc::now().timestamp());
+    let session = session_token(&headers);
+    let actor = state.identity_for(&session);
+    state
+        .bbs
+        .delete_agent_persona(caps, &handle, actor)
+        .map_err(board_admin_error)?;
+    Ok(Json(serde_json::json!({ "handle": handle })))
 }
 
 async fn api_post(
@@ -2675,7 +2835,8 @@ async fn api_drafts_create(
 ) -> Result<Json<agentbbs_core::Draft>, (StatusCode, Json<serde_json::Value>)> {
     let agent = req.agent.trim().trim_start_matches('@').to_lowercase();
     let live_allowed = state.llm_quota_ok();
-    let (subject, body) = compose_reply(&agent, &req.context, live_allowed).await;
+    let prompt = state.resolve_persona_prompt(&agent);
+    let (subject, body) = compose_reply(&agent, &req.context, live_allowed, &prompt).await;
     let draft = agentbbs_core::tools::draft_reply(
         &req.target,
         req.in_reply_to.clone(),
@@ -2791,7 +2952,8 @@ async fn api_agent_reply(
 ) -> Json<serde_json::Value> {
     let agent = req.agent.trim().trim_start_matches('@').to_lowercase();
     let live_allowed = state.llm_quota_ok();
-    let (_subject, body) = compose_reply(&agent, &req.text, live_allowed).await;
+    let prompt = state.resolve_persona_prompt(&agent);
+    let (_subject, body) = compose_reply(&agent, &req.text, live_allowed, &prompt).await;
     Json(serde_json::json!({ "handle": agent, "body": body }))
 }
 
@@ -3167,7 +3329,11 @@ mod tests {
 
     #[test]
     fn llm_payload_is_openai_chat_shape() {
-        let p = build_payload("cognitum-auto", "graybeard", "is this safe?");
+        let p = build_payload(
+            "cognitum-auto",
+            "is this safe?",
+            persona_prompt("graybeard"),
+        );
         assert_eq!(p["model"], "cognitum-auto");
         assert_eq!(p["max_tokens"], 300);
         assert_eq!(p["messages"][0]["role"], "system");
@@ -3177,6 +3343,88 @@ mod tests {
             .contains("Graybeard"));
         assert_eq!(p["messages"][1]["role"], "user");
         assert_eq!(p["messages"][1]["content"], "is this safe?");
+    }
+
+    #[test]
+    fn resolve_persona_prompt_prefers_a_custom_persona_over_the_built_in_default() {
+        let state = AppState::in_memory();
+        // No custom persona yet: falls back to the compiled default.
+        assert!(state
+            .resolve_persona_prompt("graybeard")
+            .contains("Graybeard"));
+        // A custom persona for a brand-new handle (not in KNOWN_AGENTS) still
+        // resolves — the generic fallback in persona_prompt() only matters
+        // once such a handle becomes summonable via known_agent_handles().
+        state
+            .bbs
+            .set_agent_persona(
+                Role::Sysop.caps(),
+                agentbbs_core::AgentPersona {
+                    handle: "custom-bot".into(),
+                    system_prompt: "You are CustomBot.".into(),
+                },
+                Identity::generate().id(),
+            )
+            .unwrap();
+        assert_eq!(
+            state.resolve_persona_prompt("custom-bot"),
+            "You are CustomBot."
+        );
+        // Overriding a built-in handle replaces its prompt too.
+        state
+            .bbs
+            .set_agent_persona(
+                Role::Sysop.caps(),
+                agentbbs_core::AgentPersona {
+                    handle: "graybeard".into(),
+                    system_prompt: "You are a friendly Graybeard now.".into(),
+                },
+                Identity::generate().id(),
+            )
+            .unwrap();
+        assert_eq!(
+            state.resolve_persona_prompt("graybeard"),
+            "You are a friendly Graybeard now."
+        );
+    }
+
+    #[test]
+    fn known_agent_handles_includes_built_ins_and_custom_personas() {
+        let state = AppState::in_memory();
+        let known = state.known_agent_handles();
+        for h in KNOWN_AGENTS {
+            assert!(known.contains(*h));
+        }
+        assert!(!known.contains("custom-bot"));
+        state
+            .bbs
+            .set_agent_persona(
+                Role::Sysop.caps(),
+                agentbbs_core::AgentPersona {
+                    handle: "custom-bot".into(),
+                    system_prompt: "p".into(),
+                },
+                Identity::generate().id(),
+            )
+            .unwrap();
+        assert!(state.known_agent_handles().contains("custom-bot"));
+    }
+
+    #[test]
+    fn detect_mention_only_matches_known_handles() {
+        let known: std::collections::HashSet<String> = ["claude", "custom-bot"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            detect_mention("hey @claude can you help", &known),
+            Some("claude".to_string())
+        );
+        assert_eq!(
+            detect_mention("hey @custom-bot can you help", &known),
+            Some("custom-bot".to_string())
+        );
+        assert_eq!(detect_mention("hey @nobody-known", &known), None);
     }
 
     #[tokio::test]
@@ -5308,6 +5556,35 @@ mod tests {
             .unwrap()
     }
 
+    // ADR-0058: agent persona configuration, gated on Caps::SYSOP (stricter
+    // than board admin's moderator claim above).
+    fn sysop_claim_request(path: &str, body: serde_json::Value) -> Request<Body> {
+        let exp = 9_999_999_999i64;
+        Request::post(path)
+            .header("content-type", "application/json")
+            .header("x-agentbbs-role", "sysop")
+            .header("x-agentbbs-role-exp", exp.to_string())
+            .header(
+                "x-agentbbs-role-sig",
+                sign_role_claim("sekret", "sysop", exp),
+            )
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    }
+
+    fn sysop_claim_delete(path: &str) -> Request<Body> {
+        let exp = 9_999_999_999i64;
+        Request::delete(path)
+            .header("x-agentbbs-role", "sysop")
+            .header("x-agentbbs-role-exp", exp.to_string())
+            .header(
+                "x-agentbbs-role-sig",
+                sign_role_claim("sekret", "sysop", exp),
+            )
+            .body(Body::empty())
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn create_board_requires_create_board_capability_and_then_the_board_exists() {
         std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
@@ -5419,6 +5696,143 @@ mod tests {
             .find(|b| b["slug"] == "general")
             .unwrap();
         assert_eq!(general["locked"], true);
+
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+    }
+
+    // ADR-0058: configurable agent personas over HTTP.
+    #[tokio::test]
+    async fn list_agents_shows_built_ins_readable_by_anyone() {
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+        let app = router(AppState::in_memory());
+        let agents = get_json(&app, "/api/agents").await;
+        let list = agents["agents"].as_array().unwrap();
+        assert!(list
+            .iter()
+            .any(|a| a["handle"] == "graybeard" && a["custom"] == false));
+        assert!(list
+            .iter()
+            .any(|a| a["handle"] == "claude" && a["custom"] == false));
+    }
+
+    #[tokio::test]
+    async fn set_agent_persona_requires_sysop_capability_moderator_is_not_enough() {
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+        let app = router(AppState::in_memory());
+        let payload =
+            serde_json::json!({ "handle": "custom-bot", "system_prompt": "You are CustomBot." });
+
+        // Default Role::Agent lacks SYSOP.
+        let denied = Request::post("/api/agents")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(denied).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        // A moderator claim (sufficient for board admin) is NOT sufficient here.
+        let mod_denied = moderator_claim_request("/api/agents", payload.clone());
+        assert_eq!(
+            app.clone().oneshot(mod_denied).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // A sysop claim is accepted, and the persona is now real: it shows up
+        // in the list, and known_agent_handles picks up the new handle.
+        let ok = sysop_claim_request("/api/agents", payload);
+        let resp = app.clone().oneshot(ok).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let created = body_json(resp).await;
+        assert_eq!(created["handle"], "custom-bot");
+        assert_eq!(created["custom"], true);
+
+        let agents = get_json(&app, "/api/agents").await;
+        let list = agents["agents"].as_array().unwrap();
+        let entry = list.iter().find(|a| a["handle"] == "custom-bot").unwrap();
+        assert_eq!(entry["system_prompt"], "You are CustomBot.");
+        assert_eq!(entry["custom"], true);
+
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+    }
+
+    #[tokio::test]
+    async fn set_agent_persona_rejects_invalid_handles_and_empty_prompts() {
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        let app = router(AppState::in_memory());
+
+        let bad_handle = sysop_claim_request(
+            "/api/agents",
+            serde_json::json!({ "handle": "Not Valid!", "system_prompt": "x" }),
+        );
+        assert_eq!(
+            app.clone().oneshot(bad_handle).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        let empty_prompt = sysop_claim_request(
+            "/api/agents",
+            serde_json::json!({ "handle": "custom-bot", "system_prompt": "   " }),
+        );
+        assert_eq!(
+            app.clone().oneshot(empty_prompt).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+    }
+
+    #[tokio::test]
+    async fn delete_agent_persona_requires_sysop_and_a_built_in_reverts_to_default() {
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        let app = router(AppState::in_memory());
+
+        // Override graybeard's prompt.
+        let overridden = sysop_claim_request(
+            "/api/agents",
+            serde_json::json!({ "handle": "graybeard", "system_prompt": "A friendlier Graybeard." }),
+        );
+        app.clone().oneshot(overridden).await.unwrap();
+        let agents = get_json(&app, "/api/agents").await;
+        let entry = agents["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["handle"] == "graybeard")
+            .unwrap();
+        assert_eq!(entry["system_prompt"], "A friendlier Graybeard.");
+        assert_eq!(entry["custom"], true);
+
+        // A non-sysop delete is forbidden.
+        let denied = Request::delete("/api/agents/graybeard")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(denied).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // A sysop delete removes the override — graybeard reverts to its
+        // compiled-in default, it doesn't disappear from the roster.
+        let ok = sysop_claim_delete("/api/agents/graybeard");
+        assert_eq!(
+            app.clone().oneshot(ok).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let agents_after = get_json(&app, "/api/agents").await;
+        let entry_after = agents_after["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["handle"] == "graybeard")
+            .unwrap();
+        assert_eq!(entry_after["custom"], false);
+        assert!(entry_after["system_prompt"]
+            .as_str()
+            .unwrap()
+            .contains("Graybeard"));
 
         std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
     }

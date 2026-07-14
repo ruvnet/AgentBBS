@@ -11,6 +11,7 @@ use std::sync::RwLock;
 
 use crate::board::{Board, Message, MessageId};
 use crate::error::{Error, Result};
+use crate::persona::AgentPersona;
 
 /// Storage abstraction for the BBS domain.
 pub trait Store: Send + Sync {
@@ -30,6 +31,18 @@ pub trait Store: Send + Sync {
     fn list_messages(&self, board: &str, limit: usize) -> Result<Vec<Message>>;
     /// Total number of stored messages.
     fn message_count(&self) -> Result<usize>;
+
+    /// Create or replace a custom agent persona (ADR-0058), keyed by its
+    /// (already-lowercased) handle.
+    fn put_agent_persona(&self, persona: &AgentPersona) -> Result<()>;
+    /// Fetch a custom agent persona by handle.
+    fn get_agent_persona(&self, handle: &str) -> Result<Option<AgentPersona>>;
+    /// List all custom agent personas, ordered by handle.
+    fn list_agent_personas(&self) -> Result<Vec<AgentPersona>>;
+    /// Remove a custom agent persona. A no-op (not an error) if `handle` was
+    /// never customized — there is nothing to delete, the built-in default
+    /// (if any) simply keeps applying.
+    fn delete_agent_persona(&self, handle: &str) -> Result<()>;
 }
 
 /// In-memory store. Thread-safe, non-durable.
@@ -39,6 +52,7 @@ pub struct MemoryStore {
     // board slug -> ordered list of message ids
     by_board: RwLock<BTreeMap<String, Vec<MessageId>>>,
     messages: RwLock<BTreeMap<String, Message>>,
+    agent_personas: RwLock<BTreeMap<String, AgentPersona>>,
 }
 
 impl MemoryStore {
@@ -101,6 +115,33 @@ impl Store for MemoryStore {
     fn message_count(&self) -> Result<usize> {
         Ok(self.messages.read().unwrap().len())
     }
+
+    fn put_agent_persona(&self, persona: &AgentPersona) -> Result<()> {
+        self.agent_personas
+            .write()
+            .unwrap()
+            .insert(persona.handle.clone(), persona.clone());
+        Ok(())
+    }
+
+    fn get_agent_persona(&self, handle: &str) -> Result<Option<AgentPersona>> {
+        Ok(self.agent_personas.read().unwrap().get(handle).cloned())
+    }
+
+    fn list_agent_personas(&self) -> Result<Vec<AgentPersona>> {
+        Ok(self
+            .agent_personas
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    fn delete_agent_persona(&self, handle: &str) -> Result<()> {
+        self.agent_personas.write().unwrap().remove(handle);
+        Ok(())
+    }
 }
 
 #[cfg(feature = "native")]
@@ -116,6 +157,8 @@ mod redb_store {
     const MESSAGES: TableDefinition<&str, &[u8]> = TableDefinition::new("messages");
     // board slug -> json array of message ids (ordered)
     const BOARD_INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("board_index");
+    // agent handle -> json AgentPersona (ADR-0058)
+    const AGENT_PERSONAS: TableDefinition<&str, &[u8]> = TableDefinition::new("agent_personas");
 
     /// A durable, embedded, single-file store backed by [`redb`].
     pub struct RedbStore {
@@ -136,6 +179,8 @@ mod redb_store {
                 wtx.open_table(MESSAGES)
                     .map_err(|e| Error::Storage(e.to_string()))?;
                 wtx.open_table(BOARD_INDEX)
+                    .map_err(|e| Error::Storage(e.to_string()))?;
+                wtx.open_table(AGENT_PERSONAS)
                     .map_err(|e| Error::Storage(e.to_string()))?;
             }
             wtx.commit().map_err(|e| Error::Storage(e.to_string()))?;
@@ -287,6 +332,69 @@ mod redb_store {
                 .map_err(|e| Error::Storage(e.to_string()))?;
             Ok(t.len().map_err(|e| Error::Storage(e.to_string()))? as usize)
         }
+
+        fn put_agent_persona(&self, persona: &AgentPersona) -> Result<()> {
+            let bytes = serde_json::to_vec(persona)?;
+            let wtx = self
+                .db
+                .begin_write()
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            {
+                let mut t = wtx
+                    .open_table(AGENT_PERSONAS)
+                    .map_err(|e| Error::Storage(e.to_string()))?;
+                t.insert(persona.handle.as_str(), bytes.as_slice())
+                    .map_err(|e| Error::Storage(e.to_string()))?;
+            }
+            wtx.commit().map_err(|e| Error::Storage(e.to_string()))?;
+            Ok(())
+        }
+
+        fn get_agent_persona(&self, handle: &str) -> Result<Option<AgentPersona>> {
+            let rtx = self
+                .db
+                .begin_read()
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            let t = rtx
+                .open_table(AGENT_PERSONAS)
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            match t.get(handle).map_err(|e| Error::Storage(e.to_string()))? {
+                Some(v) => Ok(Some(serde_json::from_slice(v.value())?)),
+                None => Ok(None),
+            }
+        }
+
+        fn list_agent_personas(&self) -> Result<Vec<AgentPersona>> {
+            let rtx = self
+                .db
+                .begin_read()
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            let t = rtx
+                .open_table(AGENT_PERSONAS)
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            let mut out = Vec::new();
+            for row in t.iter().map_err(|e| Error::Storage(e.to_string()))? {
+                let (_k, v) = row.map_err(|e| Error::Storage(e.to_string()))?;
+                out.push(serde_json::from_slice(v.value())?);
+            }
+            Ok(out)
+        }
+
+        fn delete_agent_persona(&self, handle: &str) -> Result<()> {
+            let wtx = self
+                .db
+                .begin_write()
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            {
+                let mut t = wtx
+                    .open_table(AGENT_PERSONAS)
+                    .map_err(|e| Error::Storage(e.to_string()))?;
+                t.remove(handle)
+                    .map_err(|e| Error::Storage(e.to_string()))?;
+            }
+            wtx.commit().map_err(|e| Error::Storage(e.to_string()))?;
+            Ok(())
+        }
     }
 }
 
@@ -330,6 +438,31 @@ mod tests {
         assert_eq!(listed[0].body.body, "one");
         assert!(store.get_message(&m1.id).unwrap().is_some());
         assert_eq!(store.list_messages("nope", 10).unwrap().len(), 0);
+
+        // Agent personas (ADR-0058).
+        assert_eq!(store.list_agent_personas().unwrap().len(), 0);
+        assert!(store.get_agent_persona("claude").unwrap().is_none());
+        let persona = AgentPersona {
+            handle: "claude".into(),
+            system_prompt: "custom prompt".into(),
+        };
+        store.put_agent_persona(&persona).unwrap();
+        assert_eq!(
+            store.get_agent_persona("claude").unwrap(),
+            Some(persona.clone())
+        );
+        assert_eq!(store.list_agent_personas().unwrap(), vec![persona.clone()]);
+        // Overwrite is a replace, not a duplicate.
+        let updated = AgentPersona {
+            handle: "claude".into(),
+            system_prompt: "updated prompt".into(),
+        };
+        store.put_agent_persona(&updated).unwrap();
+        assert_eq!(store.list_agent_personas().unwrap(), vec![updated]);
+        store.delete_agent_persona("claude").unwrap();
+        assert!(store.get_agent_persona("claude").unwrap().is_none());
+        // Deleting a handle that was never customized is a no-op, not an error.
+        store.delete_agent_persona("never-existed").unwrap();
     }
 
     #[test]
