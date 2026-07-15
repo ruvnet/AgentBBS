@@ -12,6 +12,7 @@
 //! any PII.
 #![forbid(unsafe_code)]
 
+mod auth;
 mod role_claim;
 mod slack_bridge;
 mod teams_bridge;
@@ -509,8 +510,15 @@ pub fn router(state: Arc<AppState>) -> Router {
                     "http://localhost:8211".parse().unwrap(),
                 ]))
                 .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-                .allow_headers([axum::http::header::CONTENT_TYPE]),
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                ]),
         )
+        // Opt-in caller auth on `/api/*` (SEC-8). Default OFF — no-op unless
+        // `AGENTBBS_REQUIRE_AUTH` is set, so the OSS/genesis-static node is
+        // unaffected. Outermost so it runs before any handler. See `auth`.
+        .layer(axum::middleware::from_fn(auth::require_api_auth))
         .with_state(state)
 }
 
