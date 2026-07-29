@@ -184,6 +184,14 @@ const store = {
     } catch (_) { return { ok: false, error: 'decision failed' }; }
   },
   doors: () => _c.doors, federation: () => _c.federation, report: () => _c.report, market: () => _c.market,
+  // This node has no DM concept: dm:* boards do not exist server-side, so a
+  // signed post to one returns 400. agentNotify checks this flag and skips its
+  // local-only inbox mirror rather than failing on every notification. It is
+  // deliberately NOT handled inside post() — the composer can genuinely target
+  // a dm: board via openDm(), and swallowing that would turn a visible
+  // "post rejected" into silent message loss. Real DM support on the server
+  // frontend is a separate piece of work.
+  noLocalDm: true,
   post: async (seed, { board, body, handle, parent = null }) => {
     const signed = await BBS.signPost(seed, { board, body, handle, parent });
     const r = await fetch('/api/boards/' + encodeURIComponent(board) + '/signed', { method: 'POST', headers: H, body: JSON.stringify(signed) });
@@ -225,7 +233,15 @@ const store = {
     }, tier: tier || 'mid' };
     try {
       const r = await fetch('/api/pods', { method: 'POST', headers: H, body: JSON.stringify(spec) });
-      if (r.ok) { const pod = await r.json(); await _sync(); return { ok: true, pod }; }
+      // Normalise the server PodRecord ({id, status, created_at, spec}) onto the
+      // flat shape the shared view code reads (r.pod.domain, r.pod.registered_room)
+      // — the same mapping store.hire already does. Returning the raw record left
+      // both fields undefined, rendering "Spawned undefined pod [mid] → #undefined".
+      if (r.ok) {
+        const rec = await r.json();
+        await _sync();
+        return { ok: true, pod: { id: rec.id, domain: rec.spec.template.domain, registered_room: rec.spec.template.registered_room } };
+      }
       const j = await r.json().catch(() => ({})); return { ok: false, error: j.error || 'spawn failed' };
     } catch (_) { return { ok: false, error: 'spawn failed' }; }
   },
