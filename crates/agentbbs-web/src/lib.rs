@@ -790,6 +790,57 @@ fn resolve_caps(headers: &HeaderMap, now: i64) -> Caps {
     }
 }
 
+/// Whether an *administration* surface may proceed (ADR-0047 Phase 2).
+///
+/// ADR-0004 is explicit that "every privileged surface calls `require` at its
+/// boundary", and ADR-0047's Decision lists pod-spawn among the administration
+/// surfaces that belong to the node creator/admin rather than to any member.
+/// Board administration (ADR-0057) and agent personas (ADR-0058) already do
+/// this; pod spawn and budget top-up were missed, so any caller — including an
+/// unauthenticated one on a publicly reachable node — could start pods and
+/// raise their spend caps.
+///
+/// Deliberately shaped like `store_mode` (ADR-0054 Q4) rather than gating
+/// unconditionally, so that turning this on cannot silently break the demo and
+/// dev deployments the project also ships:
+///
+/// - **Role claims configured** → enforce `Caps::SYSOP`. This is the case that
+///   matters: a node with an owner key has someone who *can* be authorised, so
+///   anyone else must not be.
+/// - **Unconfigured but `AGENTBBS_ENV=production`** → refuse. A production node
+///   with no way to express "admin" has no way to authorise one either, so the
+///   surface is closed rather than open to everybody.
+/// - **Unconfigured, not production** (genesis demo, local dev, the test
+///   suite) → allow, unchanged. There is no identity system to appeal to and
+///   nothing at stake; this is the same trade `store_mode` makes when it falls
+///   back to `MemoryStore` outside production.
+fn admin_gate(caps: Caps, roles_configured: bool, production: bool) -> Result<(), String> {
+    if roles_configured {
+        return agentbbs_core::caps::require(caps, Caps::SYSOP, "admin")
+            .map_err(|e| e.to_string());
+    }
+    if production {
+        return Err(
+            "admin surface disabled: AGENTBBS_ENV=production requires AGENTBBS_ROLE_CLAIM_SECRET \
+             so an owner-issued sysop claim can be verified"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Env-reading wrapper over [`admin_gate`] — the same split `store_mode` uses,
+/// so the policy itself stays a pure function the tests can drive directly.
+fn require_admin(headers: &HeaderMap) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let roles_configured = !std::env::var("AGENTBBS_ROLE_CLAIM_SECRET")
+        .unwrap_or_default()
+        .is_empty();
+    let production = std::env::var("AGENTBBS_ENV").as_deref() == Ok("production");
+    let caps = resolve_caps(headers, chrono::Utc::now().timestamp());
+    admin_gate(caps, roles_configured, production)
+        .map_err(|reason| api_error(StatusCode::FORBIDDEN, reason))
+}
+
 fn looks_like_agent(handle: &str) -> bool {
     let h = handle.to_ascii_lowercase();
     h.contains("agent")
@@ -1712,8 +1763,13 @@ pub struct PodRecord {
 /// intent locally at `Spawned`.
 async fn api_pods_spawn(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(spec): Json<PodSpec>,
 ) -> Result<Json<PodRecord>, (StatusCode, Json<serde_json::Value>)> {
+    // ADR-0047 Phase 2: spawning a pod starts real work and, once
+    // AGENTBBS_PODS_BASE_URL is configured, real spend against the node's cog_
+    // key. Gate it before anything else happens.
+    require_admin(&headers)?;
     spec.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid pod spec: {e}")))?;
     // Idempotency: return an existing record without re-spawning. Scope the lock
@@ -1916,8 +1972,20 @@ struct PodBench {
 async fn api_pods_result(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(result): Json<PodResult>,
 ) -> Result<Json<PodRecord>, (StatusCode, Json<serde_json::Value>)> {
+    // ADR-0047 Phase 2. This is the most powerful route in the pod family, not
+    // the least: the result is posted signed as the pod's *server-held*
+    // identity, and it writes reported spend into the ADR-0040 ledger, an
+    // outcome into ADR-0039 reputation, and a signed submission into the Arena.
+    // Ungated, a caller who never spawned anything could attribute spend and
+    // manufacture standings under an identity they do not hold.
+    //
+    // Contract note for pod runners: on a node with role claims configured,
+    // whatever posts step-results must now present a sysop claim, exactly as it
+    // must to spawn the pod in the first place.
+    require_admin(&headers)?;
     // Snapshot the pod + validate the lifecycle transition before any write.
     let (room, domain) = {
         let pods = state.pods.lock().unwrap();
@@ -3041,8 +3109,14 @@ async fn api_budget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// USD (ADR-0040 operator override; the gateway stays the hard enforcer).
 async fn api_budget_topup(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<TopUpReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // ADR-0047 Phase 2. ADR-0040 calls the BudgetLedger "defense-in-depth with
+    // the gateway's authoritative meter" — a cap any caller can raise is not
+    // providing defense in depth. Note the ledger only ever bumps caps upward;
+    // there is no lower_cap, so an unauthorised raise is not reversible here.
+    require_admin(&headers)?;
     if !req.amount.is_finite() || req.amount <= 0.0 {
         return Err(api_error(StatusCode::BAD_REQUEST, "amount must be > 0"));
     }
@@ -3176,6 +3250,56 @@ async fn api_arena_pods(State(state): State<Arc<AppState>>) -> impl IntoResponse
 
 #[cfg(test)]
 mod tests {
+    /// Serialises the tests that own `AGENTBBS_ROLE_CLAIM_SECRET`.
+    ///
+    /// The role-claim gate reads process-global env while `#[tokio::test]`s run
+    /// in parallel, so the "each test owns the var for its duration" idiom only
+    /// holds if they actually take turns. That held by luck while only board
+    /// admin (ADR-0057) and personas (ADR-0058) depended on it — every caller
+    /// there wants POST, which both Agent and Sysop have. Gating `/api/pods`
+    /// and `/api/budget/topup` (ADR-0047 Phase 2) added tests whose *expected
+    /// result* flips with the var, turning a latent race into real failures:
+    /// one test's cleanup `remove_var` unsets the secret another is mid-flight
+    /// on, and a claim that should verify silently stops verifying.
+    ///
+    /// Poisoning is ignored on purpose — a panicking test has already reported
+    /// its own failure, and the next one needs the turnstile, not the data.
+    static ROLE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes the turnstile AND restores both variables on drop — including on
+    /// panic. Without the restore, a test that panics between `set_var` and its
+    /// cleanup leaves the rest of the process running under someone else's
+    /// configuration: an abandoned `AGENTBBS_ENV=production` silently flips
+    /// every later admin-route test to the fail-closed branch, and an abandoned
+    /// secret makes unrelated claims start verifying. The failure that follows
+    /// then points at the wrong test.
+    struct RoleEnv {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        prev_secret: Option<String>,
+        prev_env: Option<String>,
+    }
+
+    impl RoleEnv {
+        fn acquire() -> Self {
+            Self {
+                _guard: ROLE_ENV.lock().unwrap_or_else(|e| e.into_inner()),
+                prev_secret: std::env::var("AGENTBBS_ROLE_CLAIM_SECRET").ok(),
+                prev_env: std::env::var("AGENTBBS_ENV").ok(),
+            }
+        }
+    }
+
+    impl Drop for RoleEnv {
+        fn drop(&mut self) {
+            let restore = |k: &str, v: &Option<String>| match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            };
+            restore("AGENTBBS_ROLE_CLAIM_SECRET", &self.prev_secret);
+            restore("AGENTBBS_ENV", &self.prev_env);
+        }
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
@@ -3466,6 +3590,9 @@ mod tests {
     // ADR-0035: /api/pods spawn → list → get, plus spec validation.
     #[tokio::test]
     async fn pods_spawn_list_get_and_reject_invalid() {
+        // Hits an admin-gated route, so it must take the turnstile too:
+        // a concurrent test owning AGENTBBS_ENV/SECRET changes this outcome.
+        let _role_env = RoleEnv::acquire();
         let app = router(AppState::in_memory());
         let spec = serde_json::json!({
             "template": {
@@ -3486,10 +3613,7 @@ mod tests {
         let resp = app
             .clone()
             .oneshot(
-                Request::post("/api/pods")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&spec).unwrap()))
-                    .unwrap(),
+                admin_post("/api/pods", &spec),
             )
             .await
             .unwrap();
@@ -3502,10 +3626,7 @@ mod tests {
         let resp = app
             .clone()
             .oneshot(
-                Request::post("/api/pods")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&spec).unwrap()))
-                    .unwrap(),
+                admin_post("/api/pods", &spec),
             )
             .await
             .unwrap();
@@ -3548,10 +3669,7 @@ mod tests {
         bad["tier"] = serde_json::json!("high");
         let resp = app
             .oneshot(
-                Request::post("/api/pods")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&bad).unwrap()))
-                    .unwrap(),
+                admin_post("/api/pods", &bad),
             )
             .await
             .unwrap();
@@ -3562,6 +3680,9 @@ mod tests {
     // room board and advances the lifecycle; illegal transitions are rejected.
     #[tokio::test]
     async fn pods_result_posts_signed_to_room_and_advances_lifecycle() {
+        // Hits an admin-gated route, so it must take the turnstile too:
+        // a concurrent test owning AGENTBBS_ENV/SECRET changes this outcome.
+        let _role_env = RoleEnv::acquire();
         let app = router(AppState::in_memory());
         let spec = serde_json::json!({
             "template": {
@@ -3575,10 +3696,7 @@ mod tests {
         let resp = app
             .clone()
             .oneshot(
-                Request::post("/api/pods")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&spec).unwrap()))
-                    .unwrap(),
+                admin_post("/api/pods", &spec),
             )
             .await
             .unwrap();
@@ -3589,12 +3707,7 @@ mod tests {
             let body = serde_json::json!({ "status": status, "summary": summary, "tier_used": "low", "cost_usd": 0.0001 });
             let path = format!("/api/pods/{id}/results");
             async move {
-                app.oneshot(
-                    Request::post(path)
-                        .header("content-type", "application/json")
-                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                        .unwrap(),
-                )
+                app.oneshot(admin_post(&path, &body))
                 .await
                 .unwrap()
             }
@@ -3664,6 +3777,9 @@ mod tests {
     // ADR-0040: an operator cap top-up raises the pod's budget cap.
     #[tokio::test]
     async fn budget_topup_raises_cap() {
+        // Hits an admin-gated route, so it must take the turnstile too:
+        // a concurrent test owning AGENTBBS_ENV/SECRET changes this outcome.
+        let _role_env = RoleEnv::acquire();
         let app = router(AppState::in_memory());
         let spec = serde_json::json!({
             "template": {
@@ -3677,10 +3793,7 @@ mod tests {
         let resp = app
             .clone()
             .oneshot(
-                Request::post("/api/pods")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&spec).unwrap()))
-                    .unwrap(),
+                admin_post("/api/pods", &spec),
             )
             .await
             .unwrap();
@@ -3697,13 +3810,10 @@ mod tests {
         let resp = app
             .clone()
             .oneshot(
-                Request::post("/api/budget/topup")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&serde_json::json!({ "pod_id": id, "amount": 0.25 }))
-                            .unwrap(),
-                    ))
-                    .unwrap(),
+                admin_post(
+                    "/api/budget/topup",
+                    &serde_json::json!({ "pod_id": id, "amount": 0.25 }),
+                ),
             )
             .await
             .unwrap();
@@ -3725,6 +3835,9 @@ mod tests {
     // P5: a completed pod that reports a bench outcome ranks live in the Arena.
     #[tokio::test]
     async fn pod_completed_bench_ranks_in_arena() {
+        // Hits an admin-gated route, so it must take the turnstile too:
+        // a concurrent test owning AGENTBBS_ENV/SECRET changes this outcome.
+        let _role_env = RoleEnv::acquire();
         let app = router(AppState::in_memory());
         let spec = serde_json::json!({
             "template": {
@@ -3738,10 +3851,7 @@ mod tests {
         let resp = app
             .clone()
             .oneshot(
-                Request::post("/api/pods")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&spec).unwrap()))
-                    .unwrap(),
+                admin_post("/api/pods", &spec),
             )
             .await
             .unwrap();
@@ -3750,12 +3860,7 @@ mod tests {
             let app = app.clone();
             let path = format!("/api/pods/{id}/results");
             async move {
-                app.oneshot(
-                    Request::post(path)
-                        .header("content-type", "application/json")
-                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                        .unwrap(),
-                )
+                app.oneshot(admin_post(&path, &body))
                 .await
                 .unwrap()
             }
@@ -5483,6 +5588,7 @@ mod tests {
     // duration (single-owner env idiom).
     #[test]
     fn resolve_caps_defaults_to_agent_and_elevates_on_a_valid_claim() {
+        let _role_env = RoleEnv::acquire();
         use agentbbs_core::caps::Caps;
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
@@ -5556,6 +5662,31 @@ mod tests {
             .unwrap()
     }
 
+    /// A pod/budget request carrying a sysop claim signed with the same
+    /// "sekret" the rest of this module uses.
+    ///
+    /// These routes are admin-gated (ADR-0047 Phase 2), and the gate reads a
+    /// process-global env var while `#[tokio::test]`s run in parallel. Carrying
+    /// the claim makes each test deterministic in both states: with
+    /// AGENTBBS_ROLE_CLAIM_SECRET unset the claim is ignored and the
+    /// unconfigured-non-production path allows; with it set to "sekret" by a
+    /// concurrently-running test, the claim verifies as sysop and allows. The
+    /// alternative — leaving them bare — would make them pass or fail depending
+    /// on which other test happened to be running at the time.
+    fn admin_post(path: &str, body: &serde_json::Value) -> Request<Body> {
+        let exp = 9_999_999_999i64;
+        Request::post(path)
+            .header("content-type", "application/json")
+            .header("x-agentbbs-role", "sysop")
+            .header("x-agentbbs-role-exp", exp.to_string())
+            .header(
+                "x-agentbbs-role-sig",
+                sign_role_claim("sekret", "sysop", exp),
+            )
+            .body(Body::from(serde_json::to_vec(body).unwrap()))
+            .unwrap()
+    }
+
     // ADR-0058: agent persona configuration, gated on Caps::SYSOP (stricter
     // than board admin's moderator claim above).
     fn sysop_claim_request(path: &str, body: serde_json::Value) -> Request<Body> {
@@ -5587,6 +5718,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_board_requires_create_board_capability_and_then_the_board_exists() {
+        let _role_env = RoleEnv::acquire();
         std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
         let app = router(AppState::in_memory());
         let payload = serde_json::json!({ "slug": "launches", "title": "Launches", "description": "Ship logs" });
@@ -5624,6 +5756,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_board_rejects_invalid_slugs_and_duplicates() {
+        let _role_env = RoleEnv::acquire();
         std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
         let app = router(AppState::in_memory());
 
@@ -5651,6 +5784,7 @@ mod tests {
 
     #[tokio::test]
     async fn lock_board_requires_moderate_capability_and_then_posting_is_blocked() {
+        let _role_env = RoleEnv::acquire();
         std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
         let app = router(AppState::in_memory());
 
@@ -5703,6 +5837,7 @@ mod tests {
     // ADR-0058: configurable agent personas over HTTP.
     #[tokio::test]
     async fn list_agents_shows_built_ins_readable_by_anyone() {
+        let _role_env = RoleEnv::acquire();
         std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
         let app = router(AppState::in_memory());
         let agents = get_json(&app, "/api/agents").await;
@@ -5717,6 +5852,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_agent_persona_requires_sysop_capability_moderator_is_not_enough() {
+        let _role_env = RoleEnv::acquire();
         std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
         let app = router(AppState::in_memory());
         let payload =
@@ -5760,6 +5896,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_agent_persona_rejects_invalid_handles_and_empty_prompts() {
+        let _role_env = RoleEnv::acquire();
         std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
         let app = router(AppState::in_memory());
 
@@ -5786,6 +5923,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_persona_requires_sysop_and_a_built_in_reverts_to_default() {
+        let _role_env = RoleEnv::acquire();
         std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
         let app = router(AppState::in_memory());
 
@@ -5890,4 +6028,288 @@ mod tests {
         let bridged = Message::sign(&id, bridged_body).unwrap();
         assert!(plan_whatsapp_outbound(&config, &open, &bridged, now).is_empty());
     }
+
+    // ---- ADR-0047 Phase 2 / ADR-0004 conformance: admin-gated pod + budget ----
+
+    #[test]
+    fn admin_gate_enforces_sysop_only_where_a_node_can_authorise_one() {
+        let _role_env = RoleEnv::acquire();
+        let agent = Role::Agent.caps();
+        let sysop = Role::Sysop.caps();
+
+        // Roles configured: this is the case that matters. A node with an owner
+        // key can authorise someone, so everyone else must be refused.
+        assert!(admin_gate(sysop, true, true).is_ok());
+        assert!(admin_gate(sysop, true, false).is_ok());
+        assert!(admin_gate(agent, true, true).is_err());
+        assert!(admin_gate(agent, true, false).is_err());
+        // Moderator is enough for board admin (ADR-0057); not for this.
+        assert!(admin_gate(Role::Moderator.caps(), true, true).is_err());
+
+        // Unconfigured + production: no way to express admin, so no way to
+        // authorise one — closed rather than open to everybody.
+        let err = admin_gate(sysop, false, true).unwrap_err();
+        assert!(err.contains("AGENTBBS_ROLE_CLAIM_SECRET"), "{err}");
+        assert!(admin_gate(agent, false, true).is_err());
+
+        // Unconfigured, not production (genesis demo, local dev, this suite):
+        // unchanged, same trade store_mode makes outside production.
+        assert!(admin_gate(agent, false, false).is_ok());
+    }
+
+    #[tokio::test]
+    async fn pod_spawn_and_budget_topup_require_a_sysop_claim() {
+        let _role_env = RoleEnv::acquire();
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        let app = router(AppState::in_memory());
+        let spec = serde_json::json!({
+            "template": {
+                "template_ref": "research/adhoc@1",
+                "domain": "research",
+                "system_prompt": "Ad-hoc research pod.",
+                "tools": [],
+                "bench_assertions": "produces a useful, gated result",
+                "per_agent_cap_usd": 0.25,
+                "max_tier": "mid",
+                "registered_room": "research-ops"
+            },
+            "tier": "mid"
+        });
+
+        // No claim at all — the reported defect: an unauthenticated caller on a
+        // publicly reachable node could spawn pods and raise their spend caps.
+        let bare = Request::post("/api/pods")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&spec).unwrap()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(bare).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // A moderator claim is sufficient for board admin, but not for this.
+        let mod_denied = moderator_claim_request("/api/pods", spec.clone());
+        assert_eq!(
+            app.clone().oneshot(mod_denied).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // Refused means refused: nothing was recorded.
+        assert!(get_json(&app, "/api/pods").await["pods"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        // A sysop claim spawns for real.
+        let resp = app
+            .clone()
+            .oneshot(admin_post("/api/pods", &spec))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+        // Budget top-up is gated the same way. Assert on the cap, not just the
+        // status: a 403 that still moved the ledger would be no fix at all.
+        let cap_of = |app: Router, id: String| async move {
+            get_json(&app, "/api/budget").await["budgets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["pod_id"] == id.as_str())
+                .map(|b| b["cap"].as_f64().unwrap())
+        };
+        let before = cap_of(app.clone(), id.clone()).await;
+
+        let bare_topup = Request::post("/api/budget/topup")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "pod_id": id, "amount": 500.0 })).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(bare_topup).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            cap_of(app.clone(), id.clone()).await,
+            before,
+            "a refused top-up must not move the cap"
+        );
+
+        // With a sysop claim it goes through.
+        let ok = app
+            .clone()
+            .oneshot(admin_post(
+                "/api/budget/topup",
+                &serde_json::json!({ "pod_id": id, "amount": 0.25 }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert!(cap_of(app.clone(), id.clone()).await > before);
+
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+    }
+
+
+    #[tokio::test]
+    async fn pod_result_requires_a_sysop_claim() {
+        let _role_env = RoleEnv::acquire();
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        let app = router(AppState::in_memory());
+        let spec = serde_json::json!({
+            "template": {
+                "template_ref": "research/adhoc@1", "domain": "research",
+                "system_prompt": "x", "tools": [], "bench_assertions": "y",
+                "per_agent_cap_usd": 0.25, "max_tier": "mid",
+                "registered_room": "research-ops"
+            },
+            "tier": "mid"
+        });
+        let id = body_json(
+            app.clone()
+                .oneshot(admin_post("/api/pods", &spec))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Step-results are posted signed as the pod's server-held identity and
+        // write spend, reputation and Arena standings. An unauthenticated
+        // caller must not be able to attribute any of that.
+        let body = serde_json::json!({ "status": "completed", "summary": "forged", "cost_usd": 99.0 });
+        let bare = Request::post(format!("/api/pods/{id}/results"))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(bare).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // And the refusal is real: no spend was recorded against the pod.
+        let spent = get_json(&app, "/api/budget").await["budgets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["pod_id"] == id.as_str())
+            .map(|b| b["spent"].as_f64().unwrap());
+        assert_eq!(spent, Some(0.0), "a refused result must not record spend");
+
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+    }
+
+    #[tokio::test]
+    async fn admin_routes_reject_expired_forged_and_under_privileged_claims() {
+        let _role_env = RoleEnv::acquire();
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        let app = router(AppState::in_memory());
+        let spec = serde_json::json!({
+            "template": {
+                "template_ref": "research/adhoc@1", "domain": "research",
+                "system_prompt": "x", "tools": [], "bench_assertions": "y",
+                "per_agent_cap_usd": 0.25, "max_tier": "mid",
+                "registered_room": "research-ops"
+            },
+            "tier": "mid"
+        });
+        let claim = |role: &str, exp: i64, sig: String| {
+            Request::post("/api/pods")
+                .header("content-type", "application/json")
+                .header("x-agentbbs-role", role)
+                .header("x-agentbbs-role-exp", exp.to_string())
+                .header("x-agentbbs-role-sig", sig)
+                .body(Body::from(serde_json::to_vec(&spec).unwrap()))
+                .unwrap()
+        };
+        let future = 9_999_999_999i64;
+
+        // Expired: correctly signed, but past its exp.
+        let expired = claim("sysop", 1, sign_role_claim("sekret", "sysop", 1));
+        // Forged: right shape, wrong signature.
+        let forged = claim("sysop", future, "deadbeef".into());
+        // Signed with the wrong secret.
+        let wrong_secret = claim("sysop", future, sign_role_claim("nope", "sysop", future));
+        // Genuinely signed, but not privileged enough. Assert they really do
+        // verify first — otherwise a regression that broke verification for
+        // guest/agent would still produce 403 and this test would keep passing
+        // while proving the wrong thing (signature refusal, not capability
+        // refusal, which is the whole point of the gate).
+        assert_eq!(
+            role_claim::verify_role_claim(
+                "sekret",
+                "guest",
+                future,
+                &sign_role_claim("sekret", "guest", future),
+                0
+            ),
+            Some(Role::Guest)
+        );
+        assert_eq!(
+            role_claim::verify_role_claim(
+                "sekret",
+                "agent",
+                future,
+                &sign_role_claim("sekret", "agent", future),
+                0
+            ),
+            Some(Role::Agent)
+        );
+        assert!(!Role::Guest.caps().contains(Caps::SYSOP));
+        assert!(!Role::Agent.caps().contains(Caps::SYSOP));
+        let guest = claim("guest", future, sign_role_claim("sekret", "guest", future));
+        let agent = claim("agent", future, sign_role_claim("sekret", "agent", future));
+
+        for (name, req) in [
+            ("expired", expired),
+            ("forged", forged),
+            ("wrong secret", wrong_secret),
+            ("guest", guest),
+            ("agent", agent),
+        ] {
+            assert_eq!(
+                app.clone().oneshot(req).await.unwrap().status(),
+                StatusCode::FORBIDDEN,
+                "{name} claim must not reach an admin route"
+            );
+        }
+
+        assert!(get_json(&app, "/api/pods").await["pods"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+    }
+
+    #[tokio::test]
+    async fn production_without_a_role_secret_closes_admin_routes() {
+        // Holds the same turnstile: this test owns AGENTBBS_ENV *and* depends
+        // on AGENTBBS_ROLE_CLAIM_SECRET being absent, so it must not overlap
+        // with a test that installs one.
+        let _role_env = RoleEnv::acquire();
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+        std::env::set_var("AGENTBBS_ENV", "production");
+        let app = router(AppState::in_memory());
+
+        let req = Request::post("/api/budget/topup")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "pod_id": "pod-0000", "amount": 500.0 }))
+                    .unwrap(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // The message has to tell an operator how to fix it, not just say no.
+        let err = body_json(resp).await["error"].as_str().unwrap().to_string();
+        assert!(err.contains("AGENTBBS_ROLE_CLAIM_SECRET"), "{err}");
+
+        std::env::remove_var("AGENTBBS_ENV");
+    }
+
 }
