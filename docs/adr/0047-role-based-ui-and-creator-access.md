@@ -33,6 +33,10 @@ or claiming restart-safe exactly-once delivery.
 Within one process, each pod also tracks its last accepted callback timestamp:
 a distinct older event is rejected, and distinct events tied at the same
 millisecond are rejected as ambiguous. Exact event-id retries remain idempotent.
+Each pod has its own callback mutex spanning admission, all ledger/board effects,
+and the final status/revision commit; unrelated pods do not share that lock.
+Gateway GET polling uses the observed record revision as a CAS watermark, so a
+response that was in flight while a callback committed cannot overwrite it.
 
 The browser never receives the admin HMAC secret. In a server-backed deployment
 direct spawn/top-up controls are replaced by a “Manage pods in Comms Control
