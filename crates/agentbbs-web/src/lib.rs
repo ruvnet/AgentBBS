@@ -149,6 +149,8 @@ pub struct AppState {
     admin_replays: Mutex<admin_action::ReplayGuard>,
     /// ADR-208 callback dedupe + per-pod ordering guard.
     pod_result_events: Mutex<PodEventGuard>,
+    /// Per-pod callback serializers; the map lock is held only for lookup.
+    pod_callback_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Open free-form messaging windows per WhatsApp recipient (ADR-0053) —
     /// records each inbound so a board reply can be mirrored back out only
     /// within the 24h window.
@@ -185,8 +187,18 @@ impl AppState {
             teams_seen: Mutex::new(agentbbs_bridge::SeenSet::new()),
             admin_replays: Mutex::new(admin_action::ReplayGuard::default()),
             pod_result_events: Mutex::new(PodEventGuard::default()),
+            pod_callback_locks: Mutex::new(HashMap::new()),
             whatsapp_window: Mutex::new(agentbbs_bridge::SessionWindow::new()),
         })
+    }
+
+    fn pod_callback_lock(&self, pod_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.pod_callback_locks
+            .lock()
+            .unwrap()
+            .entry(pod_id.to_owned())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Daily aggregate cap on live-LLM (cog_) calls — protects the budget when the
@@ -1782,6 +1794,9 @@ pub struct PodRecord {
     pub created_at: String,
     /// The validated spawn request.
     pub spec: PodSpec,
+    /// Internal CAS revision; deliberately absent from the public wire shape.
+    #[serde(skip)]
+    revision: u64,
 }
 
 /// `POST /api/pods` — validate a [`PodSpec`] and spawn a pod (idempotent on
@@ -1833,6 +1848,7 @@ async fn api_pods_spawn(
         status,
         created_at: chrono::Utc::now().to_rfc3339(),
         spec,
+        revision: 0,
     };
     state.pods.lock().unwrap().push(record.clone());
     Ok(Json(record))
@@ -1932,22 +1948,37 @@ async fn api_pods_get(
         .find(|p| p.id == id)
         .cloned()
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "pod not found"))?;
+    let observed_revision = record.revision;
     // Live lifecycle poll (ADR-0035): when the gateway is configured and the pod
     // isn't terminal, reflect the meta-llm status via GET /v1/pods/{id} (fail-soft
     // — fall back to the recorded status). Lock is never held across the await.
     if !record.status.is_terminal() {
         if let Some(cfg) = resolve_pods_config() {
             if let Ok(st) = poll_pod_status(&cfg, &id).await {
-                if st != record.status {
-                    record.status = st;
-                    if let Some(p) = state.pods.lock().unwrap().iter_mut().find(|p| p.id == id) {
-                        p.status = st;
-                    }
+                let mut pods = state.pods.lock().unwrap();
+                if let Some(current) = commit_polled_status(&mut pods, &id, observed_revision, st) {
+                    record = current;
                 }
             }
         }
     }
     Ok(Json(record))
+}
+
+fn commit_polled_status(
+    pods: &mut [PodRecord],
+    id: &str,
+    observed_revision: u64,
+    polled: PodStatus,
+) -> Option<PodRecord> {
+    let pod = pods.iter_mut().find(|p| p.id == id)?;
+    // Callback commits are authoritative. Revision mismatch means one landed
+    // while the network request was in flight, so retain that newer record.
+    if pod.revision == observed_revision && !pod.status.is_terminal() {
+        pod.status = polled;
+        pod.revision = pod.revision.saturating_add(1);
+    }
+    Some(pod.clone())
 }
 
 /// The frozen pods status-poll endpoint URL.
@@ -2097,6 +2128,12 @@ async fn api_pods_result(
         chrono::Utc::now().timestamp_millis(),
     )
     .map_err(|reason| api_error(StatusCode::UNAUTHORIZED, reason))?;
+
+    // Serialize one pod from admission through every side effect and the final
+    // status/revision commit. The global map lock was released by the helper;
+    // unrelated pods remain fully concurrent.
+    let callback_lock = state.pod_callback_lock(&id);
+    let _callback_guard = callback_lock.lock().await;
 
     let result = pod_result_from_event(&event)
         .map_err(|reason| api_error(StatusCode::BAD_REQUEST, reason))?;
@@ -2270,6 +2307,7 @@ async fn api_pods_result(
         .find(|p| p.id == id)
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "pod not found"))?;
     pod.status = result.status;
+    pod.revision = pod.revision.saturating_add(1);
     Ok(Json(pod.clone()))
 }
 
@@ -5957,13 +5995,15 @@ mod tests {
         event_id: &str,
         signing_secret: &str,
     ) -> Request<Body> {
-        signed_result_post_at(
-            path,
-            body,
-            event_id,
-            signing_secret,
-            chrono::Utc::now().timestamp_millis(),
-        )
+        static LAST_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        let now = chrono::Utc::now().timestamp_millis();
+        let _ = LAST_TS.fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |last| Some(now.max(last + 1)),
+        );
+        let event_ts = LAST_TS.load(std::sync::atomic::Ordering::SeqCst);
+        signed_result_post_at(path, body, event_id, signing_secret, event_ts)
     }
 
     fn signed_result_post_at(
@@ -6482,6 +6522,55 @@ mod tests {
             0.1,
             "out-of-order events have no effect"
         );
+    }
+
+    #[tokio::test]
+    async fn callbacks_for_one_pod_serialize_while_other_pods_remain_unblocked() {
+        let state = AppState::in_memory();
+        let pod_a = state.pod_callback_lock("pod-a");
+        let pod_a_same = state.pod_callback_lock("pod-a");
+        let pod_b = state.pod_callback_lock("pod-b");
+        let held = pod_a.lock().await;
+
+        // Deterministic pause after A's conceptual admission/reservation: B for
+        // the same pod cannot enter, while an unrelated pod can.
+        assert!(pod_a_same.try_lock().is_err());
+        assert!(pod_b.try_lock().is_ok());
+        drop(held);
+        assert!(pod_a_same.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn stale_poll_cannot_overwrite_callback_revision() {
+        let _env = RoleEnv::acquire();
+        std::env::remove_var("AGENTBBS_ADMIN_ACTION_SECRET");
+        std::env::remove_var("AGENTBBS_ADMIN_ACTION_AUDIENCE");
+        let state = AppState::in_memory();
+        let app = router(state.clone());
+        let spec = serde_json::json!({
+            "template": { "template_ref": "research/poll@1", "domain": "research",
+                "system_prompt": "x", "tools": [], "bench_assertions": "y",
+                "per_agent_cap_usd": 0.25, "max_tier": "mid", "registered_room": "research-ops" },
+            "tier": "mid"
+        });
+        let spawned = app.oneshot(admin_post("/api/pods", &spec)).await.unwrap();
+        let id = body_json(spawned).await["id"].as_str().unwrap().to_owned();
+        let observed_revision = 0;
+        {
+            let mut pods = state.pods.lock().unwrap();
+            let pod = pods.iter_mut().find(|p| p.id == id).unwrap();
+            pod.status = PodStatus::AwaitingApproval;
+            pod.revision = 1; // callback committed while GET was in flight
+        }
+        let current = commit_polled_status(
+            &mut state.pods.lock().unwrap(),
+            &id,
+            observed_revision,
+            PodStatus::Idle,
+        )
+        .unwrap();
+        assert_eq!(current.status, PodStatus::AwaitingApproval);
+        assert_eq!(current.revision, 1);
     }
 
     #[test]
