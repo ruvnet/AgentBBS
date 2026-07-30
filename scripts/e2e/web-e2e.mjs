@@ -391,6 +391,63 @@ try {
     ok(r.ok && r.grew && r.tier === 'high', 'spawning a pod adds it with the chosen tier');
   }
 
+  // ---- Pods: spawn via the actual button, on BOTH frontends ----
+  // Deliberately not GENESIS-gated, and deliberately clicking the button rather
+  // than calling the store: the store-level test above passed throughout, while
+  // the real click reported 'spawn failed' on every successful spawn on
+  // agentbbs-web. Only the server-backed frontend has an async store.spawnPod,
+  // so a genesis-only, store-level test could never see it.
+  {
+    const r = await page.evaluate(async () => {
+      window.__ui.VIEWS.pods();
+      await new Promise(s => setTimeout(s, 200));
+      const btn = document.getElementById('pod-spawn');
+      const domain = document.getElementById('pod-domain');
+      const tier = document.getElementById('pod-tier');
+      if (!btn || !domain || !tier) return { missing: true };
+      domain.value = 'security';
+      tier.value = 'high';
+      // Correlate on note identity, not on list length: notifications are
+      // unshifted, so an unrelated one arriving during the poll would otherwise
+      // satisfy a length check and be read as ours. Snapshot what is already
+      // there, then require a note that was not.
+      const seen = new Set(window.__notes.map(n => n.t + '|' + n.text));
+      const isNew = () => window.__notes.find(n => !seen.has(n.t + '|' + n.text));
+      btn.click();
+      // The spawn is a real round trip on agentbbs-web; poll for the result.
+      for (let i = 0; i < 80 && !isNew(); i++) {
+        await new Promise(s => setTimeout(s, 100));
+      }
+      const fresh = isNew();
+      const currentBtn = document.getElementById('pod-spawn');
+      const enabledAfterSuccess = !!currentBtn && !currentBtn.disabled;
+      const firstNotes = new Set(window.__notes);
+      if (enabledAfterSuccess) currentBtn.click();
+      const secondIsNew = () => window.__notes.find(n => !firstNotes.has(n));
+      for (let i = 0; i < 80 && !secondIsNew(); i++) {
+        await new Promise(s => setTimeout(s, 100));
+      }
+      const second = secondIsNew();
+      // Report the timeout explicitly rather than falling back to a stale note.
+      return {
+        missing: false,
+        timedOut: !fresh,
+        note: fresh ? fresh.text : '',
+        enabledAfterSuccess,
+        secondTimedOut: !second,
+        secondNote: second ? second.text : '',
+      };
+    });
+    ok(!r.missing, 'Pods view exposes the spawn controls');
+    ok(!r.timedOut, 'clicking Spawn pod produces a notification');
+    ok(!r.timedOut && !/spawn failed/i.test(r.note), `clicking Spawn pod reports success, not failure -> "${r.note}"`);
+    ok(!r.timedOut && /security/.test(r.note) && /security-ops/.test(r.note) && !/undefined/.test(r.note),
+      `spawn notification names the pod's domain and room -> "${r.note}"`);
+    ok(r.enabledAfterSuccess, 'Spawn pod remains enabled after the success re-render');
+    ok(!r.secondTimedOut && !/spawn failed/i.test(r.secondNote),
+      `a second Spawn pod click remains operable -> "${r.secondNote}"`);
+  }
+
   // ---- Decisions: record a signed decision (interactive) ----
   if (GENESIS) {
     const r = await page.evaluate(async () => {
