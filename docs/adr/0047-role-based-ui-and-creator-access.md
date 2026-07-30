@@ -1,10 +1,14 @@
 # 0047. Role-based UI & creator/elevated access
 
-Status: Accepted (Phase 1 — UI gating shipped; Phase 2 server enforcement started)
-Updated: 2026-07-29 — Phase 2 begun for the three pod/budget routes that were
-reachable with no capability check at all: `POST /api/pods` (spawn),
-`POST /api/pods/{id}/results`, and `POST /api/budget/topup` now go through
-`admin_gate` in `crates/agentbbs-web/src/lib.rs`.
+Status: Accepted (Phase 1 UI; Phase 2 credential-separated server enforcement)
+Updated: 2026-07-30 — the high-impact pod/budget mutations no longer consume
+the broad legacy role claim. `POST /api/pods` and `POST /api/budget/topup`
+require an `agentbbs.admin-action.v2` HMAC proof bound to the exact audience,
+route action (`pods.spawn` or `budget.topup`), expiry, and single-use `jti`.
+`POST /api/pods/{id}/results` deliberately does **not** accept SYSOP: it verifies
+the meta-llm ADR-208 `SignedPodEvent` contract with a distinct key family,
+current/previous `kid` rotation, account and URL-pod binding, clock skew,
+telemetry constraints, lifecycle legality, and per-process event deduplication.
 
 Pod-spawn is named in the Decision below as an administration surface, but only
 the *UI* had ever been gated — the routes themselves accepted any caller, so on
@@ -12,18 +16,16 @@ a publicly reachable node an unauthenticated request could start pods, raise
 their spend caps, and (via `results`) post signed as the pod's server-held
 identity while writing spend, reputation and Arena standings.
 
-**What `admin_gate` does and does not guarantee.** It requires `Caps::SYSOP`
-*when the node has role claims configured*. It is deliberately shaped like
-`store_mode` (ADR-0054 Q4) rather than gating unconditionally, because on a node
-with no `AGENTBBS_ROLE_CLAIM_SECRET` there is no way for anyone to obtain a
-sysop claim, so an unconditional gate would not secure those routes — it would
-delete them. The three cases are: configured → enforce; unconfigured but
-`AGENTBBS_ENV=production` → refuse; unconfigured and not production (genesis
-demo, local dev, the test suite) → unchanged. **A publicly reachable node with
-neither variable set is therefore still open**, exactly as before this change;
-closing that case means either shipping a secure default that breaks existing
-deployments on upgrade, or a Phase 2 credential flow that lets a node owner
-self-designate. Both are open decisions, not settled here.
+Production is unconditionally fail-closed when the dedicated verifier values
+are absent. The only insecure compatibility behavior is compiled under
+`cfg(test)` for legacy in-memory route tests; it cannot exist in a production
+binary. Legacy `x-agentbbs-role*` claims remain valid for unrelated board and
+persona routes, but are intentionally non-interchangeable with either new key
+family. Replay/event sets are process-local. Deployment is therefore pinned to
+one writable instance, a durable Redb volume, and short admin-proof lifetimes.
+That prevents concurrent-replica duplication but is not durable exactly-once
+across restart; a shared durable replay store is required before scaling wider
+or claiming restart-safe exactly-once delivery.
 
 Board administration (ADR-0057) and agent personas (ADR-0058) were already
 gated and are unchanged. The rest of Phase 2 — a creator console to mint/revoke
@@ -91,10 +93,10 @@ for members.
 - `genesis/index.html` — `myRole()`/`isCreator()`; admin sections filtered out of
   the sidebar + sheet for non-creators; admin VIEWS nav guarded; a role badge +
   creator toggle in the Passport. Shared render → genesis + agentbbs-web.
-- Phase 2 (started 2026-07-29): `admin_gate` in `crates/agentbbs-web/src/lib.rs`
-  gates `POST /api/pods`, `POST /api/pods/{id}/results` and
-  `POST /api/budget/topup` on `Caps::SYSOP`, resolved from the ADR-0054 Q2 role
-  claim exactly as ADR-0057/0058 already do — see the Status note above for what
-  it does and does not guarantee when a node has no role secret configured.
+- Phase 2 (redesigned 2026-07-30): `admin_action.rs` verifies route-scoped v2
+  proofs for spawn/top-up; `signed_pod_event.rs` independently verifies the
+  ADR-208 callback. Production startup validates the applicable configuration:
+  admin proof verification is always required, while callback verification is
+  required when `AGENTBBS_PODS_BASE_URL` enables live pod integration.
 - Phase 2 remaining: server enforcement on the other admin APIs, a creator
   console to mint/revoke role credentials, and delegated admin via web-of-trust.
