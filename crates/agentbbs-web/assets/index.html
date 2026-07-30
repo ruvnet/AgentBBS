@@ -1394,7 +1394,10 @@ function showPods() {
         else notify((r && r.error) || 'spawn failed', 'agent');
       } finally {
         podSpawnInFlight = false;
-        sp.disabled = false;
+        // A successful spawn re-renders the panel, so `sp` may now be the
+        // detached button from the previous render. Re-enable the live button.
+        const currentSpawn = document.getElementById('pod-spawn');
+        if (currentSpawn) currentSpawn.disabled = false;
       }
     };
   }
