@@ -601,6 +601,18 @@ async fn index() -> impl IntoResponse {
             1,
         );
     }
+    if let Some(url) = std::env::var("AGENTBBS_ADMIN_CONSOLE_URL")
+        .ok()
+        .filter(|u| {
+            https_origin(u).is_some() && !u.chars().any(|c| matches!(c, '"' | '\'' | '<' | '>'))
+        })
+    {
+        body = body.replacen(
+            r#"<meta name="agentbbs-admin-console-url" content="" />"#,
+            &format!(r#"<meta name="agentbbs-admin-console-url" content="{url}" />"#),
+            1,
+        );
+    }
     (
         [
             ("content-security-policy".to_string(), csp),
@@ -1989,11 +2001,10 @@ fn pod_result_from_event(event: &signed_pod_event::SignedPodEvent) -> Result<Pod
         "EXECUTING" => PodStatus::Executing,
         "EVALUATING" => PodStatus::Evaluating,
         "ESCALATING" => PodStatus::Escalating,
-        "IDLE" => PodStatus::Completed,
+        "IDLE" => PodStatus::Idle,
         "PAUSED" => PodStatus::Failed,
-        "AWAITING_APPROVAL" => {
-            return Err("awaiting-approval events have no AgentBBS lifecycle mapping".into())
-        }
+        "CANCELLED" => PodStatus::Cancelled,
+        "AWAITING_APPROVAL" => PodStatus::AwaitingApproval,
         _ => return Err("unknown pod lifecycle status".into()),
     };
     let summary = event
@@ -2013,9 +2024,19 @@ fn pod_result_from_event(event: &signed_pod_event::SignedPodEvent) -> Result<Pod
         status,
         summary,
         tier_used,
-        cost_usd: event.step.as_ref().map(|v| v.cost_usd),
+        // AWAITING_APPROVAL holds a reservation but has committed $0. The
+        // approval verdict event carries the actual committed step cost.
+        cost_usd: if event.status == "AWAITING_APPROVAL" {
+            None
+        } else {
+            event.step.as_ref().map(|v| v.cost_usd)
+        },
         bench: None,
     })
+}
+
+fn authoritative_pod_transition_allowed(current: PodStatus, _next: PodStatus) -> bool {
+    !current.is_terminal()
 }
 
 /// `POST /api/pods/{id}/results` — record a pod step-result: advance the pod's
@@ -2080,14 +2101,20 @@ async fn api_pods_result(
         return Ok(Json(existing));
     }
 
-    // Validate the lifecycle transition before any write.
+    // ADR-208 sends one authoritative snapshot after the producer's internal
+    // EXECUTING/EVALUATING phases. Therefore the first callback may legitimately
+    // be Spawned -> IDLE, ESCALATING, PAUSED, CANCELLED, or AWAITING_APPROVAL.
+    // Accept any authenticated producer state while the local pod is live; a
+    // terminal local pod cannot be resurrected by a later distinct event.
     let (room, domain) = {
         let pod = &existing;
-        let same_live_state = pod.status == result.status && !pod.status.is_terminal();
-        if !same_live_state && !pod.status.can_transition_to(result.status) {
+        if !authoritative_pod_transition_allowed(pod.status, result.status) {
             return Err(api_error(
-                StatusCode::BAD_REQUEST,
-                format!("illegal transition {:?} -> {:?}", pod.status, result.status),
+                StatusCode::CONFLICT,
+                format!(
+                    "terminal pod cannot transition {:?} -> {:?}",
+                    pod.status, result.status
+                ),
             ));
         }
         (
@@ -3562,6 +3589,30 @@ mod tests {
         assert!(csp.ends_with("connect-src 'self'"));
     }
 
+    #[tokio::test]
+    async fn production_ui_links_to_admin_console_without_rendering_direct_mutations() {
+        std::env::set_var(
+            "AGENTBBS_ADMIN_CONSOLE_URL",
+            "https://comms.example.com/communities/demo",
+        );
+        let app = router(AppState::in_memory());
+        let resp = app
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        std::env::remove_var("AGENTBBS_ADMIN_CONSOLE_URL");
+        assert!(body.contains(r#"<meta name="agentbbs-admin-console-url" content="https://comms.example.com/communities/demo" />"#));
+        assert!(body.contains("Manage pods in Comms Control Plane"));
+        assert!(body.contains("directAdminDisabled = !!adminConsoleUrl"));
+    }
+
     // Issue #4 / ADR-0034: provider-agnostic LLM gateway config + payload.
     #[test]
     fn llm_default_model_follows_base() {
@@ -3856,7 +3907,8 @@ mod tests {
             .iter()
             .any(|m| m["body"].as_str().unwrap().contains("scanning sources")));
 
-        // Executing → Evaluating → Completed: legal.
+        // Executing → Evaluating → meta IDLE: legal. IDLE is a live recurring
+        // state, not AgentBBS Completed.
         assert_eq!(
             post_result("evaluating", "checking gate").await.status(),
             StatusCode::OK
@@ -3866,13 +3918,13 @@ mod tests {
             StatusCode::OK
         );
 
-        // Completed is terminal → Executing is illegal (400).
+        // A later authoritative step may drive the recurring pod again.
         assert_eq!(
             post_result("executing", "nope").await.status(),
-            StatusCode::BAD_REQUEST
+            StatusCode::OK
         );
 
-        // The completed pod now has a reputation entry with a success (ADR-0039).
+        // IDLE is not a terminal outcome and must not manufacture reputation.
         let resp = app
             .clone()
             .oneshot(Request::get("/api/reputation").body(Body::empty()).unwrap())
@@ -3880,9 +3932,7 @@ mod tests {
             .unwrap();
         let rep = body_json(resp).await;
         let ranking = rep["ranking"].as_array().unwrap();
-        assert_eq!(ranking.len(), 1);
-        assert_eq!(ranking[0]["successes"], 1.0);
-        assert!(ranking[0]["score"].as_f64().unwrap() > 0.0);
+        assert!(ranking.is_empty());
 
         // Budget reflects the reported per-step cost_usd (ADR-0040).
         let resp = app
@@ -5858,6 +5908,8 @@ mod tests {
             "escalating" => "ESCALATING",
             "completed" => "IDLE",
             "failed" => "PAUSED",
+            "awaiting_approval" => "AWAITING_APPROVAL",
+            "cancelled" => "CANCELLED",
             _ => panic!("unsupported test status"),
         };
         let now = chrono::Utc::now().timestamp_millis();
@@ -6292,7 +6344,9 @@ mod tests {
         let id = body_json(spawned).await["id"].as_str().unwrap().to_owned();
         let path = format!("/api/pods/{id}/results");
         let result = serde_json::json!({
-            "status": "executing", "summary": "metered step", "tier_used": "low", "cost_usd": 0.1
+            // Exact producer behavior: one callback carries final nextStatus;
+            // there are no intermediate EXECUTING/EVALUATING callbacks.
+            "status": "completed", "summary": "metered step", "tier_used": "low", "cost_usd": 0.1
         });
 
         let confused = signed_result_post_with(&path, &result, "evt-confused", "admin-secret");
@@ -6322,6 +6376,71 @@ mod tests {
             0.1,
             "retry must not record spend twice"
         );
+    }
+
+    #[test]
+    fn adr208_authoritative_producer_snapshots_map_from_spawned() {
+        let fixture = |event: &str, status: &str, cost: f64| {
+            serde_json::from_value::<signed_pod_event::SignedPodEvent>(serde_json::json!({
+                "pod_id":"pod-fixture", "account_id":"acct-pods", "event":event,
+                "status":status, "tier":"low",
+                "step":{"summary":"producer fixture", "tokens":10, "cost_usd":cost},
+                "conformance":null, "committed_usd":cost, "pause_reason":null,
+                "proposal_id":null, "verdict":null, "mock":false,
+                "event_id":format!("evt-{status}"), "ts":1700000000000i64,
+                "signature":"00", "signing_key_id":"kid"
+            }))
+            .unwrap()
+        };
+        for (event, status, expected) in [
+            ("step", "IDLE", PodStatus::Idle),
+            ("step", "ESCALATING", PodStatus::Escalating),
+            ("paused", "PAUSED", PodStatus::Failed),
+            ("paused", "CANCELLED", PodStatus::Cancelled),
+            (
+                "awaiting_approval",
+                "AWAITING_APPROVAL",
+                PodStatus::AwaitingApproval,
+            ),
+            ("approval_verdict", "IDLE", PodStatus::Idle),
+        ] {
+            let result = pod_result_from_event(&fixture(event, status, 0.1)).unwrap();
+            assert_eq!(result.status, expected, "{event}/{status}");
+            if status == "AWAITING_APPROVAL" {
+                assert_eq!(result.cost_usd, None, "held reservation is not spend");
+            }
+        }
+
+        for sequence in [
+            vec![PodStatus::Spawned, PodStatus::Idle, PodStatus::Idle],
+            vec![PodStatus::Spawned, PodStatus::Escalating, PodStatus::Idle],
+            vec![
+                PodStatus::Spawned,
+                PodStatus::AwaitingApproval,
+                PodStatus::Idle,
+            ],
+            vec![
+                PodStatus::Spawned,
+                PodStatus::AwaitingApproval,
+                PodStatus::Failed,
+            ],
+            vec![PodStatus::Idle, PodStatus::Cancelled],
+        ] {
+            for pair in sequence.windows(2) {
+                assert!(
+                    authoritative_pod_transition_allowed(pair[0], pair[1]),
+                    "{pair:?}"
+                );
+            }
+        }
+        assert!(!authoritative_pod_transition_allowed(
+            PodStatus::Cancelled,
+            PodStatus::Idle
+        ));
+        assert!(!authoritative_pod_transition_allowed(
+            PodStatus::Failed,
+            PodStatus::Idle
+        ));
     }
 
     #[test]
