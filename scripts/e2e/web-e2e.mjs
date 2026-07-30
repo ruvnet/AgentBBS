@@ -389,6 +389,22 @@ try {
     });
     ok(r.hasForm, 'Pods view has a spawn form');
     ok(r.ok && r.grew && r.tier === 'high', 'spawning a pod adds it with the chosen tier');
+  } else {
+    const admin = await page.evaluate(async () => {
+      window.__ui.VIEWS.pods(); await new Promise(s => setTimeout(s, 150));
+      const link = [...document.querySelectorAll('#thread a')].find(a => /Manage pods in Comms Control Plane/.test(a.textContent));
+      window.__ui.VIEWS.budget(); await new Promise(s => setTimeout(s, 150));
+      return {
+        consoleUrl: (document.querySelector('meta[name="agentbbs-admin-console-url"]') || {}).content || '',
+        spawnHidden: !document.getElementById('pod-spawn'),
+        topupHidden: !document.querySelector('#thread [data-topup]'),
+        link: link && link.href,
+      };
+    });
+    if (admin.consoleUrl) {
+      ok(admin.spawnHidden && admin.topupHidden, 'server UI hides direct HMAC-protected mutations');
+      ok(admin.link === admin.consoleUrl, 'server UI links pod administration to the trusted console');
+    }
   }
 
   // ---- Decisions: record a signed decision (interactive) ----

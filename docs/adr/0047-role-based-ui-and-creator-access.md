@@ -9,6 +9,10 @@ route action (`pods.spawn` or `budget.topup`), expiry, and single-use `jti`.
 the meta-llm ADR-208 `SignedPodEvent` contract with a distinct key family,
 current/previous `kid` rotation, account and URL-pod binding, clock skew,
 telemetry constraints, lifecycle legality, and per-process event deduplication.
+The adapter preserves meta-llm's authoritative vocabulary: recurring `IDLE`,
+parked `AWAITING_APPROVAL`, and owner-terminal `CANCELLED` are distinct states;
+the producer emits only its final next-status snapshot, so direct transitions
+from `SPAWNED` are expected and accepted.
 
 Pod-spawn is named in the Decision below as an administration surface, but only
 the *UI* had ever been gated — the routes themselves accepted any caller, so on
@@ -26,6 +30,13 @@ one writable instance, a durable Redb volume, and short admin-proof lifetimes.
 That prevents concurrent-replica duplication but is not durable exactly-once
 across restart; a shared durable replay store is required before scaling wider
 or claiming restart-safe exactly-once delivery.
+
+The browser never receives the admin HMAC secret. In a server-backed deployment
+direct spawn/top-up controls are replaced by a “Manage pods in Comms Control
+Plane” link configured with `AGENTBBS_ADMIN_CONSOLE_URL`. Those actions pass
+through that trusted BFF, which authenticates the user and creates the narrow
+proof. The URL is navigation metadata, not a client-side secret or browser
+signing endpoint.
 
 Board administration (ADR-0057) and agent personas (ADR-0058) were already
 gated and are unchanged. The rest of Phase 2 — a creator console to mint/revoke

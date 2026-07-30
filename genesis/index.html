@@ -10,6 +10,7 @@
 <!-- @sync:attest-url -->
 <meta name="agentbbs-attest-url" content="" />
 <!-- @sync:attest-url-end -->
+<meta name="agentbbs-admin-console-url" content="" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c5cff'/%3E%3Ctext x='16' y='23' font-size='19' font-family='monospace' font-weight='700' fill='white' text-anchor='middle'%3EA%3C/text%3E%3C/svg%3E" />
@@ -1122,7 +1123,11 @@ function showPods() {
     `<span class="r d">acc ${(c.accuracy * 100).toFixed(0)}% · $${c.cost_usd.toFixed(4)}/task</span></div>`).join('');
   const domOpts = ['research', 'security', 'trading', 'coding', 'ops', 'business-ops'].map(x => `<option>${x}</option>`).join('');
   const tierOpts = ['low', 'mid', 'high'].map(x => `<option${x === 'mid' ? ' selected' : ''}>${x}</option>`).join('');
-  const foot = `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">` +
+  const adminConsoleUrl = (document.querySelector('meta[name="agentbbs-admin-console-url"]') || {}).content || '';
+  const directAdminDisabled = !!adminConsoleUrl;
+  const foot = directAdminDisabled
+    ? `<a class="bbs-btn" href="${esc(adminConsoleUrl)}" target="_blank" rel="noopener">Manage pods in Comms Control Plane ↗</a>`
+    : `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">` +
     `<span class="d">Spawn:</span>` +
     `<select id="pod-domain" style="padding:6px 8px">${domOpts}</select>` +
     `<select id="pod-tier" style="padding:6px 8px">${tierOpts}</select>` +
@@ -1328,7 +1333,7 @@ function showBudget() {
       `<span style="display:inline-block;width:160px;height:6px;background:var(--bbs-inset,#222);border-radius:3px;overflow:hidden;vertical-align:middle">` +
       `<span style="display:block;height:100%;width:${(pct * 100).toFixed(0)}%;background:${barColor}"></span></span></span>` +
       `<span class="r">$${b.spent.toFixed(3)} / $${b.cap.toFixed(2)} ${badge} ` +
-      `<button class="bbs-btn" data-topup="${esc(b.pod_id)}" title="Raise this pod's cap by $0.10">+ cap</button></span></div>`;
+      `${(document.querySelector('meta[name="agentbbs-admin-console-url"]') || {}).content ? '' : `<button class="bbs-btn" data-topup="${esc(b.pod_id)}" title="Raise this pod's cap by $0.10">+ cap</button>`}</span></div>`;
   }).join('');
   panel('Budget Guardrails',
     'Per-pod spend vs its Reserve-and-Commit cap (ADR-0040). Over-budget pods are flagged; raise a cap with + cap. The gateway is the hard enforcer.',
