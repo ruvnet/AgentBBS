@@ -816,8 +816,7 @@ fn resolve_caps(headers: &HeaderMap, now: i64) -> Caps {
 ///   back to `MemoryStore` outside production.
 fn admin_gate(caps: Caps, roles_configured: bool, production: bool) -> Result<(), String> {
     if roles_configured {
-        return agentbbs_core::caps::require(caps, Caps::SYSOP, "admin")
-            .map_err(|e| e.to_string());
+        return agentbbs_core::caps::require(caps, Caps::SYSOP, "admin").map_err(|e| e.to_string());
     }
     if production {
         return Err(
@@ -3612,9 +3611,7 @@ mod tests {
         // Spawn.
         let resp = app
             .clone()
-            .oneshot(
-                admin_post("/api/pods", &spec),
-            )
+            .oneshot(admin_post("/api/pods", &spec))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -3625,9 +3622,7 @@ mod tests {
         // Idempotent re-spawn returns the same id.
         let resp = app
             .clone()
-            .oneshot(
-                admin_post("/api/pods", &spec),
-            )
+            .oneshot(admin_post("/api/pods", &spec))
             .await
             .unwrap();
         assert_eq!(body_json(resp).await["id"], id);
@@ -3667,12 +3662,7 @@ mod tests {
         // Invalid spec (tier above max_tier) → 400.
         let mut bad = spec.clone();
         bad["tier"] = serde_json::json!("high");
-        let resp = app
-            .oneshot(
-                admin_post("/api/pods", &bad),
-            )
-            .await
-            .unwrap();
+        let resp = app.oneshot(admin_post("/api/pods", &bad)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -3695,9 +3685,7 @@ mod tests {
         });
         let resp = app
             .clone()
-            .oneshot(
-                admin_post("/api/pods", &spec),
-            )
+            .oneshot(admin_post("/api/pods", &spec))
             .await
             .unwrap();
         let id = body_json(resp).await["id"].as_str().unwrap().to_string();
@@ -3706,11 +3694,7 @@ mod tests {
             let app = app.clone();
             let body = serde_json::json!({ "status": status, "summary": summary, "tier_used": "low", "cost_usd": 0.0001 });
             let path = format!("/api/pods/{id}/results");
-            async move {
-                app.oneshot(admin_post(&path, &body))
-                .await
-                .unwrap()
-            }
+            async move { app.oneshot(admin_post(&path, &body)).await.unwrap() }
         };
 
         // Spawned → Executing: 200 + status advances.
@@ -3792,9 +3776,7 @@ mod tests {
         });
         let resp = app
             .clone()
-            .oneshot(
-                admin_post("/api/pods", &spec),
-            )
+            .oneshot(admin_post("/api/pods", &spec))
             .await
             .unwrap();
         let id = body_json(resp).await["id"].as_str().unwrap().to_string();
@@ -3809,12 +3791,10 @@ mod tests {
             .unwrap();
         let resp = app
             .clone()
-            .oneshot(
-                admin_post(
-                    "/api/budget/topup",
-                    &serde_json::json!({ "pod_id": id, "amount": 0.25 }),
-                ),
-            )
+            .oneshot(admin_post(
+                "/api/budget/topup",
+                &serde_json::json!({ "pod_id": id, "amount": 0.25 }),
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -3850,20 +3830,14 @@ mod tests {
         });
         let resp = app
             .clone()
-            .oneshot(
-                admin_post("/api/pods", &spec),
-            )
+            .oneshot(admin_post("/api/pods", &spec))
             .await
             .unwrap();
         let id = body_json(resp).await["id"].as_str().unwrap().to_string();
         let post = |body: serde_json::Value| {
             let app = app.clone();
             let path = format!("/api/pods/{id}/results");
-            async move {
-                app.oneshot(admin_post(&path, &body))
-                .await
-                .unwrap()
-            }
+            async move { app.oneshot(admin_post(&path, &body)).await.unwrap() }
         };
         assert_eq!(
             post(serde_json::json!({ "status": "executing", "summary": "running cve-bench" }))
@@ -6152,7 +6126,6 @@ mod tests {
         std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
     }
 
-
     #[tokio::test]
     async fn pod_result_requires_a_sysop_claim() {
         let _role_env = RoleEnv::acquire();
@@ -6181,7 +6154,8 @@ mod tests {
         // Step-results are posted signed as the pod's server-held identity and
         // write spend, reputation and Arena standings. An unauthenticated
         // caller must not be able to attribute any of that.
-        let body = serde_json::json!({ "status": "completed", "summary": "forged", "cost_usd": 99.0 });
+        let body =
+            serde_json::json!({ "status": "completed", "summary": "forged", "cost_usd": 99.0 });
         let bare = Request::post(format!("/api/pods/{id}/results"))
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -6311,5 +6285,4 @@ mod tests {
 
         std::env::remove_var("AGENTBBS_ENV");
     }
-
 }
