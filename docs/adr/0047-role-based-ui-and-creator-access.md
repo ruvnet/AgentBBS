@@ -30,6 +30,9 @@ one writable instance, a durable Redb volume, and short admin-proof lifetimes.
 That prevents concurrent-replica duplication but is not durable exactly-once
 across restart; a shared durable replay store is required before scaling wider
 or claiming restart-safe exactly-once delivery.
+Within one process, each pod also tracks its last accepted callback timestamp:
+a distinct older event is rejected, and distinct events tied at the same
+millisecond are rejected as ambiguous. Exact event-id retries remain idempotent.
 
 The browser never receives the admin HMAC secret. In a server-backed deployment
 direct spawn/top-up controls are replaced by a “Manage pods in Comms Control

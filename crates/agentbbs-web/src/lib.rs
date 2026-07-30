@@ -147,8 +147,8 @@ pub struct AppState {
     teams_seen: Mutex<agentbbs_bridge::SeenSet>,
     /// Single-use proof ids for route-scoped administration actions.
     admin_replays: Mutex<admin_action::ReplayGuard>,
-    /// Successfully applied ADR-208 callback event ids.
-    pod_result_events: Mutex<std::collections::HashSet<String>>,
+    /// ADR-208 callback dedupe + per-pod ordering guard.
+    pod_result_events: Mutex<PodEventGuard>,
     /// Open free-form messaging windows per WhatsApp recipient (ADR-0053) —
     /// records each inbound so a board reply can be mirrored back out only
     /// within the 24h window.
@@ -184,7 +184,7 @@ impl AppState {
             whatsapp_seen: Mutex::new(agentbbs_bridge::SeenSet::new()),
             teams_seen: Mutex::new(agentbbs_bridge::SeenSet::new()),
             admin_replays: Mutex::new(admin_action::ReplayGuard::default()),
-            pod_result_events: Mutex::new(std::collections::HashSet::new()),
+            pod_result_events: Mutex::new(PodEventGuard::default()),
             whatsapp_window: Mutex::new(agentbbs_bridge::SessionWindow::new()),
         })
     }
@@ -1867,13 +1867,18 @@ fn pods_spawn_url(base: &str) -> String {
 }
 
 /// Map the meta-llm `PodStatus` string (UPPERCASE) onto our lifecycle enum.
-fn map_gateway_status(s: &str) -> PodStatus {
-    match s {
+fn map_gateway_status(s: &str) -> Result<PodStatus, String> {
+    Ok(match s {
+        "SPAWNED" => PodStatus::Spawned,
         "EXECUTING" => PodStatus::Executing,
         "EVALUATING" => PodStatus::Evaluating,
         "ESCALATING" => PodStatus::Escalating,
-        _ => PodStatus::Spawned, // SPAWNED / IDLE / PAUSED / unknown
-    }
+        "IDLE" => PodStatus::Idle,
+        "PAUSED" => PodStatus::Failed,
+        "AWAITING_APPROVAL" => PodStatus::AwaitingApproval,
+        "CANCELLED" => PodStatus::Cancelled,
+        other => return Err(format!("unknown gateway pod status: {other}")),
+    })
 }
 
 /// `POST /v1/pods/spawn` via the cog_ gateway. Returns `(pod_id, status)` or an
@@ -1900,7 +1905,11 @@ async fn spawn_via_gateway(
         .as_str()
         .ok_or("gateway response missing pod_id")?
         .to_string();
-    let st = map_gateway_status(data["status"].as_str().unwrap_or("SPAWNED"));
+    let st = map_gateway_status(
+        data["status"]
+            .as_str()
+            .ok_or("gateway response missing status")?,
+    )?;
     Ok((pod_id, st))
 }
 
@@ -1961,9 +1970,17 @@ async fn poll_pod_status(cfg: &PodsConfig, id: &str) -> Result<PodStatus, String
         return Err(format!("gateway returned {status}"));
     }
     let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    Ok(map_gateway_status(
-        data["status"].as_str().unwrap_or("SPAWNED"),
-    ))
+    map_gateway_status(
+        data["status"]
+            .as_str()
+            .ok_or("gateway response missing status")?,
+    )
+}
+
+#[derive(Default)]
+struct PodEventGuard {
+    seen: std::collections::HashSet<String>,
+    last: HashMap<String, (i64, String)>,
 }
 
 /// A pod step-result posted back by the runtime (ADR-0035): the new lifecycle
@@ -2096,6 +2113,7 @@ async fn api_pods_result(
         .pod_result_events
         .lock()
         .unwrap()
+        .seen
         .contains(&event.event_id)
     {
         return Ok(Json(existing));
@@ -2126,23 +2144,34 @@ async fn api_pods_result(
     // Reserve the event id only after every authentication, binding and
     // lifecycle check. A duplicate returns the already-applied state without
     // repeating board, spend, reputation, or Arena effects.
-    let raced_duplicate = !state
-        .pod_result_events
-        .lock()
-        .unwrap()
-        .insert(event.event_id.clone());
-    if raced_duplicate {
-        let pod = state
-            .pods
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|p| p.id == id)
-            .cloned()
-            .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "pod not found"))?;
-        return Ok(Json(pod));
-    }
-
+    let previous_order = {
+        let mut guard = state.pod_result_events.lock().unwrap();
+        if guard.seen.contains(&event.event_id) {
+            drop(guard);
+            let pod = state
+                .pods
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|p| p.id == id)
+                .cloned()
+                .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "pod not found"))?;
+            return Ok(Json(pod));
+        }
+        if let Some((last_ts, last_id)) = guard.last.get(&id) {
+            if event.ts < *last_ts || (event.ts == *last_ts && event.event_id != *last_id) {
+                return Err(api_error(
+                    StatusCode::CONFLICT,
+                    "pod result event is older than or ambiguously tied with the last accepted event",
+                ));
+            }
+        }
+        let previous = guard
+            .last
+            .insert(id.clone(), (event.ts, event.event_id.clone()));
+        guard.seen.insert(event.event_id.clone());
+        previous
+    };
     // The pod's stable anonymous identity (per-pod key, server-held).
     let identity = state.agent_identity(&format!("pod:{id}"));
     // Ensure the room board exists (create on first result).
@@ -2174,11 +2203,16 @@ async fn api_pods_result(
         &body,
         &format!("pod:{domain}"),
     ) {
-        state
-            .pod_result_events
-            .lock()
-            .unwrap()
-            .remove(&event.event_id);
+        let mut guard = state.pod_result_events.lock().unwrap();
+        guard.seen.remove(&event.event_id);
+        match previous_order {
+            Some(previous) => {
+                guard.last.insert(id.clone(), previous);
+            }
+            None => {
+                guard.last.remove(&id);
+            }
+        }
         return Err(api_error(
             StatusCode::BAD_REQUEST,
             format!("post failed: {e}"),
@@ -4231,8 +4265,36 @@ mod tests {
             pods_spawn_url("https://gw.example/"),
             "https://gw.example/v1/pods/spawn"
         );
-        assert_eq!(map_gateway_status("EVALUATING"), PodStatus::Evaluating);
-        assert_eq!(map_gateway_status("PAUSED"), PodStatus::Spawned);
+        for (wire, local) in [
+            ("SPAWNED", PodStatus::Spawned),
+            ("EXECUTING", PodStatus::Executing),
+            ("EVALUATING", PodStatus::Evaluating),
+            ("ESCALATING", PodStatus::Escalating),
+            ("IDLE", PodStatus::Idle),
+            ("PAUSED", PodStatus::Failed),
+            ("AWAITING_APPROVAL", PodStatus::AwaitingApproval),
+            ("CANCELLED", PodStatus::Cancelled),
+        ] {
+            assert_eq!(map_gateway_status(wire).unwrap(), local);
+        }
+        assert!(map_gateway_status("NEW_UNKNOWN_STATUS").is_err());
+        // A signed callback followed by GET polling must preserve/advance the
+        // same explicit vocabulary rather than collapse back to Spawned.
+        let callback_status = PodStatus::Idle;
+        let mut after_callback = map_gateway_status("IDLE").unwrap();
+        assert_eq!(after_callback, callback_status);
+        after_callback = map_gateway_status("AWAITING_APPROVAL").unwrap();
+        assert_eq!(after_callback, PodStatus::AwaitingApproval);
+        after_callback = map_gateway_status("CANCELLED").unwrap();
+        assert_eq!(after_callback, PodStatus::Cancelled);
+        let before_unknown = after_callback;
+        if let Ok(mapped) = map_gateway_status("FUTURE_STATUS") {
+            after_callback = mapped;
+        }
+        assert_eq!(
+            after_callback, before_unknown,
+            "unknown poll status means no update"
+        );
         assert_eq!(
             pods_get_url("https://gw.example/", "pod_abc"),
             "https://gw.example/v1/pods/pod_abc"
@@ -5895,6 +5957,22 @@ mod tests {
         event_id: &str,
         signing_secret: &str,
     ) -> Request<Body> {
+        signed_result_post_at(
+            path,
+            body,
+            event_id,
+            signing_secret,
+            chrono::Utc::now().timestamp_millis(),
+        )
+    }
+
+    fn signed_result_post_at(
+        path: &str,
+        body: &serde_json::Value,
+        event_id: &str,
+        signing_secret: &str,
+        now: i64,
+    ) -> Request<Body> {
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
         std::env::set_var("AGENTBBS_RESULTS_SIGNING_KEY_ID", "test-results-v1");
@@ -5912,7 +5990,6 @@ mod tests {
             "cancelled" => "CANCELLED",
             _ => panic!("unsupported test status"),
         };
-        let now = chrono::Utc::now().timestamp_millis();
         let raw = serde_json::json!({
             "pod_id": pod_id, "account_id": "acct-test", "event": "step", "status": status,
             "tier": body.get("tier_used").cloned().unwrap_or(serde_json::Value::Null),
@@ -6361,12 +6438,13 @@ mod tests {
         };
         assert_eq!(spent(app.clone()).await, 0.0);
 
-        let first = signed_result_post_with(&path, &result, "evt-once", "result-secret");
+        let event_ts = chrono::Utc::now().timestamp_millis();
+        let first = signed_result_post_at(&path, &result, "evt-once", "result-secret", event_ts);
         assert_eq!(
             app.clone().oneshot(first).await.unwrap().status(),
             StatusCode::OK
         );
-        let retry = signed_result_post_with(&path, &result, "evt-once", "result-secret");
+        let retry = signed_result_post_at(&path, &result, "evt-once", "result-secret", event_ts);
         assert_eq!(
             app.clone().oneshot(retry).await.unwrap().status(),
             StatusCode::OK
@@ -6375,6 +6453,34 @@ mod tests {
             spent(app.clone()).await,
             0.1,
             "retry must not record spend twice"
+        );
+
+        let stale = signed_result_post_at(
+            &path,
+            &serde_json::json!({"status":"escalating", "summary":"stale", "cost_usd":0.2}),
+            "evt-stale",
+            "result-secret",
+            event_ts - 1,
+        );
+        assert_eq!(
+            app.clone().oneshot(stale).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        let tied = signed_result_post_at(
+            &path,
+            &serde_json::json!({"status":"escalating", "summary":"tied", "cost_usd":0.2}),
+            "evt-tied",
+            "result-secret",
+            event_ts,
+        );
+        assert_eq!(
+            app.clone().oneshot(tied).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            spent(app.clone()).await,
+            0.1,
+            "out-of-order events have no effect"
         );
     }
 
