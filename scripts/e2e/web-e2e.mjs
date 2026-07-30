@@ -419,14 +419,33 @@ try {
         await new Promise(s => setTimeout(s, 100));
       }
       const fresh = isNew();
+      const currentBtn = document.getElementById('pod-spawn');
+      const enabledAfterSuccess = !!currentBtn && !currentBtn.disabled;
+      const firstNotes = new Set(window.__notes);
+      if (enabledAfterSuccess) currentBtn.click();
+      const secondIsNew = () => window.__notes.find(n => !firstNotes.has(n));
+      for (let i = 0; i < 80 && !secondIsNew(); i++) {
+        await new Promise(s => setTimeout(s, 100));
+      }
+      const second = secondIsNew();
       // Report the timeout explicitly rather than falling back to a stale note.
-      return { missing: false, timedOut: !fresh, note: fresh ? fresh.text : '' };
+      return {
+        missing: false,
+        timedOut: !fresh,
+        note: fresh ? fresh.text : '',
+        enabledAfterSuccess,
+        secondTimedOut: !second,
+        secondNote: second ? second.text : '',
+      };
     });
     ok(!r.missing, 'Pods view exposes the spawn controls');
     ok(!r.timedOut, 'clicking Spawn pod produces a notification');
     ok(!r.timedOut && !/spawn failed/i.test(r.note), `clicking Spawn pod reports success, not failure -> "${r.note}"`);
     ok(!r.timedOut && /security/.test(r.note) && /security-ops/.test(r.note) && !/undefined/.test(r.note),
       `spawn notification names the pod's domain and room -> "${r.note}"`);
+    ok(r.enabledAfterSuccess, 'Spawn pod remains enabled after the success re-render');
+    ok(!r.secondTimedOut && !/spawn failed/i.test(r.secondNote),
+      `a second Spawn pod click remains operable -> "${r.secondNote}"`);
   }
 
   // ---- Decisions: record a signed decision (interactive) ----
