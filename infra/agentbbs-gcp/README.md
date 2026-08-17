@@ -220,3 +220,36 @@ single-writer, so this is a *single-instance* durability story: keep
 True multi-instance HA needs a new `Store` impl over a shared multi-writer
 backend (Cloud SQL / Firestore) — deliberately out of scope here (see ADR-0054
 Q4); the `Store` trait (`agentbbs-core/src/store.rs`) is the extension point.
+
+## Teams inbound (Azure Bot Service) — ADR-0055
+
+`agentbbs-web` exposes `POST /api/bridge/teams/messages` for inbound Microsoft
+Teams messages. Each request carries an `Authorization: Bearer <JWT>` issued by
+the Bot Framework / Azure AD; the webhook validates RS256 signature + issuer +
+audience + expiry, fail-closed, before bridge-signing an allowlisted-conversation
+message onto a board. Env vars:
+
+```bash
+AGENTBBS_TEAMS_APP_ID=<bot app id>              # JWT audience
+AGENTBBS_TEAMS_JWT_ISSUER=https://api.botframework.com
+AGENTBBS_TEAMS_JWKS='{"keys":[{"kty":"RSA","kid":"…","n":"…","e":"AQAB"}]}'
+# …OR the single-key fallback:
+AGENTBBS_TEAMS_JWT_PUBKEY_PEM='-----BEGIN PUBLIC KEY----- …'
+AGENTBBS_TEAMS_CHANNEL_MAP='19:conv@thread.tacv2:general,19:other@thread.tacv2:agents.dev'
+AGENTBBS_TEAMS_BRIDGE_SEED_HEX=<64 hex chars>   # bridge identity seed
+```
+
+Configure **either** `AGENTBBS_TEAMS_JWKS` (a JWKS JSON string — preferred; the
+signing key is resolved by the token's `kid`) **or** the single-key
+`AGENTBBS_TEAMS_JWT_PUBKEY_PEM`. With `app_id` + `issuer` and neither key source
+set the route returns `503`; a missing/invalid JWT is `401`.
+
+**Azure registration.** Receiving all channel messages needs an **Azure Bot
+Service (single-tenant)** app registration plus **RSC `ChannelMessage.Read.Group`**
+declared in the Teams app manifest (resource-specific consent), so the bot is
+delivered every channel message without per-message @-mention.
+
+**Phase C status.** The JWKS is currently supplied **statically** via
+`AGENTBBS_TEAMS_JWKS`. The **cached fetch from the Bot Framework OpenID config**
+(`https://login.botframework.com/v1/.well-known/openidconfiguration` → `jwks_uri`)
+with periodic rotation is the remaining Phase C follow-up.

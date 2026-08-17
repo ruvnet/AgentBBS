@@ -2290,8 +2290,11 @@ async fn api_teams_messages(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let app_id = std::env::var("AGENTBBS_TEAMS_APP_ID").unwrap_or_default();
     let issuer = std::env::var("AGENTBBS_TEAMS_JWT_ISSUER").unwrap_or_default();
+    let jwks = std::env::var("AGENTBBS_TEAMS_JWKS").unwrap_or_default();
     let pem = std::env::var("AGENTBBS_TEAMS_JWT_PUBKEY_PEM").unwrap_or_default();
-    if app_id.is_empty() || issuer.is_empty() || pem.is_empty() {
+    // Configured if we have an audience + issuer AND at least one key source
+    // (a JWKS — Phase C — or the single PEM — Phase B).
+    if app_id.is_empty() || issuer.is_empty() || (jwks.is_empty() && pem.is_empty()) {
         return Err(api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "teams bridge not configured",
@@ -2302,7 +2305,26 @@ async fn api_teams_messages(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
-    if !teams_bridge::validate_jwt(token, pem.as_bytes(), &issuer, &app_id) {
+    // Prefer the JWKS (kid-resolved) path when configured; fall back to the
+    // single PEM. A JWKS that isn't valid JSON is a config/validation failure,
+    // not a 503 — fail closed with a 401.
+    let valid = if !jwks.is_empty() {
+        match serde_json::from_str::<serde_json::Value>(&jwks) {
+            Ok(v) => teams_bridge::validate_jwt_jwks(
+                token,
+                &teams_bridge::parse_jwks(&v),
+                &issuer,
+                &app_id,
+            ),
+            Err(_) => {
+                tracing::warn!("AGENTBBS_TEAMS_JWKS is not valid JSON");
+                false
+            }
+        }
+    } else {
+        teams_bridge::validate_jwt(token, pem.as_bytes(), &issuer, &app_id)
+    };
+    if !valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "invalid token"));
     }
     let payload: serde_json::Value = serde_json::from_str(&body)
@@ -4702,13 +4724,17 @@ mod tests {
         std::env::remove_var("AGENTBBS_WHATSAPP_APP_SECRET");
     }
 
-    // ADR-0055 Phase B: Teams inbound bridge route wiring. Owns
-    // AGENTBBS_TEAMS_* for its duration — no other test touches these
-    // (single-owner env var idiom). The RS256 keypair is generated in-test;
-    // no private key material is ever committed.
+    // ADR-0055 Phase B + C: Teams inbound bridge route wiring — the PEM path
+    // (Phase B) and the static-JWKS path (Phase C, keyed by the token's `kid`)
+    // are exercised in one test so they share sole ownership of the
+    // AGENTBBS_TEAMS_* env vars (single-owner idiom — no other test touches
+    // these). The RS256 keypair + JWKS are generated in-test; no private key
+    // material is ever committed.
     #[tokio::test]
     async fn teams_messages_route_rejects_unconfigured_bad_token_and_accepts_valid() {
-        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+        use base64::Engine;
+        use rsa::pkcs8::{DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding};
+        use rsa::traits::PublicKeyParts;
         use rsa::{RsaPrivateKey, RsaPublicKey};
 
         // Generate an RS256 keypair in-test (private key never leaves the process).
@@ -4825,9 +4851,73 @@ mod tests {
         let json = body_json(resp).await;
         assert_eq!(json["ok"], true);
 
+        // Phase C: swap the single PEM for a static JWKS (built from the same
+        // keypair, tagged with a `kid`). The route prefers the JWKS path and
+        // resolves the signing key by the token's `kid`.
+        let public_key = RsaPublicKey::from_public_key_pem(&public_pem).unwrap();
+        let n =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be());
+        let e =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be());
+        let jwks = serde_json::json!({
+            "keys": [ { "kty": "RSA", "kid": "test-kid", "n": n, "e": e } ]
+        })
+        .to_string();
+        let sign_kid = |kid: &str| -> String {
+            #[derive(serde::Serialize)]
+            struct C {
+                aud: String,
+                iss: String,
+                exp: i64,
+            }
+            let claims = C {
+                aud: app_id.to_string(),
+                iss: issuer.to_string(),
+                exp: chrono::Utc::now().timestamp() + 3600,
+            };
+            let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+            header.kid = Some(kid.to_string());
+            let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_pem.as_bytes()).unwrap();
+            jsonwebtoken::encode(&header, &claims, &key).unwrap()
+        };
+        std::env::remove_var("AGENTBBS_TEAMS_JWT_PUBKEY_PEM");
+        std::env::set_var("AGENTBBS_TEAMS_JWKS", &jwks);
+
+        // Bad Bearer against the JWKS config → 401.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/bridge/teams/messages")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer not-a-jwt")
+                    .body(Body::from(activity))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Valid JWKS-signed token (matching kid) → 200.
+        let jwks_token = sign_kid("test-kid");
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/bridge/teams/messages")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {jwks_token}"))
+                    .body(Body::from(activity))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["ok"], true);
+
         std::env::remove_var("AGENTBBS_TEAMS_APP_ID");
         std::env::remove_var("AGENTBBS_TEAMS_JWT_ISSUER");
         std::env::remove_var("AGENTBBS_TEAMS_JWT_PUBKEY_PEM");
+        std::env::remove_var("AGENTBBS_TEAMS_JWKS");
         std::env::remove_var("AGENTBBS_TEAMS_CHANNEL_MAP");
         std::env::remove_var("AGENTBBS_TEAMS_BRIDGE_SEED_HEX");
     }
