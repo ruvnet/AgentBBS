@@ -30,6 +30,7 @@ reqwest = { workspace = true, features = ["json"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+ryu-js = "1"
 jsonwebtoken = { workspace = true }
 
 [dev-dependencies]

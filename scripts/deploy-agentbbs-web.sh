@@ -5,7 +5,7 @@
 # run.admin + artifactregistry.writer + secretmanager.admin, so it can build/push
 # to AR, deploy Cloud Run, and read the secret at runtime.
 #
-# SECURITY: the cog_ key is injected ONLY as a Secret Manager reference via
+# SECURITY: credentials are injected ONLY as Secret Manager references via
 # --set-secrets (never a literal); nothing secret is printed or committed. The
 # static GitHub Pages site never holds the key — it talks to THIS server, which
 # holds the key server-side and proxies to meta-llm.
@@ -19,6 +19,20 @@ SA=darwin-nightly@cognitum-20260110.iam.gserviceaccount.com
 GATEWAY=https://apicompletions-63rzcdswba-uc.a.run.app   # live meta-llm gateway (issue #6)
 TAG="$(git rev-parse --short HEAD)"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:${TAG}"
+: "${AGENTBBS_NFS_LOCATION:?set Filestore IP:/share for durable redb storage}"
+: "${AGENTBBS_ADMIN_CONSOLE_URL:?set trusted Comms control-plane URL; direct browser mutations cannot hold the HMAC key}"
+
+: "${AGENTBBS_RESULTS_ACCOUNT_ID:?set expected meta-llm account}"
+: "${AGENTBBS_RESULTS_SIGNING_KEY_ID:?set current kid}"
+
+DEPLOY_SECRETS="AGENTBBS_COGNITUM_KEY=AGENTBBS_COGNITUM_KEY:latest,AGENTBBS_ADMIN_ACTION_SECRET=AGENTBBS_ADMIN_ACTION_SECRET:latest,AGENTBBS_RESULTS_SIGNING_SECRET=AGENTBBS_RESULTS_SIGNING_SECRET:latest"
+DEPLOY_ENV="AGENTBBS_ENV=production,AGENTBBS_DB_PATH=/data/agentbbs.redb,AGENTBBS_ADMIN_ACTION_AUDIENCE=agentbbs-web,AGENTBBS_ADMIN_CONSOLE_URL=${AGENTBBS_ADMIN_CONSOLE_URL},AGENTBBS_RESULTS_ACCOUNT_ID=${AGENTBBS_RESULTS_ACCOUNT_ID},AGENTBBS_RESULTS_SIGNING_KEY_ID=${AGENTBBS_RESULTS_SIGNING_KEY_ID},AGENTBBS_PODS_BASE_URL=${GATEWAY},AGENTBBS_LLM_BASE_URL=${GATEWAY}/v1,AGENTBBS_PODS_KEY_ENV=AGENTBBS_COGNITUM_KEY,AGENTBBS_LLM_KEY_ENV=AGENTBBS_COGNITUM_KEY,AGENTBBS_MODEL=cognitum-auto,AGENTBBS_LLM_DAILY_MAX=500,RUST_LOG=info"
+if [[ -n "${AGENTBBS_RESULTS_PREVIOUS_SIGNING_KEY_ID:-}" || -n "${AGENTBBS_RESULTS_PREVIOUS_SECRET_VERSION:-}" ]]; then
+  : "${AGENTBBS_RESULTS_PREVIOUS_SIGNING_KEY_ID:?set both previous kid and secret version, or neither}"
+  : "${AGENTBBS_RESULTS_PREVIOUS_SECRET_VERSION:?set both previous kid and secret version, or neither}"
+  DEPLOY_SECRETS+=",AGENTBBS_RESULTS_PREVIOUS_SIGNING_SECRET=AGENTBBS_RESULTS_SIGNING_SECRET:${AGENTBBS_RESULTS_PREVIOUS_SECRET_VERSION}"
+  DEPLOY_ENV+=",AGENTBBS_RESULTS_PREVIOUS_SIGNING_KEY_ID=${AGENTBBS_RESULTS_PREVIOUS_SIGNING_KEY_ID}"
+fi
 
 echo "==> building $IMAGE"
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" -q
@@ -31,9 +45,11 @@ echo "==> deploying Cloud Run service $SERVICE"
 gcloud run deploy "$SERVICE" \
   --project="$PROJECT" --region="$REGION" --image="$IMAGE" \
   --service-account="$SA" --allow-unauthenticated --port=8080 \
-  --cpu=1 --memory=512Mi --max-instances=4 --min-instances=0 \
-  --set-secrets="AGENTBBS_COGNITUM_KEY=AGENTBBS_COGNITUM_KEY:latest" \
-  --set-env-vars="AGENTBBS_PODS_BASE_URL=${GATEWAY},AGENTBBS_LLM_BASE_URL=${GATEWAY}/v1,AGENTBBS_PODS_KEY_ENV=AGENTBBS_COGNITUM_KEY,AGENTBBS_LLM_KEY_ENV=AGENTBBS_COGNITUM_KEY,AGENTBBS_MODEL=cognitum-auto,AGENTBBS_LLM_DAILY_MAX=500,RUST_LOG=info"
+  --add-volume="name=agentbbs-data,type=nfs,location=${AGENTBBS_NFS_LOCATION}" \
+  --add-volume-mount="volume=agentbbs-data,mount-path=/data" \
+  --cpu=1 --memory=512Mi --max-instances=1 --min-instances=1 \
+  --set-secrets="$DEPLOY_SECRETS" \
+  --set-env-vars="$DEPLOY_ENV"
 
 URL="$(gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" --format='value(status.url)')"
 echo "==> deployed: $URL"

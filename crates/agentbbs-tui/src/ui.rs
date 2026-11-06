@@ -600,8 +600,11 @@ impl App {
                 PodStatus::Executing => "executing",
                 PodStatus::Evaluating => "evaluating",
                 PodStatus::Escalating => "escalating",
+                PodStatus::Idle => "idle",
+                PodStatus::AwaitingApproval => "awaiting",
                 PodStatus::Completed => "completed",
                 PodStatus::Failed => "failed",
+                PodStatus::Cancelled => "cancelled",
             };
             let style = if selected {
                 theme::lightbar(self.theme)

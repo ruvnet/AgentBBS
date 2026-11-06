@@ -42,16 +42,25 @@ pub enum PodStatus {
     Evaluating,
     /// Bumping the tier after an ambiguous/failed cheap pass.
     Escalating,
+    /// A live recurring pod between scheduled steps (meta-llm `IDLE`).
+    Idle,
+    /// Parked pending a human approval verdict (ADR-207).
+    AwaitingApproval,
     /// Finished successfully (gate passed / goal met).
     Completed,
     /// Finished unsuccessfully (gate failed / budget exhausted / error).
     Failed,
+    /// Terminal owner-initiated stop, distinct from a system failure/pause.
+    Cancelled,
 }
 
 impl PodStatus {
     /// Whether this is a terminal state (no further transitions).
     pub fn is_terminal(self) -> bool {
-        matches!(self, PodStatus::Completed | PodStatus::Failed)
+        matches!(
+            self,
+            PodStatus::Completed | PodStatus::Failed | PodStatus::Cancelled
+        )
     }
 
     /// Whether `self → next` is a legal lifecycle transition.
@@ -66,6 +75,19 @@ impl PodStatus {
                 | (Evaluating, Failed)
                 | (Escalating, Executing)
                 | (Executing, Failed)
+                | (Spawned, Idle)
+                | (Spawned, AwaitingApproval)
+                | (Spawned, Cancelled)
+                | (Idle, Idle)
+                | (Idle, Escalating)
+                | (Idle, AwaitingApproval)
+                | (Idle, Failed)
+                | (Idle, Cancelled)
+                | (Escalating, Idle)
+                | (Escalating, AwaitingApproval)
+                | (AwaitingApproval, Idle)
+                | (AwaitingApproval, Failed)
+                | (AwaitingApproval, Cancelled)
         )
     }
 }
