@@ -573,7 +573,10 @@ function agentNotify(text, from = 'AgentBBS') {
   notify(text, 'agent');
   try {
     addDmPeer('notifications');
-    if (identity && identity.seed) store.post(identity.seed, { board: 'dm:notifications', body: text, handle: from });
+    // store.noLocalDm marks a backend with no dm:* boards (agentbbs-web) — there
+    // the mirror would 400 on every notification. Genesis keeps DMs locally and
+    // leaves the flag unset, so its inbox is unchanged.
+    if (identity && identity.seed && !store.noLocalDm) store.post(identity.seed, { board: 'dm:notifications', body: text, handle: from });
   } catch (_) { /* inbox is best-effort */ }
 }
 function renderNotifs() {
@@ -1108,6 +1111,9 @@ function showDm() {
 }
 
 // ---- Domain agent pods (ADR-0035 control plane) — monitor + config ranking ----
+// Module-scoped so it survives the panel re-rendering mid-spawn (see the spawn
+// handler below); a `disabled` attribute alone would be lost on every re-render.
+let podSpawnInFlight = false;
 function showPods() {
   const d = store.pods();
   const STATUS = { spawned: 'spawned', executing: 'executing', evaluating: 'evaluating', escalating: 'escalating', completed: '✓ completed', failed: '✗ failed' };
@@ -1132,13 +1138,40 @@ function showPods() {
     podRows + '<div class="bbs-sub">Config leaderboard · accuracy-vs-cost frontier (ADR-0023/0035)</div>' + cfgRows,
     foot);
   const sp = document.getElementById('pod-spawn');
-  if (sp) sp.onclick = () => {
-    const domain = document.getElementById('pod-domain').value;
-    const tier = document.getElementById('pod-tier').value;
-    const r = store.spawnPod(domain, tier);
-    if (r && r.ok) { agentNotify(`Spawned ${r.pod.domain} pod [${tier}] → #${r.pod.registered_room}`, 'pods'); showPods(); }
-    else notify((r && r.error) || 'spawn failed', 'agent');
-  };
+  // `await` matters here: genesis' store.spawnPod is synchronous, but the
+  // agentbbs-web adapter's is async (it POSTs /api/pods). Without it, `r` is a
+  // pending Promise on the server frontend — truthy, but with no `.ok` and no
+  // `.error` — so the success branch was unreachable and every spawn, including
+  // a successful one, reported 'spawn failed'. Awaiting a plain object is a
+  // no-op, so genesis is unaffected.
+  // Guard against re-entry: on agentbbs-web the spawn is a real round trip, so
+  // without this a double-click POSTs /api/pods twice and creates two pods.
+  // (An idempotency_key would not help — two clicks are two distinct intents
+  // and would carry two distinct keys; the fix is to not start the second.)
+  // The flag is module-scoped, not a `disabled` attribute on the button: any
+  // re-render — showPods() itself, or navigating away and back — rebinds a
+  // fresh, enabled element, so an element-local latch would not survive.
+  if (sp) {
+    sp.disabled = podSpawnInFlight;
+    sp.onclick = async () => {
+      if (podSpawnInFlight) return;
+      podSpawnInFlight = true;
+      sp.disabled = true;
+      try {
+        const domain = document.getElementById('pod-domain').value;
+        const tier = document.getElementById('pod-tier').value;
+        const r = await store.spawnPod(domain, tier);
+        if (r && r.ok) { agentNotify(`Spawned ${r.pod.domain} pod [${tier}] → #${r.pod.registered_room}`, 'pods'); showPods(); }
+        else notify((r && r.error) || 'spawn failed', 'agent');
+      } finally {
+        podSpawnInFlight = false;
+        // A successful spawn re-renders the panel, so `sp` may now be the
+        // detached button from the previous render. Re-enable the live button.
+        const currentSpawn = document.getElementById('pod-spawn');
+        if (currentSpawn) currentSpawn.disabled = false;
+      }
+    };
+  }
 }
 
 // ---- Approvals inbox (ADR-0038) — human signs off on agent-proposed actions ----
