@@ -123,6 +123,25 @@ export async function signCredential(seedHex, { subject, claim, expiresAt }) {
   return out;
 }
 
+// Canonical agent-reply request bytes — must match agentbbs-web route_auth.rs
+// (`agent_reply_bytes`, domain "agentbbs.agent-reply.v1").
+export function agentReplyBytes({ agent, text, requester, createdAt }) {
+  const fields = [agent, text, requester, createdAt].map((f) => enc.encode(f || ''));
+  const chunks = [enc.encode('agentbbs.agent-reply.v1\n')];
+  for (const f of fields) chunks.push(enc.encode(`${f.length}:`), f, enc.encode('\n'));
+  return concat(chunks);
+}
+
+// Sign a POST /api/agent-reply request (ADR-0048 Battle Mode) as the caller's
+// own identity; the server verifies it before any model call.
+export async function signAgentReply(seedHex, { agent, text }) {
+  const requester = await agentId(seedHex);
+  const createdAt = rfc3339();
+  const bytes = agentReplyBytes({ agent, text, requester, createdAt });
+  const sig = await ed.signAsync(bytes, unhex(seedHex));
+  return { agent, text, requester, created_at: createdAt, signature: hex(sig) };
+}
+
 // ---- identity / key management ----
 
 export function newSeed() {

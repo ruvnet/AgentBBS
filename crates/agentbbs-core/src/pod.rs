@@ -50,6 +50,8 @@ pub enum PodStatus {
     Completed,
     /// Finished unsuccessfully (gate failed / budget exhausted / error).
     Failed,
+    /// Paused by the producer (meta-llm `PAUSED`); resumable, not terminal.
+    Paused,
     /// Terminal owner-initiated stop, distinct from a system failure/pause.
     Cancelled,
 }
@@ -88,6 +90,15 @@ impl PodStatus {
                 | (AwaitingApproval, Idle)
                 | (AwaitingApproval, Failed)
                 | (AwaitingApproval, Cancelled)
+                | (Spawned, Paused)
+                | (Idle, Paused)
+                | (Escalating, Paused)
+                | (AwaitingApproval, Paused)
+                | (Paused, Paused)
+                | (Paused, Idle)
+                | (Paused, AwaitingApproval)
+                | (Paused, Failed)
+                | (Paused, Cancelled)
         )
     }
 }
@@ -394,6 +405,11 @@ mod tests {
         // Illegal jumps.
         assert!(!Spawned.can_transition_to(Completed));
         assert!(!Completed.can_transition_to(Executing));
+        // A producer pause is resumable, not a failure.
+        assert!(!Paused.is_terminal());
+        assert!(Idle.can_transition_to(Paused));
+        assert!(Paused.can_transition_to(Idle));
+        assert!(!Completed.can_transition_to(Paused));
         assert!(Completed.is_terminal() && Failed.is_terminal());
         assert!(!Executing.is_terminal());
         assert_eq!(serde_json::to_value(Escalating).unwrap(), "escalating");
