@@ -5991,12 +5991,21 @@ mod tests {
     ) -> Request<Body> {
         static LAST_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
         let now = chrono::Utc::now().timestamp_millis();
-        let _ = LAST_TS.fetch_update(
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-            |last| Some(now.max(last + 1)),
-        );
-        let event_ts = LAST_TS.load(std::sync::atomic::Ordering::SeqCst);
+        // Strictly increasing per call. A CAS loop rather than `fetch_update`,
+        // which is deprecated on newer toolchains (clippy -D warnings).
+        let mut last = LAST_TS.load(std::sync::atomic::Ordering::SeqCst);
+        let event_ts = loop {
+            let next = now.max(last + 1);
+            match LAST_TS.compare_exchange_weak(
+                last,
+                next,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            ) {
+                Ok(_) => break next,
+                Err(current) => last = current,
+            }
+        };
         signed_result_post_at(path, body, event_id, signing_secret, event_ts)
     }
 
