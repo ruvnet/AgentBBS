@@ -1821,7 +1821,7 @@ impl PinstarState {
 
             // Commit final positions in shared mode (one op per node at final position)
             if self.is_shared() {
-                let ids: Vec<String> = self.moved_node_ids.drain(..).collect();
+                let ids: Vec<String> = std::mem::take(&mut self.moved_node_ids);
                 let mut unique_ids = std::collections::HashSet::new();
                 for id in ids {
                     if unique_ids.insert(id.clone()) {
