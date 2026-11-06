@@ -3,8 +3,11 @@
 Status: Accepted (Phase 1 UI; Phase 2 credential-separated server enforcement)
 Updated: 2026-07-30 — the high-impact pod/budget mutations no longer consume
 the broad legacy role claim. `POST /api/pods` and `POST /api/budget/topup`
-require an `agentbbs.admin-action.v2` HMAC proof bound to the exact audience,
-route action (`pods.spawn` or `budget.topup`), expiry, and single-use `jti`.
+require an `agentbbs.admin-action.v3` HMAC proof bound to the exact audience,
+route action (`pods.spawn` or `budget.topup`), expiry, single-use `jti`, and
+the request itself (method, path and SHA-256 of the body). (Updated 2026-11-06:
+v3 replaced v2; `POST /api/playbooks/run` and `POST /api/runs/{id}/advance`
+use the same proof with actions `playbooks.run` and `runs.advance`.)
 `POST /api/pods/{id}/results` deliberately does **not** accept SYSOP: it verifies
 the meta-llm ADR-208 `SignedPodEvent` contract with a distinct key family,
 current/previous `kid` rotation, account and URL-pod binding, clock skew,
@@ -75,7 +78,7 @@ Introduce three UI roles derived from verifiable state, not ad-hoc flags:
   *Partly superseded 2026-07-30:* members keep read access to the pod and
   budget views, but the three mutating routes no longer accept member (or any
   role-claim) callers. `POST /api/pods` and `POST /api/budget/topup` need an
-  admin-action v2 proof, and `POST /api/pods/{id}/results` needs an ADR-208
+  admin-action v3 proof, and `POST /api/pods/{id}/results` needs an ADR-208
   signed pod event (see the Status block). This matches this ADR's own Decision,
   which already listed pod-spawn as administration rather than collaboration.
 - **creator / admin** — holds a signed **`role:creator`** (or `role:sysop`)
@@ -112,10 +115,15 @@ for members.
 - `genesis/index.html` — `myRole()`/`isCreator()`; admin sections filtered out of
   the sidebar + sheet for non-creators; admin VIEWS nav guarded; a role badge +
   creator toggle in the Passport. Shared render → genesis + agentbbs-web.
-- Phase 2 (redesigned 2026-07-30): `admin_action.rs` verifies route-scoped v2
+- Phase 2 (redesigned 2026-07-30): `admin_action.rs` verifies route-scoped v3
   proofs for spawn/top-up; `signed_pod_event.rs` independently verifies the
   ADR-208 callback. Production startup validates the applicable configuration:
   admin proof verification is always required, while callback verification is
   required when `AGENTBBS_PODS_BASE_URL` enables live pod integration.
+- 2026-11-06: approval decisions count only from `AGENTBBS_APPROVER_IDS`;
+  `POST /api/moderation` requires `Caps::MODERATE` from a verified role claim;
+  `POST /api/agent-reply` must be signed by the caller's own identity; top-ups
+  are capped per request (`AGENTBBS_TOPUP_MAX_USD`, default 25); a producer
+  `PAUSED` maps to a resumable `paused` pod status.
 - Phase 2 remaining: server enforcement on the other admin APIs, a creator
   console to mint/revoke role credentials, and delegated admin via web-of-trust.

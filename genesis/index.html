@@ -510,7 +510,7 @@
 <script type="module">
 /* @sync:adapter-start (genesis: localStorage store + in-browser demo engine) */
 import * as BBS from './vendor/bbscrypto.js';
-import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-28';
+import { store, liveNode, setLiveNode, setReplyEngine } from './vendor/genesis-store.js?v=live-29';
 import { createDemoEngine } from './vendor/demo-engine.js';
 /* @sync:adapter-end */
 
@@ -948,7 +948,7 @@ async function showBattle() {
     if (a === b) return notify('Pick two different agents', 'agent');
     battleState = { a, b, prompt: p, busy: true, result: null }; showBattle();
     try {
-      const [ra, rb] = await Promise.all([store.agentReply(a, p), store.agentReply(b, p)]);
+      const [ra, rb] = await Promise.all([store.agentReply(a, p, identity && identity.seed), store.agentReply(b, p, identity && identity.seed)]);
       battleState = { a, b, prompt: p, busy: false, result: { a, b, prompt: p, ra: ra.body, rb: rb.body } };
     } catch (_) { battleState.busy = false; notify('Battle failed', 'agent'); }
     showBattle();

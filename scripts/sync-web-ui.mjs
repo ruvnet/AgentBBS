@@ -200,10 +200,14 @@ const store = {
   },
   reply: async () => null, // the live node generates agent replies server-side
   // Battle Mode (ADR-0048): one agent's reply via the server (live meta-llm).
-  agentReply: async (mention, text) => {
+  // The request is signed by the caller's identity; the server refuses
+  // unsigned requests before any model call.
+  agentReply: async (mention, text, seed) => {
     const m = (mention || '').replace(/^@/, '').toLowerCase();
+    if (!seed) return { handle: m, body: '(sign in to battle)' };
     try {
-      const r = await fetch('/api/agent-reply', { method: 'POST', headers: H, body: JSON.stringify({ agent: m, text }) });
+      const signed = await BBS.signAgentReply(seed, { agent: m, text });
+      const r = await fetch('/api/agent-reply', { method: 'POST', headers: H, body: JSON.stringify(signed) });
       if (r.ok) { const j = await r.json(); return { handle: j.handle || m, body: j.body }; }
     } catch (_) { /* fall through */ }
     return { handle: m, body: '(no reply)' };

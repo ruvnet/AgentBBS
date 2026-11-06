@@ -604,6 +604,7 @@ impl App {
                 PodStatus::AwaitingApproval => "awaiting",
                 PodStatus::Completed => "completed",
                 PodStatus::Failed => "failed",
+                PodStatus::Paused => "paused",
                 PodStatus::Cancelled => "cancelled",
             };
             let style = if selected {

@@ -34,6 +34,17 @@ if [[ -n "${AGENTBBS_RESULTS_PREVIOUS_SIGNING_KEY_ID:-}" || -n "${AGENTBBS_RESUL
   DEPLOY_ENV+=",AGENTBBS_RESULTS_PREVIOUS_SIGNING_KEY_ID=${AGENTBBS_RESULTS_PREVIOUS_SIGNING_KEY_ID}"
 fi
 
+# Approval deciders: hex agent ids separated by spaces (gcloud splits env on
+# commas). Unset means no approval decision is accepted.
+if [[ -n "${AGENTBBS_APPROVER_IDS:-}" ]]; then
+  [[ "$AGENTBBS_APPROVER_IDS" != *,* ]] || { echo "AGENTBBS_APPROVER_IDS: separate ids with spaces" >&2; exit 1; }
+  DEPLOY_ENV+=",AGENTBBS_APPROVER_IDS=${AGENTBBS_APPROVER_IDS}"
+fi
+# Optional per-request top-up ceiling in USD (server default 25).
+if [[ -n "${AGENTBBS_TOPUP_MAX_USD:-}" ]]; then
+  DEPLOY_ENV+=",AGENTBBS_TOPUP_MAX_USD=${AGENTBBS_TOPUP_MAX_USD}"
+fi
+
 echo "==> building $IMAGE"
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" -q
 docker build -f deploy/Dockerfile -t "$IMAGE" .

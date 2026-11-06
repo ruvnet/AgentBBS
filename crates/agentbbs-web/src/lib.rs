@@ -14,6 +14,7 @@
 
 mod admin_action;
 mod role_claim;
+mod route_auth;
 mod signed_pod_event;
 mod slack_bridge;
 mod teams_bridge;
@@ -147,6 +148,8 @@ pub struct AppState {
     teams_seen: Mutex<agentbbs_bridge::SeenSet>,
     /// Single-use proof ids for route-scoped administration actions.
     admin_replays: Mutex<admin_action::ReplayGuard>,
+    /// Single-use signatures for signed `POST /api/agent-reply` requests.
+    agent_reply_replays: Mutex<admin_action::ReplayGuard>,
     /// ADR-208 callback dedupe + per-pod ordering guard.
     pod_result_events: Mutex<PodEventGuard>,
     /// Per-pod callback serializers; the map lock is held only for lookup.
@@ -186,6 +189,7 @@ impl AppState {
             whatsapp_seen: Mutex::new(agentbbs_bridge::SeenSet::new()),
             teams_seen: Mutex::new(agentbbs_bridge::SeenSet::new()),
             admin_replays: Mutex::new(admin_action::ReplayGuard::default()),
+            agent_reply_replays: Mutex::new(admin_action::ReplayGuard::default()),
             pod_result_events: Mutex::new(PodEventGuard::default()),
             pod_callback_locks: Mutex::new(HashMap::new()),
             whatsapp_window: Mutex::new(agentbbs_bridge::SessionWindow::new()),
@@ -833,8 +837,9 @@ fn resolve_caps(headers: &HeaderMap, now: i64) -> Caps {
 /// raise their spend caps.
 ///
 /// Fail-closed in every release build. The request must carry a valid
-/// `agentbbs.admin-action.v2` proof (see `admin_action`) bound to this node's
-/// audience, this route's action, a short expiry and a single-use `jti`. A node
+/// `agentbbs.admin-action.v3` proof (see `admin_action`) bound to this node's
+/// audience, this route's action, a short expiry, a single-use `jti`, and the
+/// exact request (method, path and a SHA-256 of the raw body). A node
 /// without `AGENTBBS_ADMIN_ACTION_SECRET` and `AGENTBBS_ADMIN_ACTION_AUDIENCE`
 /// refuses these routes outright, whatever `AGENTBBS_ENV` says. Legacy
 /// `x-agentbbs-role*` claims are not accepted here, not even a valid sysop
@@ -844,6 +849,8 @@ fn require_admin_action(
     state: &AppState,
     headers: &HeaderMap,
     action: &str,
+    path: &str,
+    body: &[u8],
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     let secret = std::env::var("AGENTBBS_ADMIN_ACTION_SECRET").unwrap_or_default();
     let audience = std::env::var("AGENTBBS_ADMIN_ACTION_AUDIENCE").unwrap_or_default();
@@ -854,7 +861,12 @@ fn require_admin_action(
         return Ok(());
     }
     let now = chrono::Utc::now().timestamp();
-    let proof = admin_action::verify(headers, action, &secret, &audience, now)
+    let request = admin_action::BoundRequest {
+        method: "POST",
+        path,
+        body,
+    };
+    let proof = admin_action::verify(headers, action, &request, &secret, &audience, now)
         .map_err(|reason| api_error(StatusCode::FORBIDDEN, reason))?;
     state
         .admin_replays
@@ -862,6 +874,16 @@ fn require_admin_action(
         .unwrap()
         .consume(&proof.jti, proof.exp, now)
         .map_err(|reason| api_error(StatusCode::CONFLICT, reason))
+}
+
+/// Parse a JSON body that was read as raw bytes (so an admin proof could hash
+/// it first). Rejections keep the status codes the `Json` extractor would give.
+fn json_body<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+) -> Result<T, (StatusCode, Json<serde_json::Value>)> {
+    Json::<T>::from_bytes(body)
+        .map(|Json(v)| v)
+        .map_err(|e| api_error(e.status(), e.body_text()))
 }
 
 #[cfg(test)]
@@ -1801,12 +1823,13 @@ pub struct PodRecord {
 async fn api_pods_spawn(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(spec): Json<PodSpec>,
+    body: axum::body::Bytes,
 ) -> Result<Json<PodRecord>, (StatusCode, Json<serde_json::Value>)> {
     // ADR-0047 Phase 2: spawning a pod starts real work and, once
     // AGENTBBS_PODS_BASE_URL is configured, real spend against the node's cog_
     // key. Gate it before anything else happens.
-    require_admin_action(&state, &headers, admin_action::SPAWN)?;
+    require_admin_action(&state, &headers, admin_action::SPAWN, "/api/pods", &body)?;
+    let spec: PodSpec = json_body(&body)?;
     spec.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid pod spec: {e}")))?;
     // Idempotency: return an existing record without re-spawning. Scope the lock
@@ -1884,7 +1907,7 @@ fn map_gateway_status(s: &str) -> Result<PodStatus, String> {
         "EVALUATING" => PodStatus::Evaluating,
         "ESCALATING" => PodStatus::Escalating,
         "IDLE" => PodStatus::Idle,
-        "PAUSED" => PodStatus::Failed,
+        "PAUSED" => PodStatus::Paused,
         "AWAITING_APPROVAL" => PodStatus::AwaitingApproval,
         "CANCELLED" => PodStatus::Cancelled,
         other => return Err(format!("unknown gateway pod status: {other}")),
@@ -2044,7 +2067,7 @@ fn pod_result_from_event(event: &signed_pod_event::SignedPodEvent) -> Result<Pod
         "EVALUATING" => PodStatus::Evaluating,
         "ESCALATING" => PodStatus::Escalating,
         "IDLE" => PodStatus::Idle,
-        "PAUSED" => PodStatus::Failed,
+        "PAUSED" => PodStatus::Paused,
         "CANCELLED" => PodStatus::Cancelled,
         "AWAITING_APPROVAL" => PodStatus::AwaitingApproval,
         _ => return Err("unknown pod lifecycle status".into()),
@@ -2323,17 +2346,13 @@ struct RunEntry {
     steps_posted: usize,
 }
 
-fn drive_run(run: &mut PlaybookRun, gate: &ApprovalGate) {
-    loop {
-        let allowed: Vec<agentbbs_core::AgentId> = match run.gate_action_id() {
-            Some(aid) => gate.decisions_for(&aid).iter().map(|d| d.decider).collect(),
-            None => Vec::new(),
-        };
-        match run.advance(gate, &allowed) {
-            RunStatus::Running => continue,
-            _ => break, // AwaitingApproval | Completed | Failed
-        }
-    }
+/// Drive a run until it parks or finishes. A gate counts only decisions from
+/// the operator-configured approvers (`AGENTBBS_APPROVER_IDS`), never from
+/// whoever happened to sign one; an empty set authorizes nothing.
+fn drive_run(run: &mut PlaybookRun, gate: &ApprovalGate, approvers: &[agentbbs_core::AgentId]) {
+    // Running means a step completed and the next may run; anything else
+    // (AwaitingApproval | Completed | Failed) stops the drive.
+    while run.advance(gate, approvers) == RunStatus::Running {}
 }
 
 /// Sign a `kind`-typed board message as the "autopilot" system identity and post
@@ -2426,13 +2445,26 @@ fn run_view(id: &str, run: &PlaybookRun) -> serde_json::Value {
 /// drive it to the first approval gate (or completion). Returns the run state;
 /// approve the gate via `/api/approvals/decision` (signing over `gate_action_id`)
 /// then `POST /api/runs/{id}/advance` (ADR-0041 + ADR-0038).
+/// Requires an `agentbbs.admin-action.v3` proof for `playbooks.run`: a run
+/// writes autopilot posts and, on completion, a DecisionRecord signed as the
+/// org-governance identity.
 async fn api_playbook_run(
     State(state): State<Arc<AppState>>,
-    Json(playbook): Json<Playbook>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    require_admin_action(
+        &state,
+        &headers,
+        admin_action::PLAYBOOK_RUN,
+        "/api/playbooks/run",
+        &body,
+    )?;
+    let playbook: Playbook = json_body(&body)?;
+    let approvers = route_auth::approver_ids();
     let mut run = PlaybookRun::start(playbook)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid playbook: {e}")))?;
-    drive_run(&mut run, &state.gate.lock().unwrap());
+    drive_run(&mut run, &state.gate.lock().unwrap(), &approvers);
     if run.status() == RunStatus::Completed {
         record_run_completion(&state, &run);
     }
@@ -2457,7 +2489,19 @@ async fn api_playbook_run(
 async fn api_run_advance(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    uri: axum::extract::OriginalUri,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // The proof binds the request path, so it names this run id and no other.
+    require_admin_action(
+        &state,
+        &headers,
+        admin_action::RUN_ADVANCE,
+        uri.0.path(),
+        &body,
+    )?;
+    let approvers = route_auth::approver_ids();
     let gate = state.gate.lock().unwrap();
     let mut runs = state.runs.lock().unwrap();
     let entry = runs
@@ -2465,7 +2509,7 @@ async fn api_run_advance(
         .find(|e| e.id == id)
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "run not found"))?;
     let was = entry.run.status();
-    drive_run(&mut entry.run, &gate);
+    drive_run(&mut entry.run, &gate, &approvers);
     // Post any steps completed by this advance to the run's progress thread.
     post_run_progress(&state, entry);
     let completed_now = was != RunStatus::Completed && entry.run.status() == RunStatus::Completed;
@@ -2510,13 +2554,19 @@ async fn api_runs_list(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 }
 
 /// `POST /api/moderation` — record a signed [`ModAction`] (mute/ban/timeout/
-/// lift, ADR-0032). The signature is verified before recording; forged or
-/// tampered actions are rejected. The moderator's `MODERATE` capability is a
-/// deployment policy (enforced by the operator's allowlist in a real node).
+/// lift, ADR-0032). Requires [`Caps::MODERATE`], resolved from a verified role
+/// claim the same way as [`api_set_locked`]; the default `Role::Agent` lacks it,
+/// so a node without `AGENTBBS_ROLE_CLAIM_SECRET` refuses every caller. The
+/// action's signature is then verified before recording; forged or tampered
+/// actions are rejected.
 async fn api_moderation_act(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(action): Json<ModAction>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let caps = resolve_caps(&headers, chrono::Utc::now().timestamp());
+    agentbbs_core::caps::require(caps, Caps::MODERATE, "moderate")
+        .map_err(|e| api_error(StatusCode::FORBIDDEN, e.to_string()))?;
     state
         .moderation
         .lock()
@@ -3227,21 +3277,51 @@ async fn api_drafts_discard(
 /// `POST /api/agent-reply` — generate one named agent's reply to a prompt
 /// WITHOUT posting it (ADR-0048 Battle Mode). Uses the live meta-llm gateway
 /// while under the daily budget cap, else the scripted persona reply.
+///
+/// The request must be signed by the caller's own identity
+/// ([`route_auth::SignedAgentReply`]). Authentication, single-use, moderation
+/// and the per-identity rate limit are all checked before the daily LLM quota
+/// is touched, so a refused request spends nothing.
 async fn api_agent_reply(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<AgentReplyReq>,
-) -> Json<serde_json::Value> {
+    Json(req): Json<route_auth::SignedAgentReply>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let now = chrono::Utc::now();
+    let verified = route_auth::verify_agent_reply(&req, now)
+        .map_err(|reason| api_error(StatusCode::UNAUTHORIZED, reason))?;
+    if !state
+        .moderation
+        .lock()
+        .unwrap()
+        .can_post(&verified.requester, now)
+    {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "requester is blocked by moderation",
+        ));
+    }
+    state
+        .agent_reply_replays
+        .lock()
+        .unwrap()
+        .consume(&verified.nonce, verified.expires, now.timestamp())
+        .map_err(|_| api_error(StatusCode::CONFLICT, "agent-reply request replayed"))?;
+    if !state
+        .rate
+        .lock()
+        .unwrap()
+        .check(&verified.requester.to_hex())
+    {
+        return Err(api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate limit exceeded",
+        ));
+    }
     let agent = req.agent.trim().trim_start_matches('@').to_lowercase();
     let live_allowed = state.llm_quota_ok();
     let prompt = state.resolve_persona_prompt(&agent);
     let (_subject, body) = compose_reply(&agent, &req.text, live_allowed, &prompt).await;
-    Json(serde_json::json!({ "handle": agent, "body": body }))
-}
-
-#[derive(serde::Deserialize)]
-struct AgentReplyReq {
-    agent: String,
-    text: String,
+    Ok(Json(serde_json::json!({ "handle": agent, "body": body })))
 }
 
 async fn api_decision_create(
@@ -3323,15 +3403,30 @@ async fn api_budget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn api_budget_topup(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(req): Json<TopUpReq>,
+    body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     // ADR-0047 Phase 2. ADR-0040 calls the BudgetLedger "defense-in-depth with
     // the gateway's authoritative meter" — a cap any caller can raise is not
     // providing defense in depth. Note the ledger only ever bumps caps upward;
     // there is no lower_cap, so an unauthorised raise is not reversible here.
-    require_admin_action(&state, &headers, admin_action::TOPUP)?;
+    // The proof covers the body, so it is bound to this pod and this amount.
+    require_admin_action(
+        &state,
+        &headers,
+        admin_action::TOPUP,
+        "/api/budget/topup",
+        &body,
+    )?;
+    let req: TopUpReq = json_body(&body)?;
     if !req.amount.is_finite() || req.amount <= 0.0 {
         return Err(api_error(StatusCode::BAD_REQUEST, "amount must be > 0"));
+    }
+    let max = topup_max_usd();
+    if req.amount > max {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            format!("amount exceeds the per-request top-up limit of {max} USD"),
+        ));
     }
     state
         .budget
@@ -3339,6 +3434,19 @@ async fn api_budget_topup(
         .unwrap()
         .bump_cap(&req.pod_id, req.amount);
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Default per-request ceiling on a budget top-up, in USD.
+const DEFAULT_TOPUP_MAX_USD: f64 = 25.0;
+
+/// The per-request top-up ceiling: `AGENTBBS_TOPUP_MAX_USD` when it is a
+/// positive finite number, otherwise [`DEFAULT_TOPUP_MAX_USD`].
+fn topup_max_usd() -> f64 {
+    std::env::var("AGENTBBS_TOPUP_MAX_USD")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(DEFAULT_TOPUP_MAX_USD)
 }
 
 #[derive(serde::Deserialize)]
@@ -3389,12 +3497,16 @@ async fn api_approvals_propose(
 }
 
 /// `POST /api/approvals/decision` — record a human's browser-signed
-/// [`SignedDecision`]. The signature is verified before it is recorded; forged or
-/// tampered decisions are rejected.
+/// [`SignedDecision`]. The decider must be one of this node's configured
+/// approvers (`AGENTBBS_APPROVER_IDS`); a node with none configured refuses
+/// every decision. The signature is then verified before it is recorded;
+/// forged or tampered decisions are rejected.
 async fn api_approvals_decide(
     State(state): State<Arc<AppState>>,
     Json(decision): Json<SignedDecision>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    route_auth::check_approver(&decision.decider, &route_auth::approver_ids())
+        .map_err(|reason| api_error(StatusCode::FORBIDDEN, reason))?;
     state
         .gate
         .lock()
@@ -3408,14 +3520,13 @@ async fn api_approvals_decide(
 /// whether it is currently authorized (an Approve with no veto; fail-closed).
 async fn api_approvals_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let proposals = state.proposals.lock().unwrap();
+    let approvers = route_auth::approver_ids();
     let gate = state.gate.lock().unwrap();
     let views: Vec<serde_json::Value> = proposals
         .iter()
         .map(|p| {
             let decisions = gate.decisions_for(&p.action_id);
-            let deciders: Vec<agentbbs_core::AgentId> =
-                decisions.iter().map(|d| d.decider).collect();
-            let authorized = gate.is_authorized(&p.action_id, &deciders);
+            let authorized = gate.is_authorized(&p.action_id, &approvers);
             serde_json::json!({
                 "action_id": p.action_id,
                 "kind": p.kind,
@@ -3507,6 +3618,10 @@ mod tests {
                     "AGENTBBS_RESULTS_PREVIOUS_SIGNING_KEY_ID",
                     "AGENTBBS_RESULTS_PREVIOUS_SIGNING_SECRET",
                     "AGENTBBS_RESULTS_ACCOUNT_ID",
+                    "AGENTBBS_APPROVER_IDS",
+                    "AGENTBBS_TOPUP_MAX_USD",
+                    "AGENTBBS_LLM_KEY_ENV",
+                    "OPENROUTER_API_KEY",
                 ]
                 .into_iter()
                 .map(|k| (k, std::env::var(k).ok()))
@@ -4151,6 +4266,8 @@ mod tests {
     #[tokio::test]
     async fn moderation_blocks_then_restores_posting() {
         use agentbbs_core::{Identity, ModAction, Sanction};
+        let _env = RoleEnv::acquire();
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
         let app = router(AppState::in_memory());
         let author = Identity::generate();
         let mod_id = Identity::generate();
@@ -4193,12 +4310,10 @@ mod tests {
         let act = |a: ModAction| {
             let app = app.clone();
             async move {
-                app.oneshot(
-                    Request::post("/api/moderation")
-                        .header("content-type", "application/json")
-                        .body(Body::from(serde_json::to_vec(&a).unwrap()))
-                        .unwrap(),
-                )
+                app.oneshot(moderator_claim_request(
+                    "/api/moderation",
+                    serde_json::to_value(&a).unwrap(),
+                ))
                 .await
                 .unwrap()
             }
@@ -4303,7 +4418,7 @@ mod tests {
             ("EVALUATING", PodStatus::Evaluating),
             ("ESCALATING", PodStatus::Escalating),
             ("IDLE", PodStatus::Idle),
-            ("PAUSED", PodStatus::Failed),
+            ("PAUSED", PodStatus::Paused),
             ("AWAITING_APPROVAL", PodStatus::AwaitingApproval),
             ("CANCELLED", PodStatus::Cancelled),
         ] {
@@ -4835,6 +4950,9 @@ mod tests {
     #[tokio::test]
     async fn completed_run_emits_a_decision_record() {
         use agentbbs_core::{Playbook, PlaybookStep, StepKind};
+        let _env = RoleEnv::acquire();
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_SECRET", "admin-secret");
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_AUDIENCE", "agentbbs-prod");
         let app = router(AppState::in_memory());
         let pb = Playbook::new(
             "nightly-ship",
@@ -4858,12 +4976,12 @@ mod tests {
         );
         let resp = app
             .clone()
-            .oneshot(
-                Request::post("/api/playbooks/run")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&pb).unwrap()))
-                    .unwrap(),
-            )
+            .oneshot(admin_proof_raw(
+                "/api/playbooks/run",
+                serde_json::to_vec(&pb).unwrap(),
+                admin_action::PLAYBOOK_RUN,
+                "pb-completed",
+            ))
             .await
             .unwrap();
         assert_eq!(body_json(resp).await["status"], "completed");
@@ -4900,8 +5018,12 @@ mod tests {
     #[tokio::test]
     async fn playbook_run_parks_at_gate_then_completes_on_approval() {
         use agentbbs_core::{Identity, Playbook, PlaybookStep, SignedDecision, StepKind, Verdict};
+        let _env = RoleEnv::acquire();
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_SECRET", "admin-secret");
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_AUDIENCE", "agentbbs-prod");
         let app = router(AppState::in_memory());
         let human = Identity::generate();
+        std::env::set_var("AGENTBBS_APPROVER_IDS", human.id().to_hex());
         let pb = Playbook::new(
             "t",
             "1",
@@ -4931,12 +5053,12 @@ mod tests {
         // Start the run → drives past the AgentTask, parks at the gate.
         let resp = app
             .clone()
-            .oneshot(
-                Request::post("/api/playbooks/run")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&pb).unwrap()))
-                    .unwrap(),
-            )
+            .oneshot(admin_proof_raw(
+                "/api/playbooks/run",
+                serde_json::to_vec(&pb).unwrap(),
+                admin_action::PLAYBOOK_RUN,
+                "pb-parks",
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -4961,11 +5083,12 @@ mod tests {
 
         // Advance → past the gate, runs the Tool, completes.
         let resp = app
-            .oneshot(
-                Request::post(format!("/api/runs/{run_id}/advance"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(admin_proof_raw(
+                &format!("/api/runs/{run_id}/advance"),
+                Vec::new(),
+                admin_action::RUN_ADVANCE,
+                "advance-1",
+            ))
             .await
             .unwrap();
         assert_eq!(body_json(resp).await["status"], "completed");
@@ -4975,9 +5098,13 @@ mod tests {
     #[tokio::test]
     async fn approvals_propose_sign_and_authorize() {
         use agentbbs_core::{Identity, SignedDecision, Verdict};
+        let _env = RoleEnv::acquire();
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_SECRET", "admin-secret");
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_AUDIENCE", "agentbbs-prod");
         let app = router(AppState::in_memory());
         let agent = Identity::generate();
         let human = Identity::generate();
+        std::env::set_var("AGENTBBS_APPROVER_IDS", human.id().to_hex());
 
         // Propose a side-effectful action.
         let resp = app
@@ -5743,7 +5870,7 @@ mod tests {
         let state = AppState::in_memory();
         let mut run = PlaybookRun::start(pb).unwrap();
         // Drive past the AgentTask → parks at the gate (1 step completed).
-        drive_run(&mut run, &state.gate.lock().unwrap());
+        drive_run(&mut run, &state.gate.lock().unwrap(), &[]);
         let mut entry = RunEntry {
             id: "run-0".into(),
             run,
@@ -5943,31 +6070,29 @@ mod tests {
             .unwrap()
     }
 
-    fn admin_v2_post(
+    fn admin_proof_post(
         path: &str,
         body: &serde_json::Value,
         action: &str,
         jti: &str,
     ) -> Request<Body> {
-        use hmac::{Hmac, Mac};
-        use sha2::Sha256;
+        admin_proof_raw(path, serde_json::to_vec(body).unwrap(), action, jti)
+    }
+
+    /// An `agentbbs.admin-action.v3` request whose proof covers exactly `bytes`.
+    fn admin_proof_raw(path: &str, bytes: Vec<u8>, action: &str, jti: &str) -> Request<Body> {
         let exp = chrono::Utc::now().timestamp() + 60;
-        let mut mac = Hmac::<Sha256>::new_from_slice(b"admin-secret").unwrap();
-        mac.update(admin_action::canonical(exp, "agentbbs-prod", action, jti).as_bytes());
-        Request::post(path)
-            .header("content-type", "application/json")
-            .header("x-agentbbs-admin-ver", "2")
-            .header("x-agentbbs-admin-role", "sysop")
-            .header("x-agentbbs-admin-exp", exp.to_string())
-            .header("x-agentbbs-admin-aud", "agentbbs-prod")
-            .header("x-agentbbs-admin-action", action)
-            .header("x-agentbbs-admin-jti", jti)
-            .header(
-                "x-agentbbs-admin-sig",
-                hex::encode(mac.finalize().into_bytes()),
-            )
-            .body(Body::from(serde_json::to_vec(body).unwrap()))
-            .unwrap()
+        let bound = admin_action::BoundRequest {
+            method: "POST",
+            path,
+            body: &bytes,
+        };
+        let headers = admin_action::mint(action, exp, "agentbbs-prod", jti, "admin-secret", &bound);
+        let mut req = Request::post(path).header("content-type", "application/json");
+        for (name, value) in headers.iter() {
+            req = req.header(name, value);
+        }
+        req.body(Body::from(bytes)).unwrap()
     }
 
     fn signed_result_post(path: &str, body: &serde_json::Value) -> Request<Body> {
@@ -6398,7 +6523,7 @@ mod tests {
     // ---- ADR-0047 Phase 2 / ADR-0004 conformance: admin-gated pod + budget ----
 
     #[tokio::test]
-    async fn admin_v2_is_route_scoped_single_use_and_has_no_rejected_side_effects() {
+    async fn admin_proof_is_route_scoped_single_use_and_has_no_rejected_side_effects() {
         let _env = RoleEnv::acquire();
         std::env::set_var("AGENTBBS_ADMIN_ACTION_SECRET", "admin-secret");
         std::env::set_var("AGENTBBS_ADMIN_ACTION_AUDIENCE", "agentbbs-prod");
@@ -6415,7 +6540,7 @@ mod tests {
             app.clone().oneshot(legacy).await.unwrap().status(),
             StatusCode::FORBIDDEN
         );
-        let confused = admin_v2_post("/api/pods", &spec, admin_action::TOPUP, "wrong-route");
+        let confused = admin_proof_post("/api/pods", &spec, admin_action::TOPUP, "wrong-route");
         assert_eq!(
             app.clone().oneshot(confused).await.unwrap().status(),
             StatusCode::FORBIDDEN
@@ -6425,12 +6550,12 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        let accepted = admin_v2_post("/api/pods", &spec, admin_action::SPAWN, "spawn-once");
+        let accepted = admin_proof_post("/api/pods", &spec, admin_action::SPAWN, "spawn-once");
         assert_eq!(
             app.clone().oneshot(accepted).await.unwrap().status(),
             StatusCode::OK
         );
-        let replay = admin_v2_post("/api/pods", &spec, admin_action::SPAWN, "spawn-once");
+        let replay = admin_proof_post("/api/pods", &spec, admin_action::SPAWN, "spawn-once");
         assert_eq!(
             app.clone().oneshot(replay).await.unwrap().status(),
             StatusCode::CONFLICT
@@ -6503,7 +6628,7 @@ mod tests {
         // A real pod to top up, created with a valid spawn proof.
         let resp = app
             .clone()
-            .oneshot(admin_v2_post(
+            .oneshot(admin_proof_post(
                 "/api/pods",
                 &spec,
                 admin_action::SPAWN,
@@ -6530,14 +6655,14 @@ mod tests {
             topup_refusals.push(role_claim("/api/budget/topup", role, &raise));
         }
         // A valid proof for the other route must not carry over.
-        topup_refusals.push(admin_v2_post(
+        topup_refusals.push(admin_proof_post(
             "/api/budget/topup",
             &raise,
             admin_action::SPAWN,
             "topup-wrong-action",
         ));
         // A proof signed with the wrong secret.
-        let mut forged = admin_v2_post(
+        let mut forged = admin_proof_post(
             "/api/budget/topup",
             &raise,
             admin_action::TOPUP,
@@ -6560,7 +6685,7 @@ mod tests {
         }
 
         // The admin path still works: a valid proof raises the cap once.
-        let ok = admin_v2_post(
+        let ok = admin_proof_post(
             "/api/budget/topup",
             &serde_json::json!({ "pod_id": id, "amount": 0.25 }),
             admin_action::TOPUP,
@@ -6572,7 +6697,7 @@ mod tests {
         );
         let after = cap_of(app.clone(), id.clone()).await;
         assert!(after > before);
-        let replay = admin_v2_post(
+        let replay = admin_proof_post(
             "/api/budget/topup",
             &serde_json::json!({ "pod_id": id, "amount": 0.25 }),
             admin_action::TOPUP,
@@ -6735,7 +6860,7 @@ mod tests {
         for (event, status, expected) in [
             ("step", "IDLE", PodStatus::Idle),
             ("step", "ESCALATING", PodStatus::Escalating),
-            ("paused", "PAUSED", PodStatus::Failed),
+            ("paused", "PAUSED", PodStatus::Paused),
             ("paused", "CANCELLED", PodStatus::Cancelled),
             (
                 "awaiting_approval",
@@ -7066,5 +7191,407 @@ mod tests {
         assert!(err.contains("AGENTBBS_ROLE_CLAIM_SECRET"), "{err}");
 
         std::env::remove_var("AGENTBBS_ENV");
+    }
+
+    // ---- unauthenticated write routes: every gate refuses without side effect ----
+
+    /// A JSON POST carrying an optional role claim signed with "sekret".
+    fn claim_post(path: &str, role: Option<&str>, bytes: Vec<u8>) -> Request<Body> {
+        let mut req = Request::post(path).header("content-type", "application/json");
+        if let Some(role) = role {
+            let exp = 9_999_999_999i64;
+            req = req
+                .header("x-agentbbs-role", role)
+                .header("x-agentbbs-role-exp", exp.to_string())
+                .header("x-agentbbs-role-sig", sign_role_claim("sekret", role, exp));
+        }
+        req.body(Body::from(bytes)).unwrap()
+    }
+
+    async fn status_of(app: &Router, req: Request<Body>) -> StatusCode {
+        app.clone().oneshot(req).await.unwrap().status()
+    }
+
+    fn gated_playbook(name: &str) -> agentbbs_core::Playbook {
+        use agentbbs_core::{Playbook, PlaybookStep, StepKind};
+        Playbook::new(
+            name,
+            "1",
+            "manual",
+            vec![
+                PlaybookStep {
+                    id: "gate".into(),
+                    kind: StepKind::ApprovalGate {
+                        summary: "ship?".into(),
+                    },
+                },
+                PlaybookStep {
+                    id: "ship".into(),
+                    kind: StepKind::Tool {
+                        tool: "deploy".into(),
+                    },
+                },
+            ],
+        )
+    }
+
+    fn admin_env() -> RoleEnv {
+        let env = RoleEnv::acquire();
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_SECRET", "admin-secret");
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_AUDIENCE", "agentbbs-prod");
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        env
+    }
+
+    #[tokio::test]
+    async fn approvals_decision_requires_a_configured_approver() {
+        use agentbbs_core::{Identity, SignedDecision, Verdict};
+        let _env = RoleEnv::acquire();
+        std::env::remove_var("AGENTBBS_APPROVER_IDS");
+        let app = router(AppState::in_memory());
+        let approver = Identity::generate();
+        let outsider = Identity::generate();
+        let proposal = serde_json::json!({ "kind": "spend", "summary": "buy 1 GPU-hr",
+            "proposer": Identity::generate().id().to_hex(), "board": "ops" });
+        let resp = app
+            .clone()
+            .oneshot(claim_post(
+                "/api/approvals",
+                None,
+                serde_json::to_vec(&proposal).unwrap(),
+            ))
+            .await
+            .unwrap();
+        let aid = body_json(resp).await["action_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let decide = |who: &Identity| {
+            let d =
+                SignedDecision::sign(who, aid.clone(), Verdict::Approve, "", chrono::Utc::now());
+            claim_post(
+                "/api/approvals/decision",
+                None,
+                serde_json::to_vec(&d).unwrap(),
+            )
+        };
+        let recorded = |app: Router| async move {
+            let v = get_json(&app, "/api/approvals").await;
+            (
+                v["proposals"][0]["decisions"].as_array().unwrap().len(),
+                v["proposals"][0]["authorized"].as_bool().unwrap(),
+            )
+        };
+
+        // No approvers configured: nobody can decide (fail closed).
+        assert_eq!(
+            status_of(&app, decide(&approver)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(recorded(app.clone()).await, (0, false));
+
+        // A self-generated key that is not an approver is refused.
+        std::env::set_var("AGENTBBS_APPROVER_IDS", approver.id().to_hex());
+        assert_eq!(
+            status_of(&app, decide(&outsider)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(recorded(app.clone()).await, (0, false));
+
+        // The configured approver is accepted and authorizes the action.
+        assert_eq!(status_of(&app, decide(&approver)).await, StatusCode::OK);
+        assert_eq!(recorded(app.clone()).await, (1, true));
+    }
+
+    #[tokio::test]
+    async fn playbook_run_requires_a_body_bound_admin_proof() {
+        let _env = admin_env();
+        let state = AppState::in_memory();
+        let app = router(state.clone());
+        let pb = serde_json::to_vec(&gated_playbook("guarded")).unwrap();
+        let no_runs = |app: Router| async move {
+            get_json(&app, "/api/runs").await["runs"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        };
+
+        // Unauthenticated.
+        assert_eq!(
+            status_of(&app, claim_post("/api/playbooks/run", None, pb.clone())).await,
+            StatusCode::FORBIDDEN
+        );
+        // Wrong role: a valid sysop claim is not an admin proof, and neither is
+        // a proof for another action or another body.
+        assert_eq!(
+            status_of(
+                &app,
+                claim_post("/api/playbooks/run", Some("sysop"), pb.clone())
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        let wrong_action = admin_proof_raw(
+            "/api/playbooks/run",
+            pb.clone(),
+            admin_action::RUN_ADVANCE,
+            "pb-wrong-action",
+        );
+        assert_eq!(status_of(&app, wrong_action).await, StatusCode::FORBIDDEN);
+        let mut other_body = admin_proof_raw(
+            "/api/playbooks/run",
+            serde_json::to_vec(&gated_playbook("other")).unwrap(),
+            admin_action::PLAYBOOK_RUN,
+            "pb-other-body",
+        );
+        *other_body.body_mut() = Body::from(pb.clone());
+        assert_eq!(status_of(&app, other_body).await, StatusCode::FORBIDDEN);
+        assert!(no_runs(app.clone()).await, "a refused run must not start");
+
+        // Valid.
+        let ok = admin_proof_raw(
+            "/api/playbooks/run",
+            pb,
+            admin_action::PLAYBOOK_RUN,
+            "pb-ok",
+        );
+        assert_eq!(status_of(&app, ok).await, StatusCode::OK);
+        assert!(!no_runs(app.clone()).await);
+    }
+
+    #[tokio::test]
+    async fn run_advance_requires_a_path_bound_admin_proof() {
+        use agentbbs_core::{Identity, SignedDecision, Verdict};
+        let _env = admin_env();
+        let approver = Identity::generate();
+        std::env::set_var("AGENTBBS_APPROVER_IDS", approver.id().to_hex());
+        let app = router(AppState::in_memory());
+        let start = |name: &str, jti: &str| {
+            admin_proof_raw(
+                "/api/playbooks/run",
+                serde_json::to_vec(&gated_playbook(name)).unwrap(),
+                admin_action::PLAYBOOK_RUN,
+                jti,
+            )
+        };
+        let resp = app
+            .clone()
+            .oneshot(start("a", "adv-start-a"))
+            .await
+            .unwrap();
+        let v = body_json(resp).await;
+        let run = v["run_id"].as_str().unwrap().to_string();
+        let aid = v["gate_action_id"].as_str().unwrap().to_string();
+        let resp = app
+            .clone()
+            .oneshot(start("b", "adv-start-b"))
+            .await
+            .unwrap();
+        let other = body_json(resp).await["run_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let d = SignedDecision::sign(&approver, aid, Verdict::Approve, "", chrono::Utc::now());
+        assert_eq!(
+            status_of(
+                &app,
+                claim_post(
+                    "/api/approvals/decision",
+                    None,
+                    serde_json::to_vec(&d).unwrap()
+                )
+            )
+            .await,
+            StatusCode::OK
+        );
+        let path = format!("/api/runs/{run}/advance");
+        let status_now = |app: Router, id: String| async move {
+            get_json(&app, "/api/runs").await["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["run_id"] == id.as_str())
+                .unwrap()["status"]
+                .clone()
+        };
+
+        assert_eq!(
+            status_of(&app, claim_post(&path, None, Vec::new())).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status_of(&app, claim_post(&path, Some("sysop"), Vec::new())).await,
+            StatusCode::FORBIDDEN
+        );
+        // A proof for another run does not carry over to this one.
+        let mut moved = admin_proof_raw(
+            &format!("/api/runs/{other}/advance"),
+            Vec::new(),
+            admin_action::RUN_ADVANCE,
+            "adv-moved",
+        );
+        *moved.uri_mut() = path.parse().unwrap();
+        assert_eq!(status_of(&app, moved).await, StatusCode::FORBIDDEN);
+        assert_eq!(
+            status_now(app.clone(), run.clone()).await,
+            "awaiting_approval"
+        );
+
+        let ok = admin_proof_raw(&path, Vec::new(), admin_action::RUN_ADVANCE, "adv-ok");
+        assert_eq!(status_of(&app, ok).await, StatusCode::OK);
+        assert_eq!(status_now(app.clone(), run.clone()).await, "completed");
+    }
+
+    #[tokio::test]
+    async fn moderation_requires_the_moderate_capability() {
+        use agentbbs_core::{Identity, ModAction, Sanction};
+        let _env = RoleEnv::acquire();
+        std::env::remove_var("AGENTBBS_ROLE_CLAIM_SECRET");
+        let app = router(AppState::in_memory());
+        let target = Identity::generate().id();
+        let ban = serde_json::to_vec(&ModAction::sign(
+            &Identity::generate(),
+            target,
+            Sanction::Ban,
+            "spam",
+            chrono::Utc::now(),
+        ))
+        .unwrap();
+        let moderated = |app: Router| async move {
+            get_json(&app, "/api/moderation").await["moderated"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+
+        // Without a role-claim secret no caller holds MODERATE, whatever it sends.
+        for role in [None, Some("moderator")] {
+            assert_eq!(
+                status_of(&app, claim_post("/api/moderation", role, ban.clone())).await,
+                StatusCode::FORBIDDEN
+            );
+        }
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        for role in [None, Some("guest"), Some("agent")] {
+            assert_eq!(
+                status_of(&app, claim_post("/api/moderation", role, ban.clone())).await,
+                StatusCode::FORBIDDEN,
+                "{role:?}"
+            );
+        }
+        assert_eq!(moderated(app.clone()).await, 0);
+
+        assert_eq!(
+            status_of(&app, claim_post("/api/moderation", Some("moderator"), ban)).await,
+            StatusCode::OK
+        );
+        assert_eq!(moderated(app.clone()).await, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_reply_requires_the_callers_signature_before_spending() {
+        use agentbbs_core::{Identity, ModAction, Sanction};
+        let _env = RoleEnv::acquire();
+        // Keep the reply scripted: no live model call from a unit test.
+        std::env::remove_var("AGENTBBS_LLM_KEY_ENV");
+        std::env::remove_var("OPENROUTER_API_KEY");
+        let state = AppState::in_memory();
+        let app = router(state.clone());
+        let quota_used = || state.llm_day.lock().unwrap().1;
+        let now = || chrono::Utc::now().to_rfc3339();
+        let send = |v: serde_json::Value| {
+            claim_post("/api/agent-reply", None, serde_json::to_vec(&v).unwrap())
+        };
+        let me = Identity::generate();
+
+        // Unauthenticated: the old unsigned shape.
+        assert_eq!(
+            status_of(
+                &app,
+                send(serde_json::json!({ "agent": "claude", "text": "hi" }))
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
+        // Signed by one key but claiming another.
+        let mut forged = route_auth::sign_agent_reply(&me, "claude", "hi", &now());
+        forged["requester"] = Identity::generate().id().to_hex().into();
+        assert_eq!(
+            status_of(&app, send(forged)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        // Wrong standing: a banned identity is refused.
+        let banned = Identity::generate();
+        state
+            .moderation
+            .lock()
+            .unwrap()
+            .record(ModAction::sign(
+                &Identity::generate(),
+                banned.id(),
+                Sanction::Ban,
+                "abuse",
+                chrono::Utc::now(),
+            ))
+            .unwrap();
+        assert_eq!(
+            status_of(
+                &app,
+                send(route_auth::sign_agent_reply(
+                    &banned,
+                    "claude",
+                    "hi",
+                    &now()
+                ))
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(quota_used(), 0, "a refused request must not spend quota");
+
+        // Valid, then a replay of the same signed request.
+        let signed = route_auth::sign_agent_reply(&me, "claude", "hi", &now());
+        let resp = app.clone().oneshot(send(signed.clone())).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_json(resp).await["handle"], "claude");
+        assert_eq!(quota_used(), 1);
+        assert_eq!(status_of(&app, send(signed)).await, StatusCode::CONFLICT);
+        assert_eq!(quota_used(), 1);
+    }
+
+    #[tokio::test]
+    async fn topup_is_capped_and_bound_to_its_body() {
+        let _env = admin_env();
+        std::env::set_var("AGENTBBS_TOPUP_MAX_USD", "5");
+        let state = AppState::in_memory();
+        let app = router(state.clone());
+        let cap = || state.budget.lock().unwrap().status("pod-x", 1.0).cap;
+        let body = |amount: f64| {
+            serde_json::to_vec(&serde_json::json!({ "pod_id": "pod-x", "amount": amount })).unwrap()
+        };
+        let before = cap();
+
+        // A proof minted for a small amount cannot be replayed with a larger one.
+        let mut swapped = admin_proof_raw(
+            "/api/budget/topup",
+            body(1.0),
+            admin_action::TOPUP,
+            "t-swap",
+        );
+        *swapped.body_mut() = Body::from(body(4.0));
+        assert_eq!(status_of(&app, swapped).await, StatusCode::FORBIDDEN);
+        // Over the per-request limit, even with a valid proof.
+        let over = admin_proof_raw(
+            "/api/budget/topup",
+            body(6.0),
+            admin_action::TOPUP,
+            "t-over",
+        );
+        assert_eq!(status_of(&app, over).await, StatusCode::BAD_REQUEST);
+        assert_eq!(cap(), before);
+
+        let ok = admin_proof_raw("/api/budget/topup", body(5.0), admin_action::TOPUP, "t-ok");
+        assert_eq!(status_of(&app, ok).await, StatusCode::OK);
+        assert!(cap() > before);
     }
 }

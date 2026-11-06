@@ -1,6 +1,6 @@
 [package]
 name = "agentbbs-web"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "LicenseRef-FSL-1.1-Apache-2.0"
 description = "Mobile-first web PWA for AgentBBS — a ChatGPT-style agent/human collaboration UI over the AgentBBS core."
