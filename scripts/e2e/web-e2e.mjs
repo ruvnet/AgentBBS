@@ -401,19 +401,23 @@ try {
         link: link && link.href,
       };
     });
+    ok(!!admin.consoleUrl, 'server UI is configured with an admin console URL');
     if (admin.consoleUrl) {
       ok(admin.spawnHidden && admin.topupHidden, 'server UI hides direct HMAC-protected mutations');
       ok(admin.link === admin.consoleUrl, 'server UI links pod administration to the trusted console');
     }
   }
 
-  // ---- Pods: spawn via the actual button, on BOTH frontends ----
-  // Deliberately not GENESIS-gated, and deliberately clicking the button rather
-  // than calling the store: the store-level test above passed throughout, while
-  // the real click reported 'spawn failed' on every successful spawn on
-  // agentbbs-web. Only the server-backed frontend has an async store.spawnPod,
-  // so a genesis-only, store-level test could never see it.
-  {
+  // ---- Pods: spawn via the actual button ----
+  // Deliberately clicking the button rather than calling the store: the
+  // store-level test above passed throughout, while the real click reported
+  // 'spawn failed' on every successful spawn on agentbbs-web (#17).
+  // On a server-backed node a browser can no longer spawn directly: POST
+  // /api/pods needs an admin-action proof that only the trusted console can mint
+  // (ADR-0047 Phase 2), and the CI server sets AGENTBBS_ADMIN_CONSOLE_URL so the
+  // UI swaps the spawn controls for the console link (asserted above). The click
+  // path is exercised on the genesis frontend, the one that still renders it.
+  if (GENESIS) {
     const r = await page.evaluate(async () => {
       window.__ui.VIEWS.pods();
       await new Promise(s => setTimeout(s, 200));

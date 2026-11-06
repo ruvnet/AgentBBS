@@ -98,7 +98,10 @@ jobs:
         run: npm ci
       - name: Run the server
         run: |
-          PORT=8092 ./target/debug/agentbbs-web &
+          # A server-backed node delegates pod/budget admin to a trusted console
+          # (ADR-0047 Phase 2); the URL makes the UI render that link instead of
+          # direct spawn/top-up controls, which the browser cannot authorise.
+          AGENTBBS_ADMIN_CONSOLE_URL=https://comms.example.invalid/communities/e2e PORT=8092 ./target/debug/agentbbs-web &
           for i in $(seq 1 30); do curl -sf -o /dev/null http://localhost:8092/ && break; sleep 0.5; done
       - name: Run E2E against agentbbs-web
         working-directory: scripts/e2e
