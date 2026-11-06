@@ -72,11 +72,12 @@ Introduce three UI roles derived from verifiable state, not ad-hoc flags:
 - **guest** — no in-browser identity → read-only.
 - **member** — holds an anonymous key → the full collaboration surface (boards,
   pods, playbooks, approvals, directory, budget, decisions, marketplace, DMs…).
-  *Partly superseded 2026-07-29:* on a node with role claims configured, members
-  retain read access to the pod and budget views, but the three mutating routes
-  (`POST /api/pods`, `POST /api/pods/{id}/results`, `POST /api/budget/topup`)
-  now require `Caps::SYSOP` — consistent with this ADR's own Decision, which
-  already listed pod-spawn as administration rather than collaboration.
+  *Partly superseded 2026-07-30:* members keep read access to the pod and
+  budget views, but the three mutating routes no longer accept member (or any
+  role-claim) callers. `POST /api/pods` and `POST /api/budget/topup` need an
+  admin-action v2 proof, and `POST /api/pods/{id}/results` needs an ADR-208
+  signed pod event (see the Status block). This matches this ADR's own Decision,
+  which already listed pod-spawn as administration rather than collaboration.
 - **creator / admin** — holds a signed **`role:creator`** (or `role:sysop`)
   credential. The **node owner** is the issuer; on a **genesis (in-browser) node
   you own your own node**, so you may self-designate (the local node's owner key

@@ -832,20 +832,14 @@ fn resolve_caps(headers: &HeaderMap, now: i64) -> Caps {
 /// unauthenticated one on a publicly reachable node — could start pods and
 /// raise their spend caps.
 ///
-/// Deliberately shaped like `store_mode` (ADR-0054 Q4) rather than gating
-/// unconditionally, so that turning this on cannot silently break the demo and
-/// dev deployments the project also ships:
-///
-/// - **Role claims configured** → enforce `Caps::SYSOP`. This is the case that
-///   matters: a node with an owner key has someone who *can* be authorised, so
-///   anyone else must not be.
-/// - **Unconfigured but `AGENTBBS_ENV=production`** → refuse. A production node
-///   with no way to express "admin" has no way to authorise one either, so the
-///   surface is closed rather than open to everybody.
-/// - **Unconfigured, not production** (genesis demo, local dev, the test
-///   suite) → allow, unchanged. There is no identity system to appeal to and
-///   nothing at stake; this is the same trade `store_mode` makes when it falls
-///   back to `MemoryStore` outside production.
+/// Fail-closed in every release build. The request must carry a valid
+/// `agentbbs.admin-action.v2` proof (see `admin_action`) bound to this node's
+/// audience, this route's action, a short expiry and a single-use `jti`. A node
+/// without `AGENTBBS_ADMIN_ACTION_SECRET` and `AGENTBBS_ADMIN_ACTION_AUDIENCE`
+/// refuses these routes outright, whatever `AGENTBBS_ENV` says. Legacy
+/// `x-agentbbs-role*` claims are not accepted here, not even a valid sysop
+/// claim. The only open path is the `cfg(test)` bypass below for the in-memory
+/// route tests, and a production binary does not contain it.
 fn require_admin_action(
     state: &AppState,
     headers: &HeaderMap,
@@ -6439,6 +6433,148 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// The reported exploit was an unauthenticated top-up ($0.25 -> $500.25).
+    /// With the admin verifier configured, every caller without a valid
+    /// `budget.topup` proof gets 403 on top-up, and every caller without a
+    /// valid `pods.spawn` proof gets 403 on spawn. That includes no headers at
+    /// all, a genuinely verifying guest/agent/moderator/sysop role claim, a
+    /// proof for the other route and a forged proof. None of them may move the
+    /// cap or create a pod.
+    #[tokio::test]
+    async fn non_admin_callers_get_403_on_topup_and_spawn_with_no_side_effects() {
+        let _env = RoleEnv::acquire();
+        std::env::set_var("AGENTBBS_ROLE_CLAIM_SECRET", "sekret");
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_SECRET", "admin-secret");
+        std::env::set_var("AGENTBBS_ADMIN_ACTION_AUDIENCE", "agentbbs-prod");
+        let app = router(AppState::in_memory());
+        let spec = serde_json::json!({
+            "template": { "template_ref": "research/topup@1", "domain": "research",
+                "system_prompt": "x", "tools": [], "bench_assertions": "y",
+                "per_agent_cap_usd": 0.25, "max_tier": "mid", "registered_room": "research-ops" },
+            "tier": "mid"
+        });
+        let role_claim = |path: &str, role: &str, body: &serde_json::Value| {
+            let exp = 9_999_999_999i64;
+            Request::post(path)
+                .header("content-type", "application/json")
+                .header("x-agentbbs-role", role)
+                .header("x-agentbbs-role-exp", exp.to_string())
+                .header("x-agentbbs-role-sig", sign_role_claim("sekret", role, exp))
+                .body(Body::from(serde_json::to_vec(body).unwrap()))
+                .unwrap()
+        };
+        let bare = |path: &str, body: &serde_json::Value| {
+            Request::post(path)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(body).unwrap()))
+                .unwrap()
+        };
+        let pod_count = |app: Router| async move {
+            get_json(&app, "/api/pods").await["pods"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+
+        // Spawn: every non-admin caller is refused and nothing is created.
+        let mut spawn_refusals = vec![bare("/api/pods", &spec)];
+        for role in ["guest", "agent", "moderator", "sysop"] {
+            spawn_refusals.push(role_claim("/api/pods", role, &spec));
+        }
+        for req in spawn_refusals {
+            assert_eq!(
+                app.clone().oneshot(req).await.unwrap().status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        assert_eq!(pod_count(app.clone()).await, 0);
+
+        // A real pod to top up, created with a valid spawn proof.
+        let resp = app
+            .clone()
+            .oneshot(admin_v2_post(
+                "/api/pods",
+                &spec,
+                admin_action::SPAWN,
+                "topup-spawn",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+        let cap_of = |app: Router, id: String| async move {
+            get_json(&app, "/api/budget").await["budgets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["pod_id"] == id.as_str())
+                .map(|b| b["cap"].as_f64().unwrap())
+        };
+        let before = cap_of(app.clone(), id.clone()).await;
+        assert!(before.is_some(), "spawn registers a budget for the pod");
+
+        let raise = serde_json::json!({ "pod_id": id, "amount": 500.0 });
+        let mut topup_refusals = vec![bare("/api/budget/topup", &raise)];
+        for role in ["guest", "agent", "moderator", "sysop"] {
+            topup_refusals.push(role_claim("/api/budget/topup", role, &raise));
+        }
+        // A valid proof for the other route must not carry over.
+        topup_refusals.push(admin_v2_post(
+            "/api/budget/topup",
+            &raise,
+            admin_action::SPAWN,
+            "topup-wrong-action",
+        ));
+        // A proof signed with the wrong secret.
+        let mut forged = admin_v2_post(
+            "/api/budget/topup",
+            &raise,
+            admin_action::TOPUP,
+            "topup-forged",
+        );
+        forged
+            .headers_mut()
+            .insert("x-agentbbs-admin-sig", "00".repeat(32).parse().unwrap());
+        topup_refusals.push(forged);
+        for req in topup_refusals {
+            assert_eq!(
+                app.clone().oneshot(req).await.unwrap().status(),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                cap_of(app.clone(), id.clone()).await,
+                before,
+                "a refused top-up must not move the cap"
+            );
+        }
+
+        // The admin path still works: a valid proof raises the cap once.
+        let ok = admin_v2_post(
+            "/api/budget/topup",
+            &serde_json::json!({ "pod_id": id, "amount": 0.25 }),
+            admin_action::TOPUP,
+            "topup-once",
+        );
+        assert_eq!(
+            app.clone().oneshot(ok).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let after = cap_of(app.clone(), id.clone()).await;
+        assert!(after > before);
+        let replay = admin_v2_post(
+            "/api/budget/topup",
+            &serde_json::json!({ "pod_id": id, "amount": 0.25 }),
+            admin_action::TOPUP,
+            "topup-once",
+        );
+        assert_eq!(
+            app.clone().oneshot(replay).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(cap_of(app.clone(), id.clone()).await, after);
+        assert_eq!(pod_count(app.clone()).await, 1);
     }
 
     #[tokio::test]
