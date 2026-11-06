@@ -74,12 +74,23 @@ jobs:
       # resolve to VAR_PLAYGROUND (string baked into the binary), and the install
       # must have seeded save/ there. If either fails, persistence is silently
       # broken (saves would fall back into the read-only HACKDIR image layer).
+      #
+      # Ask the binary itself via --showpaths, rather than grepping `strings` for
+      # the literal. gcc inlines the constant strcpy of VAR_PLAYGROUND as
+      # immediate stores, so the string never appears contiguously in the binary
+      # and a strings grep fails even when the split is compiled in. --showpaths
+      # also parses sysconf, so an invalid sysconf (which makes every game start
+      # stop at "Hit return to continue") fails this step too.
       - name: verify_var_playground_split
         run: |
           docker run --rm nethack-build:ci sh -c '
             set -e
             test -d /var/games/nethack-var/save
-            strings /var/games/nethack/nethack | grep -qx /var/games/nethack-var
+            out=$(TERM=dumb timeout 20 /var/games/nethack/nethack --showpaths </dev/null 2>&1)
+            echo "$out"
+            ! echo "$out" | grep -qiE "error|illegal|hit return"
+            echo "$out" | grep -qF "[savedir   ]=\"/var/games/nethack-var/\""
+            echo "$out" | grep -qF "[scoredir  ]=\"/var/games/nethack-var/\""
           '
 
   build_runtime_nethack:

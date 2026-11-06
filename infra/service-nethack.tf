@@ -76,7 +76,7 @@ resource "kubernetes_deployment_v1" "late_nethack" {
         # The ?lock.* glob matches any single-char slot prefix on purpose (a, b,
         # c, ... one per slot), NOT a fixed [a-j] range, so it stays correct as
         # MAXPLAYERS changes. Without it, leaked slots accumulate until all
-        # MAXPLAYERS (50) are gone and the door wedges for everyone.
+        # MAXPLAYERS (25) are gone and the door wedges for everyone.
         init_container {
           name  = "nethack-save-seed"
           image = var.NETHACK_IMAGE_TAG

@@ -109,8 +109,10 @@ RUN sed -i "s|^/\* #define VAR_PLAYGROUND .*|#define VAR_PLAYGROUND \"${NETHACK_
     # one live getlock slot, and once every slot is taken the whole door wedges
     # ("Too many hacks running now"), so size it to the host pod's memory budget
     # (~10-20MB/game in 1Gi) rather than the stock default. Rewritten fail-closed.
-    && sed -i 's/^MAXPLAYERS=.*/MAXPLAYERS=50/' ${NETHACK_HACKDIR}/sysconf \
-    && grep -qx 'MAXPLAYERS=50' ${NETHACK_HACKDIR}/sysconf \
+    # NetHack 5.0 caps MAXPLAYERS at 25: a larger value is rejected with "Illegal
+    # value in MAXPLAYERS" and a "Hit return to continue" prompt on every start.
+    && sed -i 's/^MAXPLAYERS=.*/MAXPLAYERS=25/' ${NETHACK_HACKDIR}/sysconf \
+    && grep -qx 'MAXPLAYERS=25' ${NETHACK_HACKDIR}/sysconf \
     # `make install` writes sysconf as 0600 root. HACKDIR is read-only at runtime
     # and the host runs as the unprivileged `late` user, which must READ sysconf at
     # startup -- otherwise nethack aborts with "Unable to open SYSCF_FILE." Make it
