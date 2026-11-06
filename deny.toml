@@ -88,6 +88,31 @@ ignore = [
   # code parsing untrusted runtime XML — not wayland-scanner's build-time
   # codegen over its own bundled protocol files.
   'RUSTSEC-2026-0194',
+
+  # basic-toml is unmaintained (no patched release). Pulled only by
+  # askama_derive's optional `config` feature (still present in askama 0.16.1),
+  # which late-web needs for askama.toml (dirs = ["src"]). It parses that
+  # build-time config file inside a proc-macro, never runtime input. Follow-up:
+  # drop when askama moves to `toml`, or move late-web's templates to the
+  # default dir and disable `config`.
+  'RUSTSEC-2026-0374',
+
+  # crypto-bigint 0.5.5 timing variability. No patched 0.5.x; the fix is 0.7.6+.
+  # Pulled via elliptic-curve 0.13 -> p256/p384 -> jsonwebtoken -> livekit-api
+  # -> livekit -> late-cli, the local desktop CLI, not a server. Follow-up when
+  # livekit moves to jsonwebtoken on the elliptic-curve 0.14 / crypto-bigint 0.7
+  # line.
+  'RUSTSEC-2026-0387',
+
+  # zip 0.6.6 extraction advisories (symlink targets, SUID bits, permissions
+  # through symlinks, abort on a large symlink entry). Only reachable as a
+  # build-dependency: webrtc-sys-build unpacks the pinned prebuilt libwebrtc
+  # archive at build time for late-cli. No zip is extracted at runtime.
+  # Follow-up when webrtc-sys-build moves to zip >= 9.
+  'RUSTSEC-2026-0367',
+  'RUSTSEC-2026-0368',
+  'RUSTSEC-2026-0369',
+  'RUSTSEC-2026-0429',
 ]
 
 # ---------------------------------------------------------------------------

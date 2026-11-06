@@ -109,8 +109,10 @@ RUN sed -i "s|^/\* #define VAR_PLAYGROUND .*|#define VAR_PLAYGROUND \"${NETHACK_
     # one live getlock slot, and once every slot is taken the whole door wedges
     # ("Too many hacks running now"), so size it to the host pod's memory budget
     # (~10-20MB/game in 1Gi) rather than the stock default. Rewritten fail-closed.
-    && sed -i 's/^MAXPLAYERS=.*/MAXPLAYERS=50/' ${NETHACK_HACKDIR}/sysconf \
-    && grep -qx 'MAXPLAYERS=50' ${NETHACK_HACKDIR}/sysconf \
+    # NetHack 5.0 caps MAXPLAYERS at 25: a larger value is rejected with "Illegal
+    # value in MAXPLAYERS" and a "Hit return to continue" prompt on every start.
+    && sed -i 's/^MAXPLAYERS=.*/MAXPLAYERS=25/' ${NETHACK_HACKDIR}/sysconf \
+    && grep -qx 'MAXPLAYERS=25' ${NETHACK_HACKDIR}/sysconf \
     # `make install` writes sysconf as 0600 root. HACKDIR is read-only at runtime
     # and the host runs as the unprivileged `late` user, which must READ sysconf at
     # startup -- otherwise nethack aborts with "Unable to open SYSCF_FILE." Make it
@@ -172,22 +174,13 @@ RUN cargo install cargo-chef --locked
 # ==============================================================================
 FROM chef AS planner
 
-# Copy workspace manifests
+# Copy the whole workspace. cargo-chef needs every workspace member's manifest
+# and targets (the workspace now includes the agentbbs-* crates and
+# infra/agentbbs-gcp), and it only extracts manifests into the recipe, so the
+# cook layer below stays cached across source-only changes.
 COPY Cargo.toml Cargo.lock ./
-COPY crates/late-core/Cargo.toml crates/late-core/Cargo.toml
-COPY crates/late-ssh/Cargo.toml crates/late-ssh/Cargo.toml
-COPY crates/late-web/Cargo.toml crates/late-web/Cargo.toml
-COPY crates/late-cli/Cargo.toml crates/late-cli/Cargo.toml
-COPY crates/late-nethack/Cargo.toml crates/late-nethack/Cargo.toml
-COPY crates/vendor crates/vendor
-
-# Create dummy source files for cargo-chef to analyze
-RUN mkdir -p crates/late-core/src crates/late-ssh/src crates/late-web/src crates/late-cli/src crates/late-nethack/src && \
-    echo "fn main() {}" > crates/late-core/src/lib.rs && \
-    echo "fn main() {}" > crates/late-ssh/src/main.rs && \
-    echo "fn main() {}" > crates/late-web/src/main.rs && \
-    echo "fn main() {}" > crates/late-cli/src/main.rs && \
-    echo "fn main() {}" > crates/late-nethack/src/main.rs
+COPY crates crates
+COPY infra/agentbbs-gcp infra/agentbbs-gcp
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -204,15 +197,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
     cargo chef cook --release --features otel --recipe-path recipe.json -p late-core -p late-ssh -p late-web -p late-nethack
 
-# Copy actual source code
+# Copy actual source code. All workspace members must be present for cargo to
+# load the workspace, even though only the late-* binaries are built here.
 COPY Cargo.toml Cargo.lock ./
-COPY crates/late-core crates/late-core
-COPY crates/late-ssh crates/late-ssh
-COPY crates/late-web crates/late-web
-COPY crates/late-nethack crates/late-nethack
-COPY crates/vendor crates/vendor
-COPY crates/late-cli/Cargo.toml crates/late-cli/Cargo.toml
-RUN mkdir -p crates/late-cli/src && echo "fn main() {}" > crates/late-cli/src/main.rs
+COPY crates crates
+COPY infra/agentbbs-gcp infra/agentbbs-gcp
 # Build deployable binaries only (late-cli excluded - local CLI tooling).
 # late-nethack has no otel feature; it is built without the workspace feature flag.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \

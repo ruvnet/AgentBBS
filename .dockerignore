@@ -36,3 +36,4 @@ infra/*
 
 # Tests artifacts
 *.profraw
+node_modules/
