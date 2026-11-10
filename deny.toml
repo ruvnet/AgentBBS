@@ -32,10 +32,12 @@ yanked = "deny"
 # unavailable and the path is unreachable.
 ignore = [
   # Real CVE — Marvin Attack timing sidechannel in rsa@0.9.x / 0.10.0-rc.x.
-  # No patched rsa exists in the compatible range; pulled transitively via
-  # ssh-key / russh / openssh-keys. AgentBBS uses Ed25519 keys; the vulnerable
-  # RSA-signature-verify path is not reached. Follow-up PR when patched rsa
-  # releases for either branch.
+  # rsa 0.10.0 (patched) exists, but russh pins rsa =0.10.0-rc.18 up to the
+  # latest russh 0.65.1 (re-checked 2026-11-10), so it cannot be resolved.
+  # AgentBBS generates Ed25519 host keys and derives Ed25519 door keys, so the
+  # timing-sensitive RSA private-key path is not reached in the default setup.
+  # rsa 0.9 is only an agentbbs-web dev-dependency (test keypair generation).
+  # Follow-up when russh moves to rsa >= 0.10.0.
   'RUSTSEC-2023-0071',
 
   # --- Unmaintained-advisory chain (all from gtk/glib v0.18 transitive deps) ---
@@ -66,29 +68,6 @@ ignore = [
   # when their next minors land.
   'RUSTSEC-2024-0436',
 
-  # Real CVE — unbounded namespace-declaration allocation (memory-exhaustion
-  # DoS) in quick-xml's NsReader, exploitable by a remote attacker feeding
-  # crafted untrusted XML (the advisory's own example: an RPKI relying-party
-  # parsing attacker-controlled snapshot.xml over the network). quick-xml
-  # 0.39.4 is pulled transitively: wayland-scanner 0.31.10 (pinned to
-  # quick-xml ^0.39, no newer release exists yet) -> wayland-client ->
-  # wl-clipboard-rs -> arboard -> late-cli. wayland-scanner's own use of
-  # quick-xml is build-time code generation over the Wayland protocol XML
-  # files bundled in the crate itself, not runtime parsing of untrusted
-  # network input — the vulnerable NsReader path this advisory describes is
-  # not reachable through this dependency chain. No patched wayland-scanner
-  # exists yet (checked 2026-07-09); follow-up PR when one ships
-  # quick-xml >=0.41.
-  'RUSTSEC-2026-0195',
-
-  # Same quick-xml 0.39.4 / wayland-scanner chain as RUSTSEC-2026-0195 above,
-  # same reachability argument: a second, independent quick-xml advisory
-  # (O(N^2) duplicate-attribute-name check, a CPU-exhaustion DoS on untrusted
-  # XML with many attributes on one tag) that is likewise only reachable by
-  # code parsing untrusted runtime XML — not wayland-scanner's build-time
-  # codegen over its own bundled protocol files.
-  'RUSTSEC-2026-0194',
-
   # basic-toml is unmaintained (no patched release). Pulled only by
   # askama_derive's optional `config` feature (still present in askama 0.16.1),
   # which late-web needs for askama.toml (dirs = ["src"]). It parses that
@@ -101,14 +80,19 @@ ignore = [
   # Pulled via elliptic-curve 0.13 -> p256/p384 -> jsonwebtoken -> livekit-api
   # -> livekit -> late-cli, the local desktop CLI, not a server. Follow-up when
   # livekit moves to jsonwebtoken on the elliptic-curve 0.14 / crypto-bigint 0.7
-  # line.
+  # line. Re-checked 2026-11-10: livekit 0.10 drops livekit-api, but its
+  # libwebrtc 0.4 / webrtc-sys 0.3.53 build needs clang >= 21 (CI has 18).
+  # late-cli passes a server-issued token to Room::connect and never signs or
+  # verifies a JWT, so the ECDSA path is not exercised.
   'RUSTSEC-2026-0387',
 
   # zip 0.6.6 extraction advisories (symlink targets, SUID bits, permissions
   # through symlinks, abort on a large symlink entry). Only reachable as a
   # build-dependency: webrtc-sys-build unpacks the pinned prebuilt libwebrtc
   # archive at build time for late-cli. No zip is extracted at runtime.
-  # Follow-up when webrtc-sys-build moves to zip >= 9.
+  # Re-checked 2026-11-10: webrtc-sys-build 0.3.20+ uses zip 9 but also moves
+  # the pinned libwebrtc tag, which webrtc-sys 0.3.33 no longer compiles
+  # against. Follow-up together with the livekit 0.10 / clang 21 upgrade.
   'RUSTSEC-2026-0367',
   'RUSTSEC-2026-0368',
   'RUSTSEC-2026-0369',
