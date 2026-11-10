@@ -1,0 +1,30 @@
+# cargo-audit configuration. Mirrors the [advisories] ignore list in deny.toml
+# for real (non-"unmaintained") advisories that cannot be resolved yet. Every
+# entry needs a dated rationale; no blanket ignores.
+[advisories]
+ignore = [
+  # 2026-11-10: RUSTSEC-2023-0071 (rsa, Marvin timing side channel).
+  # rsa 0.10.0 is patched, but russh pins rsa =0.10.0-rc.18 up to the latest
+  # russh 0.65.1, so the workspace cannot resolve past it. AgentBBS generates
+  # Ed25519 host keys and derives Ed25519 door keys, so the RSA private-key
+  # path is not reached in the default setup. rsa 0.9.10 is only an
+  # agentbbs-web dev-dependency (in-test keypair generation).
+  "RUSTSEC-2023-0071",
+
+  # 2026-11-10: RUSTSEC-2026-0387 (crypto-bigint 0.5.5 timing variability).
+  # Pulled only via livekit 0.7 -> livekit-api -> jsonwebtoken (rust_crypto)
+  # -> p256/p384 in late-cli. late-cli passes a server-issued token to
+  # Room::connect and never signs or verifies a JWT. livekit 0.10 drops
+  # livekit-api, but its webrtc-sys 0.3.53 needs clang >= 21 (CI has 18).
+  "RUSTSEC-2026-0387",
+
+  # 2026-11-10: zip 0.6.6 extraction advisories. zip is only a
+  # build-dependency of webrtc-sys-build, which unpacks the pinned prebuilt
+  # libwebrtc archive at build time; nothing extracts zip files at runtime.
+  # webrtc-sys-build 0.3.20+ (zip 9) moves the libwebrtc tag, which
+  # webrtc-sys 0.3.33 does not compile against. Upgrade with livekit 0.10.
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
+  "RUSTSEC-2026-0429",
+]
